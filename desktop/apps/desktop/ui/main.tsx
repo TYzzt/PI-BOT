@@ -4,6 +4,7 @@ import Markdown from 'react-markdown';
 import type { DesktopBridge, Snapshot, ConversationDetail, ModelConfig, ModelInput } from '../../../packages/protocol/src/index.js';
 import './style.css';
 import { Projects, Programming } from './coding.js';
+import { CloudPanel } from './cloud.js';
 declare global { interface Window { agent: DesktopBridge } }
 const empty: Snapshot = { models: [], conversations: [], activeRun: null, testing: false };
 const statusLabel: Record<string, string> = { running: '正在回答', cancelling: '正在停止', completed: '已完成', cancelled: '已停止', interrupted: '运行中断', failed: '请求失败' };
@@ -78,6 +79,7 @@ function Settings({ models, connected, blocked, refresh, onError }: { models: Mo
       <details><summary>高级设置</summary><div className="advanced"><label>上下文长度<input type="number" required min={1024} max={4000000} value={form.contextWindow} onChange={e => field('contextWindow', Number(e.target.value))}/></label><label>输出上限<input type="number" required min={16} max={1000000} value={form.maxTokens} onChange={e => field('maxTokens', Number(e.target.value))}/></label></div><small>请按服务商公布的模型能力填写。</small></details>
       <button className="primary save" disabled={disabled}>{working ? '处理中…' : '保存配置'}</button>{notice && <p className="success" role="status">✓ {notice}</p>}
     </form></div>
+    <CloudPanel connected={connected} onError={onError}/>
     {deleting && <div className="modal-backdrop"><section className="modal" role="dialog" aria-label="删除模型"><h2>删除模型配置</h2><p>已有会话使用此模型时，需要选择替代模型。</p><select aria-label="替代模型" value={replacement} onChange={e => setReplacement(e.target.value)}><option value="">不替换（仅限未被引用的模型）</option>{models.filter(m => m.id !== deleting).map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select><div className="modal-actions"><button onClick={() => setDeleting(null)}>返回</button><button className="danger" disabled={disabled} onClick={() => perform(async () => { await window.agent.call('modelDelete', { id: deleting, ...(replacement ? { replacementId: replacement } : {}) }); if (form.id === deleting) setForm({ ...defaults }); setDeleting(null); })}>确认删除</button></div></section></div>}
   </div>;
 }
