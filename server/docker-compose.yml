@@ -1,0 +1,41 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: tagent
+      POSTGRES_PASSWORD: tagent
+      POSTGRES_DB: tagent
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tagent -d tagent"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    environment:
+      T_AGNET_DATABASE_URL: postgresql+psycopg://tagent:tagent@postgres:5432/tagent
+      T_AGNET_ADMIN_PASSWORD: ${T_AGNET_ADMIN_PASSWORD:?set T_AGNET_ADMIN_PASSWORD}
+      T_AGNET_JWT_SECRET: ${T_AGNET_JWT_SECRET:?set T_AGNET_JWT_SECRET}
+      T_AGNET_JWT_TTL_SECONDS: ${T_AGNET_JWT_TTL_SECONDS:-3600}
+      T_AGNET_PRESENCE_TTL_SECONDS: ${T_AGNET_PRESENCE_TTL_SECONDS:-60}
+      T_AGNET_PAIRING_TTL_SECONDS: ${T_AGNET_PAIRING_TTL_SECONDS:-600}
+      T_AGNET_SIGNATURE_SKEW_SECONDS: ${T_AGNET_SIGNATURE_SKEW_SECONDS:-300}
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+volumes:
+  pgdata:

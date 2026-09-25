@@ -1,0 +1,9 @@
+node_modules/
+**/dist/
+**/out/
+work/
+test-results/
+playwright-report/
+.env*
+.DS_Store
+**/ui-dist/

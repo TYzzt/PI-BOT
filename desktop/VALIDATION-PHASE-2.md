@@ -1,0 +1,60 @@
+# 第二阶段验收记录
+
+日期：2026-09-25，时区 Asia/Shanghai。状态：**本地编程闭环实现及验收通过**。
+
+环境：macOS Apple Silicon；项目 Node.js 24.21.0；Electron 44.4.5；Pi SDK 0.87.1。主要框架没有升级，新增直接依赖 typebox 1.3.27、diff 9.0.0，锁文件已更新。
+
+## 自动化和工程检查
+
+| 检查 | 结果 |
+| --- | --- |
+| `npm run typecheck` | 通过，含第二阶段服务、协议、界面与验收脚本 |
+| `npm run build` | 通过，新增命令监控进程独立构建产物 |
+| `npm test` | 11 项通过，真实 Keychain 用例默认跳过 1 项 |
+| `npm run test:keychain` | 真实 Keychain 保存/读取/更新/删除通过，测试凭据清理 |
+| `npm run test:ui` | 2 项通过：第一阶段回归和第二阶段完整编程闭环 |
+| 真实 Pi 工具调用 | 可控端点实际驱动 SDK 的读取、结构化计划、编辑、命令和步骤工具 |
+| 只读规划 | 规划工具集中不存在命令或写工具；项目指纹不变；越界、符号链接访问拒绝 |
+| 计划审批 | 旧版本、未回答问题、工作区变化、实际读取的忽略文件变化、模型 revision 变化均阻止执行；重复批准不重复运行 |
+| 任务与代码 | 计划修订保留历史；用户原有修改保留；执行前基线 diff 仅显示本次变更 |
+| 命令生命周期 | 成功、失败、超时、交互提示、输出截断、取消进程组、父服务 SIGKILL 后清理通过 |
+| 失败不能被 echo 掩盖 | `false; echo masked` 返回非零；不把后续打印命令的成功当成测试成功 |
+| 范围扩大 | `request_replan` 后关闭执行工具，新版本待重新规划；项目无后续写入 |
+| 数据迁移和恢复 | 从真实 v1 结构迁移，保留旧 Ask 数据；活动任务、运行及工具中断，不自动重跑 |
+| 界面 | 原生目录选择器桥接、项目登记、计划生成/修改/批准、diff、验证与取消全部跑通 |
+
+端到端测试只替换目录选择弹窗的返回值及模型 HTTP 响应；其余使用真实 Electron、独立服务、Pi SDK、SQLite、Keychain 和本机命令。
+
+界面截图：`work/coding-plan.png`、`work/coding-diff.png`、`work/coding-tools-dark.png`。原始测试保存在 `tests/`。
+
+## 真实模型验收
+
+使用用户已经在应用配置的模型 **qwen38-27b**，提供商主机 `aicloud-app.lenovo.com.cn`。通过既有 Keychain 引用读取凭据，未输出或复制密钥。两个新建的独立 fixture Git 仓库位于 `work/real-acceptance/`，未改动用户业务项目。
+
+测试均经应用自己的项目、Plan、批准和 Execute 接口运行。先审阅真实模型提交的计划，确认只涉及测试仓库内文件和本地测试命令，再批准执行。详细报告保留计划 hash、工具调用、命令退出码、时间和模型说明。
+
+| 场景 | 时间（北京时间） | 真实结果 |
+| --- | --- | --- |
+| 错误修复 | 07:16:19—07:18:28 | 将 add 中错误的减法改为加法；仅 calculator.mjs 改变；node --test test.mjs 为 1 test / 1 pass / 0 fail（含 2 个断言）；notes.txt 保留 |
+| 新增功能 | 07:19:45—07:21:12 | 新增 multiply，并保留原 add 测试；加入正数、负数、零的覆盖；最终 2 tests / 2 pass / 0 fail；仅 calculator.mjs 与 test.mjs 改变 |
+
+新增功能的第一轮真实测试因 `assert.strictEqual(-0, 0)` 失败，退出码为 1。模型据此在同一函数内归一化零结果，第二轮测试退出码为 0。界面使用最近一次相同验证命令的结果，原始失败输出仍保留。这验证了模型读取真实失败并继续修复的闭环。
+
+模型最初的计划和最终解释存在测试数量/JavaScript 相等性表述不准确的情况；本记录以实际测试输出为准：JavaScript `-0 === 0` 为 true，而 Node strict assertion 使用的相等语义区分它们。系统不从模型说明提取测试通过数量。
+
+独立复核再次直接运行两个仓库的测试，均通过，并核对 notes.txt 未变。报告文件：
+
+- `work/real-acceptance/bugfix/report.json`
+- `work/real-acceptance/feature/report.json`
+
+复现脚本为 `scripts/real-acceptance.ts`，需显式调用，默认测试不会消耗真实模型额度。脚本 `plan` 创建 fixture 并停止待审阅；只有显式 `execute` 才批准。既有目录不覆盖，可用 `status` 读取记录。
+
+## 限制与后续
+
+详细运行边界见 [PHASE-2.md](./PHASE-2.md)。特别是 Execute 的完整 shell 并非操作系统沙箱；交互检测为常见模式与显式暂停工具，后台守护化进程不受保证。此阶段没有正式安装包和后台常驻，也没有手机、云端或浏览器功能。
+
+运行时依赖审计保持 0 项；Forge 开发依赖链原有 23 项公告仍保留，正式打包前需处理。审计输出在 `work/runtime-audit.json`；没有用跨主版本 overrides 强行改动 Forge 工具链。
+
+## 现有应用升级检查
+
+已确认原服务空闲后备份 SQLite 至 `work/before-phase2.sqlite`（权限 0600），随后重启开发应用。新服务健康版本为 0.2.0，数据库已迁移为 v2；原有 1 个模型配置和 2 个会话均保留。当前应用已启动，可从侧栏「项目与编程」进入。

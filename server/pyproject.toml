@@ -1,0 +1,30 @@
+[project]
+name = "tagent-server"
+version = "0.1.0"
+description = "T-AGNET cloud control service"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "alembic>=1.14",
+  "argon2-cffi>=23.1",
+  "cryptography>=43",
+  "fastapi>=0.115",
+  "psycopg[binary]>=3.2",
+  "pydantic-settings>=2.6",
+  "pyjwt>=2.10",
+  "sqlalchemy>=2.0.36",
+  "uvicorn>=0.32",
+]
+
+[dependency-groups]
+dev = [
+  "httpx>=0.28",
+  "pytest>=8.3",
+  "testcontainers[postgres]>=4.9",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = [".", "src"]
+testpaths = ["tests"]

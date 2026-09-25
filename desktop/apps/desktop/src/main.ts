@@ -1,0 +1,36 @@
+import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron';
+import { join } from 'node:path';
+import { mkdirSync } from 'node:fs';
+import { dataDir } from '../../../packages/service/src/paths.js';
+import { pathToFileURL } from 'node:url';
+import { ServiceClient } from './service-client.js';
+import { parseInput, type Method } from '../../../packages/protocol/src/index.js';
+
+mkdirSync(join(dataDir, 'electron'), { recursive: true, mode: 0o700 });
+app.setPath('userData', join(dataDir, 'electron'));
+let window: BrowserWindow | null = null;
+const page = pathToFileURL(join(__dirname, '../ui-dist/index.html')).href;
+const client = new ServiceClient(event => window?.webContents.send('agent:event', event));
+function validSender(event: Electron.IpcMainInvokeEvent) { if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame || event.senderFrame.url !== page) throw new Error('不受信任的 IPC 来源'); }
+if (!app.requestSingleInstanceLock()) app.quit();
+else {
+  app.setName('T-AGNET');
+  app.on('second-instance', () => { window?.show(); window?.focus(); });
+  app.whenReady().then(() => {
+    ipcMain.handle('agent:chooseProjectDirectory', async event => { validSender(event); const result = await dialog.showOpenDialog(window!, { title: '选择 Git 项目目录', properties: ['openDirectory'] }); return result.canceled ? null : result.filePaths[0] ?? null; });
+    ipcMain.handle('agent:call', async (event, method: Method, input: unknown) => { validSender(event); return client.call(method, parseInput(method, input)); });
+    ipcMain.handle('agent:openExternal', async (event, url: string) => { validSender(event); const parsed = new URL(url); if (!['https:', 'http:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error('不支持此链接'); await shell.openExternal(parsed.href); });
+    const createWindow = () => {
+      window = new BrowserWindow({ width: 1160, height: 800, minWidth: 880, minHeight: 600, title: 'T-AGNET', backgroundColor: '#f7f8fa', titleBarStyle: 'hiddenInset', webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false } });
+      window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+      window.webContents.on('will-navigate', event => event.preventDefault());
+      window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+      window.on('closed', () => { window = null; });
+      void window.loadURL(page);
+    };
+    createWindow(); client.start();
+    app.on('activate', () => { if (!window) createWindow(); });
+  }).catch(() => { dialog.showErrorBox('启动失败', '无法启动桌面应用，请查看开发终端'); app.quit(); });
+  app.on('before-quit', () => client.stop());
+  app.on('window-all-closed', () => { /* macOS keeps UI process alive until Cmd+Q */ });
+}

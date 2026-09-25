@@ -1,0 +1,12 @@
+{
+  "name": "@t-agnet/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/main.cjs",
+  "config": {
+    "forge": "./forge.config.cjs"
+  },
+  "devDependencies": {
+    "electron": "44.4.5"
+  }
+}
