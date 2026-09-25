@@ -333,6 +333,8 @@ def publish_plan(session: Session, device: Device, task_id: uuid.UUID, payload: 
 def approve_plan(session: Session, settings: Settings, plan_id: uuid.UUID, payload: ApproveRequest, now: datetime) -> tuple[Approval, Run]:
     write_lock(session)
     plan, task = _get_plan(session, plan_id)
+    if payload.version != plan.version or payload.content_hash != plan.content_hash:
+        raise HTTPException(status_code=409, detail="计划版本或 hash 不匹配")
     by_key = session.scalars(select(Approval).where(Approval.idempotency_key == payload.idempotency_key)).first()
     if by_key is not None:
         if by_key.plan_id != plan.plan_id or by_key.status == "rejected":
@@ -342,8 +344,6 @@ def approve_plan(session: Session, settings: Settings, plan_id: uuid.UUID, paylo
     if recorded is not None:
         return recorded, _run_for_approval(session, recorded)
     _require_latest(task, plan)
-    if payload.version != plan.version or payload.content_hash != plan.content_hash:
-        raise HTTPException(status_code=409, detail="计划版本或 hash 不匹配")
     if task.status != "awaiting_review" or task.cancel_requested_at is not None:
         raise HTTPException(status_code=409, detail="任务当前不能批准")
     _require_target_usable(session, task)

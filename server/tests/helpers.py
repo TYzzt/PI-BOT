@@ -45,6 +45,12 @@ def json_bytes(payload: dict) -> bytes:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
 
 
+def signed_ws_headers(private_key: Ed25519PrivateKey, device_id: str, path: str = "/ws/device") -> dict[str, str]:
+    headers = signed_headers(private_key, device_id, "GET", path, b"")
+    headers.pop("Content-Type")
+    return headers
+
+
 def pair(client: TestClient, token: str, private_key: Ed25519PrivateKey, public_key: str, label: str = "Mac") -> str:
     created = client.post("/devices/pairing-codes", headers=bearer(token))
     assert created.status_code == 200, created.text
