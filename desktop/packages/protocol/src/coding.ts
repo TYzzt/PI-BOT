@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { AppEvent, ModelConfig, Run, Message } from './index.js';
+import type { AppEvent, ModelConfig, Run, Message, CloudTaskInfo } from './index.js';
 export type TaskState = 'reading' | 'planning' | 'awaiting_review' | 'awaiting_input' | 'executing' | 'needs_replan' | 'waiting_for_local_action' | 'completed' | 'failed' | 'cancelled' | 'rejected' | 'interrupted';
 export interface Project { id: string; name: string; path: string; removed: boolean; createdAt: number; branch?: string; status?: string; available?: boolean; error?: string; }
 export const planBodySchema = z.object({
@@ -13,7 +13,7 @@ export interface CodingTask { intent?: 'read' | 'code'; readReturnState?: TaskSt
 export interface CodingRun { run: Run; mode: 'read' | 'plan' | 'execute'; planId: string | null; model: ModelConfig; sessionPath: string | null; }
 export interface ToolCall { id: string; taskId: string; runId: string; name: string; input: string; output: string; state: 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted'; startedAt: number; endedAt: number | null; exitCode: number | null; verification: boolean; truncated: boolean; cwd: string; path: string; }
 export interface StepStatus { stepId: string; state: 'pending' | 'running' | 'completed' | 'failed'; note: string; }
-export interface CodingDetail { messages: Message[]; summary: string; task: CodingTask; project: Project; plans: PlanVersion[]; runs: CodingRun[]; steps: StepStatus[]; tools: ToolCall[]; lastSeq: number; verification: 'passed' | 'failed' | 'not_run' | 'cancelled'; }
+export interface CodingDetail { messages: Message[]; summary: string; task: CodingTask; project: Project; plans: PlanVersion[]; runs: CodingRun[]; steps: StepStatus[]; tools: ToolCall[]; lastSeq: number; verification: 'passed' | 'failed' | 'not_run' | 'cancelled'; cloud?: CloudTaskInfo; }
 export interface FileChange { path: string; kind: 'added' | 'modified' | 'deleted'; preview: boolean; }
 export interface Changes { files: FileChange[]; diff: string; warning: string; }
 export interface CodingApi {

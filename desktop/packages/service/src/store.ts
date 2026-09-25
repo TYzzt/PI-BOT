@@ -8,7 +8,7 @@ export class Store {
     this.db = new DatabaseSync(path);
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=3000;');
     const version = (this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
-    if (version > 2) throw new Error('数据库版本较新，不能使用旧版本应用打开');
+    if (version > 3) throw new Error('数据库版本较新，不能使用旧版本应用打开');
     if (version < 1) this.transaction(() => this.db.exec(`
       CREATE TABLE IF NOT EXISTS models(id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS conversations(id TEXT PRIMARY KEY, title TEXT NOT NULL, modelConfigId TEXT NOT NULL REFERENCES models(id), createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL, sessionPath TEXT);
@@ -29,6 +29,15 @@ export class Store {
       CREATE TABLE request_receipts(id TEXT PRIMARY KEY, hash TEXT NOT NULL, result TEXT NOT NULL);
       CREATE TABLE app_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
       PRAGMA user_version=2;
+    `));
+    // Cloud tables only hold identifiers, versions, hashes and redacted event payloads; never source, diffs or model text.
+    if (version < 3) this.transaction(() => this.db.exec(`
+      CREATE TABLE cloud_link(id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL);
+      CREATE TABLE cloud_projects(projectId TEXT PRIMARY KEY, cloudProjectId TEXT NOT NULL UNIQUE, data TEXT NOT NULL);
+      CREATE TABLE cloud_tasks(taskId TEXT PRIMARY KEY REFERENCES coding_tasks(id) ON DELETE CASCADE, cloudTaskId TEXT NOT NULL UNIQUE, data TEXT NOT NULL);
+      CREATE TABLE cloud_commands(seq INTEGER PRIMARY KEY AUTOINCREMENT, commandId TEXT NOT NULL UNIQUE, status TEXT NOT NULL, data TEXT NOT NULL);
+      CREATE TABLE cloud_outbox(seq INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL, error TEXT, createdAt INTEGER NOT NULL);
+      PRAGMA user_version=3;
     `));
     this.db.exec(`UPDATE messages SET status='interrupted' WHERE role='assistant' AND runId IN (SELECT id FROM runs WHERE state IN ('running','cancelling'));
       UPDATE runs SET state='interrupted', error='本地服务已重启，上次运行未完成；不会自动重发请求' WHERE state IN ('running','cancelling');`);

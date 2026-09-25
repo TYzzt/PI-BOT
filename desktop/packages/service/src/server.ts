@@ -61,7 +61,7 @@ server.on('error', () => { console.error('本地服务无法监听，请检查�
 server.listen(socketPath, () => {
   chmodSync(socketPath, 0o600);
   store = new Store(join(dataDir, 'app.sqlite'));
-  application = new Application(store, new Keychain(helper), piFactory(dataDir), broadcast);
+  application = new Application(store, new Keychain(helper), piFactory(dataDir), broadcast, { credentials: new Keychain(helper, 'dev.t-agnet.device') });
   log('service.started');
   console.log('T-AGNET service ready');
 });

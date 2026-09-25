@@ -11,7 +11,7 @@ const strings = () => Type.Array(Type.String());
 const planSchema = Type.Object({ goal: Type.String(), scope: strings(), nonGoals: strings(), modules: strings(), steps: Type.Array(Type.Object({ stepId: Type.String(), title: Type.String(), description: Type.String() })), commands: strings(), externalActions: strings(), verification: strings(), acceptance: strings(), questions: strings() });
 export interface ToolContext {
   taskId: string; runId: string; root: string; mode: 'read' | 'plan' | 'execute'; store: CodingStore; key: string;
-  cancelled: () => boolean; signal: AbortSignal; notify: (toolId?: string) => void;
+  cancelled: () => boolean; signal: AbortSignal; notify: (toolId?: string) => void; onTool?: (tool: ToolCall) => void; onStep?: (step: StepStatus) => void;
   plan?: PlanBody; pause?: 'needs_replan' | 'waiting_for_local_action'; pauseReason?: string;
   readImages: Map<string, FileImage>; calls: number;
 }
@@ -39,7 +39,7 @@ export function codingTools(ctx: ToolContext): ToolDefinition[] {
         const message = redact(error instanceof Error ? error.message : '工具执行失败'); append('\n' + message);
         // Tool errors are returned to Pi for correction, but paused/cancelled gates remain active.
         throw new Error(message);
-      } finally { record.endedAt = Date.now(); save(); }
+      } finally { record.endedAt = Date.now(); save(); ctx.onTool?.({ ...record }); }
     } };
   }
   async function read(path: string) {
@@ -74,7 +74,7 @@ export function codingTools(ctx: ToolContext): ToolDefinition[] {
       if (result.interaction) { ctx.pause = 'waiting_for_local_action'; ctx.pauseReason = '命令需要本机交互，请在外部终端处理后重新规划'; }
       append('\n' + JSON.stringify(result)); return { ...result, output: record.output, truncated: record.truncated };
     }),
-    tool('update_step', '报告批准计划步骤的进度；不代表测试通过。', Type.Object({ stepId: Type.String(), state: Type.Union([Type.Literal('running'), Type.Literal('completed'), Type.Literal('failed')]), note: Type.String() }), async p => { const steps = ctx.store.steps(ctx.taskId); if (!steps.some(s => s.stepId === p.stepId)) throw new Error('步骤不属于当前批准计划'); ctx.store.putSteps(ctx.taskId, steps.map(s => s.stepId === p.stepId ? { ...s, state: p.state, note: redact(p.note).slice(0, 2000) } as StepStatus : s)); return '进度已记录'; }),
+    tool('update_step', '报告批准计划步骤的进度；不代表测试通过。', Type.Object({ stepId: Type.String(), state: Type.Union([Type.Literal('running'), Type.Literal('completed'), Type.Literal('failed')]), note: Type.String() }), async p => { const steps = ctx.store.steps(ctx.taskId); if (!steps.some(s => s.stepId === p.stepId)) throw new Error('步骤不属于当前批准计划'); const next = steps.map(s => s.stepId === p.stepId ? { ...s, state: p.state, note: redact(p.note).slice(0, 2000) } as StepStatus : s); ctx.store.putSteps(ctx.taskId, next); ctx.onStep?.(next.find(s => s.stepId === p.stepId)!); return '进度已记录'; }),
     tool('request_replan', '范围扩大或需要额外外部动作时调用，立即封闭执行工具并生成待重新审阅的计划版本。', Type.Object({ reason: Type.String(), plan: planSchema }), async p => { ctx.plan = planBodySchema.parse(JSON.parse(redact(JSON.stringify(p.plan)))); ctx.pause = 'needs_replan'; ctx.pauseReason = p.reason.slice(0, 2000); return '已暂停，等待重新规划及用户批准'; }),
     tool('request_local_action', '需要用户在本机进行登录或其他交互时暂停，不能索取密码。', Type.Object({ reason: Type.String() }), async p => { ctx.pause = 'waiting_for_local_action'; ctx.pauseReason = p.reason.slice(0, 2000); return '已暂停，用户处理后需要重新规划'; }),
   );

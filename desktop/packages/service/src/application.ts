@@ -1,28 +1,37 @@
 import { CodingController } from './coding/controller.js';
 import { codingSchemas } from '../../protocol/src/coding.js';
+import { cloudSchemas } from '../../protocol/src/cloud.js';
+import { CloudSync, type CloudOptions } from './cloud/sync.js';
 import { rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import type { Api, Method, AppEvent, Run } from '../../protocol/src/index.js';
 import { parseInput } from '../../protocol/src/index.js';
 import { Store } from './store.js';
-import type { Credentials } from './keychain.js';
+import { MemoryCredentials, type Credentials } from './keychain.js';
 import type { AgentFactory, AgentHandle } from './pi-adapter.js';
 
 export class Application {
   private active: { run: Run; assistantId: string; agent?: AgentHandle; cancelled: boolean; done?: Promise<void> } | null = null;
   private testing = false;
   private serial: Promise<unknown> = Promise.resolve();
-  readonly coding: CodingController;
-  constructor(readonly store: Store, private credentials: Credentials, private factory: AgentFactory, private emit: (event: AppEvent) => void) { this.coding = new CodingController(store, credentials, factory, emit, () => this.idle()); }
+  readonly coding: CodingController; readonly cloud: CloudSync;
+  constructor(readonly store: Store, private credentials: Credentials, private factory: AgentFactory, private emit: (event: AppEvent) => void, cloud: { credentials?: Credentials; options?: CloudOptions } = {}) {
+    this.coding = new CodingController(store, credentials, factory, emit, () => this.idle());
+    this.cloud = new CloudSync({ store, coding: this.coding, credentials: cloud.credentials ?? new MemoryCredentials(), serial: fn => this.enqueue(fn), busy: () => this.busy(), emit }, cloud.options);
+    void this.cloud.start();
+  }
+  private enqueue<T>(fn: () => Promise<T>): Promise<T> { const result = this.serial.then(fn); this.serial = result.catch(() => {}); return result; }
   call<M extends Method>(method: M, raw: unknown): Promise<Api[M]['output']> {
     const input = parseInput(method, raw);
-    const result = this.serial.then(() => this.dispatch(method, input));
-    this.serial = result.catch(() => {});
+    const result = this.enqueue(() => this.dispatch(method, input));
     return result.then(value => value && typeof value === 'object' && 'deferred' in value ? (value as { deferred: Promise<unknown> }).deferred : value) as Promise<Api[M]['output']>;
   }
   private changed() { this.emit({ type: 'state.changed' }); }
-  private idle() { if (this.active || this.testing || this.coding.active) throw new Error('正在生成或测试连接，请先等待当前请求完成'); }
+  private busy() { return !!(this.active || this.testing || this.coding.active); }
+  private idle() { if (this.busy()) throw new Error('正在生成或测试连接，请先等待当前请求完成'); }
   private async dispatch(method: Method, data: any): Promise<unknown> {
+    if (Object.hasOwn(cloudSchemas, method)) return this.cloud.dispatch(method as keyof typeof cloudSchemas, data);
+    if (method === 'codingGet') { const detail = await this.coding.dispatch(method, data) as Api['codingGet']['output']; return { ...detail, cloud: this.cloud.taskInfo(detail.task.id) }; }
     if (Object.hasOwn(codingSchemas, method)) return this.coding.dispatch(method, data);
     switch (method) {
       case 'health': return { ok: true, version: '0.2.0' };
@@ -109,7 +118,7 @@ export class Application {
       this.emit({ type: state === 'completed' ? 'run.completed' : state === 'cancelled' ? 'run.cancelled' : 'run.failed', ...ids }); this.changed();
     }
   }
-  async shutdown() { await this.coding.shutdown(); if (this.active) { const active = this.active; active.cancelled = true; await active.agent?.abort(); await active.done; } }
+  async shutdown() { this.cloud.stop(); await this.coding.shutdown(); if (this.active) { const active = this.active; active.cancelled = true; await active.agent?.abort(); await active.done; } }
 }
 export function safeFailure(error: unknown): string {
   const text = error instanceof Error ? error.message : '';

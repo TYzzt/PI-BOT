@@ -23,6 +23,6 @@ test('v1 database migration preserves Ask history and v2 interruption never resu
     const project = { id: randomUUID(), name: 'fixture', path: '/unavailable-fixture', removed: false, createdAt: 1 }; coding.putProject(project);
     coding.putTask({ id: taskId, conversationId, projectId: project.id, requirement: 'interrupted', planModelId: modelId, executeModelId: modelId, state: 'executing', latestPlanId: null, activeRunId: runId, message: '', createdAt: 1 });
     store.finish(runId, 'running'); coding.putTool({ id: randomUUID(), taskId, runId, name: 'run_command', input: '{}', output: 'partial', state: 'running', startedAt: 1, endedAt: null, exitCode: null, verification: true, truncated: false, cwd: '/unavailable-fixture', path: '' }); store.close();
-    store = new Store(path); coding = new CodingStore(store); assert.equal(coding.task(taskId).state, 'interrupted'); assert.equal(store.run(runId).state, 'interrupted'); assert.equal(coding.tools(taskId)[0].state, 'interrupted'); assert.equal(coding.tools(taskId)[0].output, 'partial'); assert.equal((store.db.prepare('PRAGMA user_version').get() as any).user_version, 2); store.close();
+    store = new Store(path); coding = new CodingStore(store); assert.equal(coding.task(taskId).state, 'interrupted'); assert.equal(store.run(runId).state, 'interrupted'); assert.equal(coding.tools(taskId)[0].state, 'interrupted'); assert.equal(coding.tools(taskId)[0].output, 'partial'); assert.equal((store.db.prepare('PRAGMA user_version').get() as any).user_version, 3); store.close();
   } finally { dir.cleanup(); }
 });
