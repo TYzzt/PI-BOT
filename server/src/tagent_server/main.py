@@ -13,7 +13,9 @@ from tagent_server.bootstrap import bootstrap_admin
 from tagent_server.config import MAX_BODY_BYTES, Settings
 from tagent_server.migrate import upgrade_database
 from tagent_server.openapi_extra import SECURITY_SCHEMES
-from tagent_server.routers import auth, devices, health, projects
+from tagent_server.realtime import ChangeHub
+from tagent_server.routers import auth, device_sync, devices, events, health, plans, projects, tasks, ws
+from tagent_server.schemas import WS_MODELS
 
 logger = logging.getLogger(__name__)
 
@@ -43,15 +45,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         factory = sessionmaker(bind=engine)
         with factory() as session:
             bootstrap_admin(session, resolved.admin_password.get_secret_value())
+        hub = ChangeHub(resolved.database_url)
+        hub.start()
+        app.state.hub = hub
         try:
             yield
         finally:
+            hub.stop()
             engine.dispose()
 
     app = FastAPI(
         title="T-AGNET Server",
-        version="0.1.0",
-        description="阶段 1：单用户认证、设备配对与项目目录。不包含任务、聊天、事件回放和云端问答。",
+        version="0.2.0",
+        description=(
+            "阶段 2：单用户认证、设备配对、项目目录、持久任务、计划版本审批、设备命令投递与任务事件回放。"
+            "WebSocket：/ws/device（设备签名握手）与 /ws/events（用户 JWT），消息格式见 components 中 Ws* 模型。"
+            "不包含共享聊天、配置同步和云端问答。"
+        ),
         lifespan=lifespan,
         redirect_slashes=False,
     )
@@ -60,6 +70,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(auth.router)
     app.include_router(devices.router)
     app.include_router(projects.router)
+    app.include_router(tasks.router)
+    app.include_router(plans.router)
+    app.include_router(device_sync.router)
+    app.include_router(events.router)
+    app.include_router(ws.router)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(_request: Request, exc: RequestValidationError) -> JSONResponse:
@@ -79,6 +94,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         components = schema.setdefault("components", {})
         schemes = components.setdefault("securitySchemes", {})
         schemes.update(SECURITY_SCHEMES)
+        component_schemas = components.setdefault("schemas", {})
+        for model in WS_MODELS:
+            generated = model.model_json_schema(ref_template="#/components/schemas/{model}")
+            for name, definition in generated.pop("$defs", {}).items():
+                component_schemas.setdefault(name, definition)
+            component_schemas[model.__name__] = generated
         app.openapi_schema = schema
         return schema
 

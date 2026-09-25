@@ -31,4 +31,9 @@ def client(database_url: str, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     with TestClient(app) as test_client:
         yield test_client
         with app.state.engine.begin() as connection:
-            connection.execute(text("TRUNCATE device_nonces, projects, devices, pairing_codes, users RESTART IDENTITY CASCADE"))
+            connection.execute(
+                text(
+                    "TRUNCATE events, device_event_sequences, commands, plan_feedback, runs, approvals, plans, tasks, "
+                    "device_nonces, projects, devices, pairing_codes, users RESTART IDENTITY CASCADE"
+                )
+            )

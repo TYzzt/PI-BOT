@@ -4,7 +4,7 @@ from pathlib import Path
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-MAX_BODY_BYTES = 64 * 1024
+MAX_BODY_BYTES = 256 * 1024
 
 
 def utcnow() -> datetime:
@@ -29,3 +29,5 @@ class Settings(BaseSettings):
     presence_ttl_seconds: int = Field(default=60, ge=5, le=3600)
     pairing_ttl_seconds: int = Field(default=600, ge=30, le=3600)
     signature_skew_seconds: int = Field(default=300, ge=30, le=3600)
+    approval_ttl_seconds: int = Field(default=900, ge=60, le=86400)
+    command_ttl_seconds: int = Field(default=86400, ge=60, le=604800)

@@ -1,5 +1,5 @@
 import uuid
-from collections.abc import Generator
+from collections.abc import Generator, Mapping
 from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, HTTPException, Request
@@ -46,19 +46,29 @@ def require_user(request: Request, session: Session = Depends(get_session)) -> U
     return user
 
 
-def _required_header(request: Request, name: str) -> str:
-    value = request.headers.get(name, "").strip()
+def _required_header(headers: Mapping[str, str], name: str) -> str:
+    value = headers.get(name, "").strip()
     if not value:
         raise HTTPException(status_code=401, detail="设备认证失败")
     return value
 
 
 def authenticate_device(request: Request, session: Session, body: bytes) -> Device:
-    settings: Settings = request.app.state.settings
-    device_id_raw = _required_header(request, "x-tagnet-device-id")
-    timestamp = _required_header(request, "x-tagnet-timestamp")
-    nonce = _required_header(request, "x-tagnet-nonce")
-    signature = _required_header(request, "x-tagnet-signature")
+    return verify_device_request(request.headers, request.method, request.url.path, body, request.app.state.settings, session)
+
+
+def verify_device_request(
+    headers: Mapping[str, str],
+    method: str,
+    path: str,
+    body: bytes,
+    settings: Settings,
+    session: Session,
+) -> Device:
+    device_id_raw = _required_header(headers, "x-tagnet-device-id")
+    timestamp = _required_header(headers, "x-tagnet-timestamp")
+    nonce = _required_header(headers, "x-tagnet-nonce")
+    signature = _required_header(headers, "x-tagnet-signature")
     if len(nonce) < 16 or len(nonce) > 128 or len(signature) > 512:
         raise HTTPException(status_code=401, detail="设备认证失败")
     try:
@@ -72,7 +82,7 @@ def authenticate_device(request: Request, session: Session, body: bytes) -> Devi
     device = session.get(Device, device_id)
     if device is None or device.revoked_at is not None:
         raise HTTPException(status_code=401, detail="设备认证失败")
-    message = canonical_message(timestamp, nonce, request.method, request.url.path, body)
+    message = canonical_message(timestamp, nonce, method, path, body)
     try:
         verify_device_signature(device.public_key, signature, message)
     except AuthError as exc:

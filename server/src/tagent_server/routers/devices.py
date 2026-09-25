@@ -15,6 +15,7 @@ from tagent_server.openapi_extra import DEVICE_SECURITY, USER_SECURITY
 from tagent_server.present import device_out
 from tagent_server.schemas import DevicePublic, PairRequest, PairingCodeResponse
 from tagent_server.security import hash_pairing_code
+from tagent_server.tasks_service import notify_changes
 
 router = APIRouter(prefix="/devices", tags=["devices"])
 logger = logging.getLogger(__name__)
@@ -102,4 +103,5 @@ def revoke_device(
         raise HTTPException(status_code=404, detail="设备不存在")
     if device.revoked_at is None:
         device.revoked_at = utcnow()
+        notify_changes(session)
     return device_out(device, request.app.state.settings, utcnow())

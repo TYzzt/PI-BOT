@@ -39,10 +39,14 @@ def issue_token(user_id: uuid.UUID, settings: Settings, now: datetime) -> str:
 
 
 def read_user_id(token: str, settings: Settings) -> uuid.UUID:
+    return read_token(token, settings)[0]
+
+
+def read_token(token: str, settings: Settings) -> tuple[uuid.UUID, int]:
     try:
         payload = jwt.decode(token, settings.jwt_secret.get_secret_value(), algorithms=["HS256"])
-        return uuid.UUID(payload["sub"])
-    except (jwt.PyJWTError, KeyError, ValueError) as exc:
+        return uuid.UUID(payload["sub"]), int(payload["exp"])
+    except (jwt.PyJWTError, KeyError, ValueError, TypeError) as exc:
         raise AuthError from exc
 
 
