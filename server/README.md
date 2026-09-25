@@ -1,6 +1,6 @@
 # T-AGNET server
 
-云端第二阶段：单用户认证、设备配对、项目目录，加上持久任务、不可变计划版本、审批、设备命令投递和任务事件回放。FastAPI、PostgreSQL 16、Ed25519 设备签名、WebSocket。本阶段没有共享聊天、配置同步或 DeepAgents。
+云端第二阶段：单用户认证、设备配对、项目目录，加上持久任务、不可变计划版本、审批、设备命令投递和任务事件回放。FastAPI、PostgreSQL 16、Ed25519 设备签名、WebSocket。本阶段没有共享聊天、配置同步或 DeepAgents。为配合桌面端第三阶段，另加了设备签名的审批接口和审批 `actor` 字段（迁移 `0003`）。
 
 阶段目标和验收标准见 [PHASE-2.md](./PHASE-2.md)，第一阶段见 [PHASE-1.md](./PHASE-1.md)。
 
@@ -89,6 +89,9 @@ PYTHONPATH=src uv run python scripts/fake_device.py --password <管理员密码>
 - `POST /device/commands/{command_id}/ack`：确认接收。**设备必须拿到成功的 ack 后才开始执行**；过期或已失效的命令返回 409
 - `POST /tasks/{task_id}/plans`：发布计划版本，字段 `run_id`、`version`、`content_hash`、`body`、`workspace_fingerprint`、`config_snapshot_id`。版本号必须连续；同一版本同一 hash 重复发布返回原计划，不同内容返回 409
 - `POST /device/events`：批量上报（最多 100 条）`run.*`、`step.*`、`tool.*`、`artifact.available`。`event_id` 去重，响应中的 `gaps` 标出 `producer_seq` 跳号。`run.*` 事件更新运行和任务状态
+- `POST /device/plans/{plan_id}/approve`、`/reject`、`/revise`：请求体与用户接口相同，用设备签名代替 JWT，供 Mac 端直接审阅云端任务。只有任务的执行设备可以调用，其他设备返回 403。校验规则、幂等键和事务与用户接口共用同一套实现：用户和设备谁先批准谁生效，后到的重复批准返回同一个 approval 和 run，不会产生第二次执行
+
+审批和修改意见记录 `actor`（`user` 或 `device`），`ApprovalPublic.actor` 返回该值，`approval.recorded`、`approval.rejected`、`plan.revision_requested` 事件的 payload 里也带上。批准有效期 `T_AGNET_APPROVAL_TTL_SECONDS` 最小为 60 秒。
 
 任务状态：`queued`、`waiting_for_device`、`planning`、`awaiting_review`、`approved`、`running`、`waiting_for_input`、`waiting_for_local_action`、`needs_replan`、`interrupted`、`completed`、`failed`、`cancelled`、`rejected`。执行结果只能由设备事件推动，用户接口没有设置完成的入口；云端不会因为超时或设备离线把任务改成失败。批准过期（execute 命令在 ack 前到期）时任务回到 `awaiting_review`，可以重新批准。
 
@@ -167,4 +170,6 @@ uv run pytest
 
 ## 阶段边界
 
-共享消息与 `/conversations`、DeepAgents 云端问答、模型/Skills/MCP 配置和 skill 同步都不在本阶段。云端不保存代码目录，也不把设备在线状态写成任务状态。桌面端和 Android 的接入在各自阶段完成。
+共享消息与 `/conversations`、DeepAgents 云端问答、模型/Skills/MCP 配置和 skill 同步都不在本阶段。云端不保存代码目录，也不把设备在线状态写成任务状态。
+
+桌面端已在其第三阶段接入（见 [desktop/PHASE-3.md](../desktop/PHASE-3.md)）：配对、项目目录、计划发布、双端审批、命令执行和脱敏事件回传。桌面端的 `desktop/tests/cloud-e2e.test.ts` 可以对着本地 Compose 跑完整链路。Android 的接入在其自身阶段完成。
