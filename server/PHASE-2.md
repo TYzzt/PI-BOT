@@ -1,6 +1,6 @@
 # 第二阶段目标：持久任务、计划审批与设备投递
 
-状态：开发中。所属项目：T-AGNET server。
+状态：自动化测试已通过。所属项目：T-AGNET server。日期：2026-09-25。
 
 ## 可直接交给开发智能体的目标
 
@@ -43,7 +43,7 @@
 | S2-10 | 检查数据库文本和日志 | 没有源码、diff 或原始工具输出，tool 事件只含摘要 |
 | S2-11 | 对比运行中的 OpenAPI 与 `openapi.json` | 一致；包含 `/tasks`、`/plans`、`/events`，不含 `/conversations`、`/configs` |
 
-S2-01 至 S2-11 由 `uv run pytest` 覆盖。
+S2-01 至 S2-11 由 `uv run pytest` 覆盖（`tests/test_phase2.py`），2026-09-25 全部测试结果为 20 passed（含第一阶段 9 项），连续三次运行结果一致。同一天用 Compose 启动后请求 `/health` 返回 `{"ok":true}`，并用 `scripts/fake_device.py --demo` 通过真实 WebSocket 走完创建任务 → 计划 v1 → 修改意见 → v2 → 批准 → 执行 → 完成，事件 cursor 连续。
 
 ## 阶段边界
 
