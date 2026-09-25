@@ -104,6 +104,7 @@ RUN_STATES = (
 COMMAND_TYPES = ("plan_request", "plan_revise", "execute", "cancel")
 COMMAND_STATUSES = ("pending", "delivered", "acked", "expired", "superseded")
 APPROVAL_STATUSES = ("recorded", "rejected", "expired")
+ACTORS = ("user", "device")
 
 
 def _in(column: str, values: tuple[str, ...]) -> str:
@@ -145,12 +146,14 @@ class Plan(Base):
 
 class PlanFeedback(Base):
     __tablename__ = "plan_feedback"
+    __table_args__ = (CheckConstraint(_in("actor", ACTORS), name="plan_feedback_actor_check"),)
 
     feedback_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     task_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tasks.task_id"), nullable=False, index=True)
     plan_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("plans.plan_id"), nullable=False)
     run_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
     feedback: Mapped[str] = mapped_column(Text, nullable=False)
+    actor: Mapped[str] = mapped_column(Text, nullable=False, server_default="user")
     idempotency_key: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
@@ -159,6 +162,7 @@ class Approval(Base):
     __tablename__ = "approvals"
     __table_args__ = (
         CheckConstraint(_in("status", APPROVAL_STATUSES), name="approvals_status_check"),
+        CheckConstraint(_in("actor", ACTORS), name="approvals_actor_check"),
         Index("approvals_active_plan", "plan_id", unique=True, postgresql_where=text("status IN ('recorded', 'rejected')")),
     )
 
@@ -170,6 +174,7 @@ class Approval(Base):
     device_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("devices.device_id"), nullable=False)
     project_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("projects.project_id"), nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False)
+    actor: Mapped[str] = mapped_column(Text, nullable=False, server_default="user")
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     idempotency_key: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)

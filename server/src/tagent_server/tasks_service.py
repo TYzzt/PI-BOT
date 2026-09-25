@@ -146,6 +146,14 @@ def _require_target_usable(session: Session, task: Task) -> Device:
     return device
 
 
+def _require_actor_device(task: Task, device_id: uuid.UUID | None) -> str:
+    if device_id is None:
+        return "user"
+    if task.target_device_id != device_id:
+        raise HTTPException(status_code=403, detail="只有任务的执行设备可以审批")
+    return "device"
+
+
 def _require_latest(task: Task, plan: Plan) -> None:
     if plan.superseded_at is not None or task.latest_plan_id != plan.plan_id:
         raise HTTPException(status_code=409, detail="计划已被新版本取代")
@@ -330,9 +338,17 @@ def publish_plan(session: Session, device: Device, task_id: uuid.UUID, payload: 
     return plan
 
 
-def approve_plan(session: Session, settings: Settings, plan_id: uuid.UUID, payload: ApproveRequest, now: datetime) -> tuple[Approval, Run]:
+def approve_plan(
+    session: Session,
+    settings: Settings,
+    plan_id: uuid.UUID,
+    payload: ApproveRequest,
+    now: datetime,
+    device_id: uuid.UUID | None = None,
+) -> tuple[Approval, Run]:
     write_lock(session)
     plan, task = _get_plan(session, plan_id)
+    actor = _require_actor_device(task, device_id)
     if payload.version != plan.version or payload.content_hash != plan.content_hash:
         raise HTTPException(status_code=409, detail="计划版本或 hash 不匹配")
     by_key = session.scalars(select(Approval).where(Approval.idempotency_key == payload.idempotency_key)).first()
@@ -355,6 +371,7 @@ def approve_plan(session: Session, settings: Settings, plan_id: uuid.UUID, paylo
         device_id=task.target_device_id,
         project_id=task.project_id,
         status="recorded",
+        actor=actor,
         expires_at=now + timedelta(seconds=settings.approval_ttl_seconds),
         idempotency_key=payload.idempotency_key,
         created_at=now,
@@ -392,6 +409,7 @@ def approve_plan(session: Session, settings: Settings, plan_id: uuid.UUID, paylo
             "plan_id": str(plan.plan_id),
             "version": plan.version,
             "expires_at": approval.expires_at.isoformat(),
+            "actor": actor,
         },
     )
     set_task_status(session, task, "approved", now)
@@ -404,9 +422,16 @@ def _run_for_approval(session: Session, approval: Approval) -> Run:
     return run
 
 
-def reject_plan(session: Session, plan_id: uuid.UUID, payload: RejectRequest, now: datetime) -> Task:
+def reject_plan(
+    session: Session,
+    plan_id: uuid.UUID,
+    payload: RejectRequest,
+    now: datetime,
+    device_id: uuid.UUID | None = None,
+) -> Task:
     write_lock(session)
     plan, task = _get_plan(session, plan_id)
+    actor = _require_actor_device(task, device_id)
     by_key = session.scalars(select(Approval).where(Approval.idempotency_key == payload.idempotency_key)).first()
     if by_key is not None:
         if by_key.plan_id != plan.plan_id or by_key.status != "rejected":
@@ -423,6 +448,7 @@ def reject_plan(session: Session, plan_id: uuid.UUID, payload: RejectRequest, no
         device_id=task.target_device_id,
         project_id=task.project_id,
         status="rejected",
+        actor=actor,
         expires_at=None,
         idempotency_key=payload.idempotency_key,
         created_at=now,
@@ -434,15 +460,23 @@ def reject_plan(session: Session, plan_id: uuid.UUID, payload: RejectRequest, no
         type="approval.rejected",
         task_id=task.task_id,
         now=now,
-        payload={"approval_id": str(approval.approval_id), "plan_id": str(plan.plan_id), "version": plan.version},
+        payload={"approval_id": str(approval.approval_id), "plan_id": str(plan.plan_id), "version": plan.version, "actor": actor},
     )
     set_task_status(session, task, "rejected", now)
     return task
 
 
-def revise_plan(session: Session, settings: Settings, plan_id: uuid.UUID, payload: ReviseRequest, now: datetime) -> Task:
+def revise_plan(
+    session: Session,
+    settings: Settings,
+    plan_id: uuid.UUID,
+    payload: ReviseRequest,
+    now: datetime,
+    device_id: uuid.UUID | None = None,
+) -> Task:
     write_lock(session)
     plan, task = _get_plan(session, plan_id)
+    actor = _require_actor_device(task, device_id)
     by_key = session.scalars(select(PlanFeedback).where(PlanFeedback.idempotency_key == payload.idempotency_key)).first()
     if by_key is not None:
         if by_key.plan_id != plan.plan_id:
@@ -459,6 +493,7 @@ def revise_plan(session: Session, settings: Settings, plan_id: uuid.UUID, payloa
             plan_id=plan.plan_id,
             run_id=run.run_id,
             feedback=payload.feedback,
+            actor=actor,
             idempotency_key=payload.idempotency_key,
             created_at=now,
         )
@@ -485,7 +520,7 @@ def revise_plan(session: Session, settings: Settings, plan_id: uuid.UUID, payloa
         task_id=task.task_id,
         run_id=run.run_id,
         now=now,
-        payload={"plan_id": str(plan.plan_id), "version": plan.version},
+        payload={"plan_id": str(plan.plan_id), "version": plan.version, "actor": actor},
     )
     set_task_status(session, task, _queue_status(device, settings, now), now)
     return task

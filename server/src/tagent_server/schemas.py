@@ -280,6 +280,7 @@ class ApprovalPublic(BaseModel):
     device_id: uuid.UUID
     project_id: uuid.UUID
     status: Literal["recorded", "rejected", "expired"]
+    actor: Literal["user", "device"]
     expires_at: datetime | None
     created_at: datetime
 

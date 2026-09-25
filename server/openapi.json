@@ -3,6 +3,14 @@
     "schemas": {
       "ApprovalPublic": {
         "properties": {
+          "actor": {
+            "enum": [
+              "user",
+              "device"
+            ],
+            "title": "Actor",
+            "type": "string"
+          },
           "approval_id": {
             "format": "uuid",
             "title": "Approval Id",
@@ -78,6 +86,7 @@
           "device_id",
           "project_id",
           "status",
+          "actor",
           "expires_at",
           "created_at"
         ],
@@ -2033,6 +2042,189 @@
           }
         ],
         "summary": "Upload Events",
+        "tags": [
+          "device"
+        ]
+      }
+    },
+    "/device/plans/{plan_id}/approve": {
+      "post": {
+        "operationId": "device_approve_device_plans__plan_id__approve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "plan_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Plan Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApproveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "DeviceId": [],
+            "DeviceNonce": [],
+            "DeviceSignature": [],
+            "DeviceTimestamp": []
+          }
+        ],
+        "summary": "Device Approve",
+        "tags": [
+          "device"
+        ]
+      }
+    },
+    "/device/plans/{plan_id}/reject": {
+      "post": {
+        "operationId": "device_reject_device_plans__plan_id__reject_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "plan_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Plan Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RejectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "DeviceId": [],
+            "DeviceNonce": [],
+            "DeviceSignature": [],
+            "DeviceTimestamp": []
+          }
+        ],
+        "summary": "Device Reject",
+        "tags": [
+          "device"
+        ]
+      }
+    },
+    "/device/plans/{plan_id}/revise": {
+      "post": {
+        "operationId": "device_revise_device_plans__plan_id__revise_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "plan_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Plan Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "DeviceId": [],
+            "DeviceNonce": [],
+            "DeviceSignature": [],
+            "DeviceTimestamp": []
+          }
+        ],
+        "summary": "Device Revise",
         "tags": [
           "device"
         ]

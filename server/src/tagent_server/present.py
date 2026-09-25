@@ -124,6 +124,7 @@ def approval_public(approval: Approval, run: Run) -> ApprovalPublic:
         device_id=approval.device_id,
         project_id=approval.project_id,
         status=approval.status,  # type: ignore[arg-type]
+        actor=approval.actor,  # type: ignore[arg-type]
         expires_at=approval.expires_at,
         created_at=approval.created_at,
     )
