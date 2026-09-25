@@ -1,8 +1,8 @@
 # T-AGNET desktop
 
-macOS 个人智能体桌面应用：本地 Ask + Git 项目编程闭环。Electron + React + TypeScript + Vite / Electron Forge，独立 Node.js 24 服务，真实 Pi SDK，SQLite 和 macOS Keychain。
+macOS 个人智能体桌面应用：本地 Ask + 项目代码问答 + Git 项目编程闭环。Electron + React + TypeScript + Vite / Electron Forge，独立 Node.js 24 服务，真实 Pi SDK，SQLite 和 macOS Keychain。
 
-**当前状态：第二阶段已实现并完成自动化与真实模型验收。** 支持项目管理、只读计划、审阅批准、代码编辑、非交互命令、diff 和验证记录。Skills、MCP、Chrome、交互终端和三端同步尚未开放。
+**当前状态：第二阶段已实现并完成自动化与真实模型验收。** 支持项目管理、直接读代码问答、只读计划、审阅批准、代码编辑、非交互命令、diff 和验证记录。Skills、MCP、Chrome、交互终端和三端同步尚未开放。
 
 编程使用说明见 [PHASE-2.md](./PHASE-2.md)，验收证据见 [VALIDATION-PHASE-2.md](./VALIDATION-PHASE-2.md)。
 
@@ -30,6 +30,12 @@ npm run dev
 
 默认模型用于新会话；已有会话保持原配置绑定。配置修改在下一次运行生效，运行或测试期间禁止改配置。删除被引用的模型须选择替代模型。全局只允许一个生成或连接测试；生成期间可以浏览其他会话。
 
+## 项目代码问答
+
+打开「项目与编程」并选择 Git 项目，默认使用「读代码」：直接输入问题即可获得回答，无需计划或批准。回答流式显示在「对话与结果」，历史按时间保存，重启后可继续追问。「阅读记录」只展示读取、搜索等工具过程。
+
+需要修改时选择「改代码」，或在已有项目对话输入需求并点击「生成修改计划」；审阅批准后才执行。普通「提问」始终只读，即使当前会话已经有修改计划。
+
 ## 模块与边界
 
 ```mermaid
@@ -37,7 +43,7 @@ flowchart LR
   UI[React renderer] -->|白名单 preload API| Main[Electron main]
   Main -->|Unix socket + 握手令牌| Service[Node 24 service]
   Service --> Store[(SQLite: UI 历史 / 配置 / 运行)]
-  Service --> Pi[Pi adapter: Ask / Plan / Execute]
+  Service --> Pi[Pi adapter: Ask / Read / Plan / Execute]
   Pi --> Sessions[(应用专属 Pi sessions)]
   Service --> Coding[项目 / Plan 版本 / 批准 / 基线 diff]
   Coding --> Tools[按模式注册工具 / 非交互命令监控器]
@@ -52,7 +58,7 @@ flowchart LR
 - `packages/protocol`：应用自己的请求/事件和 Zod 输入校验，不向 renderer 暴露 Pi 对象。
 - `native`：Keychain helper；`scripts`：构建和开发启动器；`tests`：适配器、存储、凭据和 Electron 测试。
 
-Pi SDK 固定为 `0.87.1`。Ask 显式禁用所有工具，编程按 Plan / Execute 注册不同工具集；所有模式禁用自动资源发现。不会加载用户原有 Pi 配置、项目 AGENTS 文件、Skills、扩展或命令模板。输入的 `/` 前缀按普通文本处理。运行结束依据 SDK 最终生命周期；中间 turn 结束不会提前将任务标为完成。禁用自动重试和自动上下文压缩，服务恢复不会自动重发模型请求。
+Pi SDK 固定为 `0.87.1`。Ask 显式禁用所有工具，项目会话按 Read / Plan / Execute 注册不同工具集；所有模式禁用自动资源发现。不会加载用户原有 Pi 配置、项目 AGENTS 文件、Skills、扩展或命令模板。输入的 `/` 前缀按普通文本处理。运行结束依据 SDK 最终生命周期；中间 turn 结束不会提前将任务标为完成。禁用自动重试和自动上下文压缩，服务恢复不会自动重发模型请求。
 
 renderer 使用 sandbox、contextIsolation、无 Node 权限；导航和新窗口禁用。Markdown 禁用原始 HTML、远程图片；HTTP(S) 外部链接交给系统浏览器。所有模型网络请求都由本地服务执行，界面不直接联网。
 

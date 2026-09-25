@@ -21,6 +21,7 @@ test('code reading defaults to direct chat and shows all answers without a plan'
     await page.getByLabel('继续问代码').fill('继续解释原因'); await page.getByRole('button', { name: '提问', exact: true }).click(); await expect(page.getByLabel('项目对话记录')).toContainText('接着上次的说明', { timeout: 20000 });
     await expect(page.getByLabel('项目对话记录')).toContainText('返回两个参数的差值'); await expect(page.getByLabel('继续问代码')).toHaveValue('');
     expect(readFileSync(join(root, 'main.mjs'), 'utf8')).toContain('a - b');
+    await expect(page.getByRole('button', { name: '提问', exact: true })).toBeInViewport();
     await page.screenshot({ path: 'work/read-chat.png', animations: 'disabled' });
     await app.close(); app = await electron.launch({ executablePath: resolve('node_modules/electron/dist/Electron.app/Contents/MacOS/Electron'), args: [resolve('apps/desktop')], env }); page = await app.firstWindow();
     await expect(page.getByText('本地服务已连接', { exact: true })).toBeVisible(); await page.getByRole('button', { name: /解释 add 的行为/ }).click(); await expect(page.getByLabel('项目对话记录')).toContainText('接着上次的说明');
