@@ -305,6 +305,88 @@ data class WsSubscribe(val type: String = "subscribe", val after: Long)
 @Serializable
 data class WsEnvelope(val type: String, val event: EventPublic? = null, val detail: String? = null)
 
+@Serializable
+data class ConfigReason(val code: String, val detail: String = "")
+
+@Serializable
+data class DeviceConfigState(
+    @SerialName("device_id") val deviceId: String,
+    val label: String = "",
+    val state: String,
+    @SerialName("checked_version") val checkedVersion: Int = 0,
+    val reasons: List<ConfigReason> = emptyList(),
+    @SerialName("applied_version") val appliedVersion: Int = 0,
+)
+
+@Serializable
+data class SkillFile(val path: String, val content: String)
+
+@Serializable
+data class SkillRequires(
+    val commands: List<String> = emptyList(),
+    val platforms: List<String> = emptyList(),
+    val scripts: List<String> = emptyList(),
+    val mcp: List<String> = emptyList(),
+)
+
+@Serializable
+data class SkillConfig(
+    val name: String,
+    val description: String = "",
+    val content: String,
+    val files: List<SkillFile> = emptyList(),
+    val runtime: String = "mac",
+    val enabled: Boolean = true,
+    val requires: SkillRequires = SkillRequires(),
+    @SerialName("install_hint") val installHint: String? = null,
+)
+
+@Serializable
+data class McpEnv(val name: String, val value: String? = null, @SerialName("secret_ref") val secretRef: String? = null)
+
+@Serializable
+data class McpConfig(
+    val name: String,
+    val transport: String = "stdio",
+    val command: String? = null,
+    val args: List<String> = emptyList(),
+    val url: String? = null,
+    @SerialName("timeout_ms") val timeoutMs: Int = 30000,
+    val env: List<McpEnv> = emptyList(),
+    val runtime: String = "mac",
+    val enabled: Boolean = true,
+    @SerialName("disabled_tools") val disabledTools: List<String> = emptyList(),
+)
+
+@Serializable
+data class SkillPublic(
+    val id: String,
+    val version: Int,
+    @SerialName("content_hash") val contentHash: String,
+    val deleted: Boolean = false,
+    val devices: List<DeviceConfigState> = emptyList(),
+    val config: SkillConfig,
+)
+
+@Serializable
+data class McpServerPublic(
+    val id: String,
+    val version: Int,
+    @SerialName("content_hash") val contentHash: String,
+    val deleted: Boolean = false,
+    val devices: List<DeviceConfigState> = emptyList(),
+    val config: McpConfig,
+)
+
+@Serializable
+private data class SkillWriteBody(@SerialName("expected_version") val expectedVersion: Int, @SerialName("request_id") val requestId: String, val config: SkillConfig)
+
+@Serializable
+private data class McpWriteBody(@SerialName("expected_version") val expectedVersion: Int, @SerialName("request_id") val requestId: String, val config: McpConfig)
+
+@Serializable
+private data class ConfigDeleteBody(@SerialName("expected_version") val expectedVersion: Int, @SerialName("request_id") val requestId: String)
+
 class ApiException(val status: Int, message: String) : Exception(message)
 
 class TagentApi(private val http: OkHttpClient, private val json: Json = API_JSON) {
@@ -359,6 +441,20 @@ class TagentApi(private val http: OkHttpClient, private val json: Json = API_JSO
 
     fun handoff(url: ServerUrl, token: String, id: String, sourceId: String, modelId: String, requestId: String): ConversationPublic =
         post("${url.base}/cloud/conversations/$id/handoff-from/$sourceId", token, HandoffBody(requestId, modelId))
+
+    fun skills(url: ServerUrl, token: String): List<SkillPublic> = get("${url.base}/configs/skills", token)
+
+    fun mcpServers(url: ServerUrl, token: String): List<McpServerPublic> = get("${url.base}/configs/mcp-servers", token)
+
+    fun putSkill(url: ServerUrl, token: String, id: String, expectedVersion: Int, requestId: String, config: SkillConfig): SkillPublic =
+        put("${url.base}/configs/skills/$id", token, SkillWriteBody(expectedVersion, requestId, config))
+
+    fun putMcp(url: ServerUrl, token: String, id: String, expectedVersion: Int, requestId: String, config: McpConfig): McpServerPublic =
+        put("${url.base}/configs/mcp-servers/$id", token, McpWriteBody(expectedVersion, requestId, config))
+
+    /** [path] is "skills" or "mcp-servers". */
+    fun deleteConfig(url: ServerUrl, token: String, path: String, id: String, expectedVersion: Int, requestId: String): JsonObject =
+        post("${url.base}/configs/$path/$id/delete", token, ConfigDeleteBody(expectedVersion, requestId))
 
     private inline fun <reified T> get(url: String, token: String): T = execute(Request.Builder().url(url).header("Authorization", "Bearer $token").build())
 

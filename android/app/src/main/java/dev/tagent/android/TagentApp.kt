@@ -15,6 +15,7 @@ import dev.tagent.android.data.SessionStore
 import dev.tagent.android.data.TagentRepository
 import dev.tagent.android.data.api.TagentApi
 import dev.tagent.android.data.db.MIGRATION_2_3
+import dev.tagent.android.data.db.MIGRATION_3_4
 import dev.tagent.android.data.db.TagentDatabase
 import dev.tagent.android.work.SyncWorker
 import kotlinx.coroutines.CoroutineScope
@@ -36,7 +37,7 @@ class TagentApp : Application(), Configuration.Provider {
     override fun onCreate() {
         super.onCreate()
         val database = Room.databaseBuilder(this, TagentDatabase::class.java, "tagent.db")
-            .addMigrations(MIGRATION_2_3)
+            .addMigrations(MIGRATION_2_3, MIGRATION_3_4)
             .fallbackToDestructiveMigration(dropAllTables = true)
             .build()
         val http = OkHttpClient.Builder().build()

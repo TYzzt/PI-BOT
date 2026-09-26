@@ -16,7 +16,10 @@ import dev.tagent.android.data.api.TaskDetail
 import dev.tagent.android.data.api.TaskSummary
 import dev.tagent.android.data.api.WsEnvelope
 import dev.tagent.android.data.api.WsSubscribe
+import dev.tagent.android.data.api.McpConfig
+import dev.tagent.android.data.api.SkillConfig
 import dev.tagent.android.data.db.ChatRunEntity
+import dev.tagent.android.data.db.ConfigDocEntity
 import dev.tagent.android.data.db.ConversationEntity
 import dev.tagent.android.data.db.DeviceEntity
 import dev.tagent.android.data.db.EventEntity
@@ -30,6 +33,11 @@ import dev.tagent.android.data.db.TagentDatabase
 import dev.tagent.android.data.db.TaskEntity
 import dev.tagent.android.domain.ActionException
 import dev.tagent.android.domain.ApproveDecision
+import dev.tagent.android.domain.CONFIG_CONFLICT
+import dev.tagent.android.domain.KIND_MCP
+import dev.tagent.android.domain.KIND_SKILL
+import dev.tagent.android.domain.validateMcp
+import dev.tagent.android.domain.validateSkill
 import dev.tagent.android.domain.QuestionDecision
 import dev.tagent.android.domain.ReviewBlock
 import dev.tagent.android.domain.SendDecision
@@ -96,6 +104,8 @@ class TagentRepository(
     fun observeConversation(conversationId: String) = dao.observeConversation(conversationId)
     fun observeMessages(conversationId: String) = dao.observeMessages(conversationId)
     fun observeLatestChatRun(conversationId: String) = dao.observeLatestChatRun(conversationId)
+    fun observeConfigs(kind: String) = dao.observeConfigs(kind)
+    fun observeConfig(id: String) = dao.observeConfig(id)
 
     suspend fun peekOutbox(id: String): OutboxEntity? = dao.outbox(id)
 
@@ -137,6 +147,8 @@ class TagentRepository(
                 val conversations = withContext(Dispatchers.IO) { api.conversations(url, token) }
                 dao.replaceDirectory(devices.map { it.toEntity() }, projects.map { it.toEntity() }, tasks.map { it.toEntity() })
                 dao.replaceConversations(conversations.map { it.toEntity() })
+                // Older servers have no config endpoints; the rest of the catch-up still counts.
+                runCatching { loadConfigs(url, token) }
                 val open = openConversationId
                 if (open != null && conversations.any { it.id == open }) loadMessages(url, token, open)
                 var after = dao.meta()?.cursor ?: 0
@@ -388,6 +400,55 @@ class TagentRepository(
         savePlan(plan)
     }
 
+    suspend fun saveSkill(id: String?, expectedVersion: Int, config: SkillConfig): String {
+        validateSkill(config)?.let { throw ActionException(it) }
+        val target = id ?: UUID.randomUUID().toString()
+        writeConfig { url, token -> api.putSkill(url, token, target, expectedVersion, UUID.randomUUID().toString(), config) }
+        return target
+    }
+
+    suspend fun saveMcp(id: String?, expectedVersion: Int, config: McpConfig): String {
+        validateMcp(config)?.let { throw ActionException(it) }
+        val target = id ?: UUID.randomUUID().toString()
+        writeConfig { url, token -> api.putMcp(url, token, target, expectedVersion, UUID.randomUUID().toString(), config) }
+        return target
+    }
+
+    suspend fun deleteConfig(kind: String, id: String, expectedVersion: Int) {
+        val path = if (kind == KIND_SKILL) "skills" else "mcp-servers"
+        writeConfig { url, token -> api.deleteConfig(url, token, path, id, expectedVersion, UUID.randomUUID().toString()) }
+    }
+
+    suspend fun refreshConfigs() {
+        withContext(Dispatchers.IO) { loadConfigs(requireUrl(), requireToken()) }
+    }
+
+    private suspend fun writeConfig(call: (ServerUrl, String) -> Any) {
+        if (!online()) throw ActionException("需要连接云端后才能修改配置")
+        val url = requireUrl()
+        val token = requireToken()
+        try {
+            withContext(Dispatchers.IO) { call(url, token) }
+        } catch (error: ApiException) {
+            // Version conflicts come back with a structured detail; show the latest copy instead of overwriting it.
+            if ((error.status == 409 && error.message != "名称已存在") || error.status == 410) {
+                runCatching { withContext(Dispatchers.IO) { loadConfigs(url, token) } }
+                throw ActionException(if (error.status == 410) "配置已被删除" else CONFIG_CONFLICT)
+            }
+            throw asAction(error, "网络中断，配置未保存")
+        } catch (error: IOException) {
+            throw ActionException("网络中断，配置未保存")
+        }
+        runCatching { withContext(Dispatchers.IO) { loadConfigs(url, token) } }
+    }
+
+    private suspend fun loadConfigs(url: ServerUrl, token: String) {
+        val skills = api.skills(url, token)
+        val servers = api.mcpServers(url, token)
+        dao.replaceConfigs(KIND_SKILL, skills.map { ConfigDocEntity(it.id, KIND_SKILL, it.config.name, it.version, API_JSON.encodeToString(it)) })
+        dao.replaceConfigs(KIND_MCP, servers.map { ConfigDocEntity(it.id, KIND_MCP, it.config.name, it.version, API_JSON.encodeToString(it)) })
+    }
+
     private suspend fun refreshShared(event: EventPublic) {
         mutex.withLock {
             val url = session.currentUrl(allowCleartext) ?: return
@@ -477,6 +538,7 @@ class TagentRepository(
         val taskId = event.taskId
         if (taskId != null) runCatching { refreshTask(taskId) }
         if (event.type in SHARED_CHANGE_TYPES) runCatching { refreshShared(event) }
+        if (event.type in CONFIG_CHANGE_TYPES) runCatching { refreshConfigs() }
     }
 
     private suspend fun prepareSend(id: String, kind: String, targetId: String, text: String): SendDecision {
@@ -579,6 +641,7 @@ private fun JsonObject.stringField(name: String): String? {
 }
 
 private val SHARED_CHANGE_TYPES = setOf("conversation.changed", "message.changed", "chat_run.changed")
+private val CONFIG_CHANGE_TYPES = setOf("skill.changed", "mcp_server.changed")
 
 private fun asAction(error: Exception, offline: String): Exception = when (error) {
     is ActionException -> error

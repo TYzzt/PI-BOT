@@ -157,6 +157,16 @@ data class ChatRunEntity(
     val seenAt: Long,
 )
 
+/** Shared skill or MCP document cached for offline viewing; [json] is the server's public form. */
+@Entity(tableName = "config_docs")
+data class ConfigDocEntity(
+    @PrimaryKey val id: String,
+    val kind: String,
+    val name: String,
+    val version: Int,
+    val json: String,
+)
+
 @Entity(tableName = "meta")
 data class MetaEntity(
     @PrimaryKey val id: Int = 1,
@@ -357,6 +367,24 @@ interface TagentDao {
         if (messages.isNotEmpty()) upsertMessages(messages)
     }
 
+    @Query("SELECT * FROM config_docs WHERE kind = :kind ORDER BY name")
+    fun observeConfigs(kind: String): Flow<List<ConfigDocEntity>>
+
+    @Query("SELECT * FROM config_docs WHERE id = :id")
+    fun observeConfig(id: String): Flow<ConfigDocEntity?>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertConfigs(docs: List<ConfigDocEntity>)
+
+    @Query("DELETE FROM config_docs WHERE kind = :kind AND id NOT IN (:ids)")
+    suspend fun deleteConfigsExcept(kind: String, ids: List<String>)
+
+    @Transaction
+    suspend fun replaceConfigs(kind: String, docs: List<ConfigDocEntity>) {
+        if (docs.isNotEmpty()) upsertConfigs(docs)
+        deleteConfigsExcept(kind, docs.map { it.id }.ifEmpty { listOf("") })
+    }
+
     @Transaction
     suspend fun replaceDirectory(devices: List<DeviceEntity>, projects: List<ProjectEntity>, tasks: List<TaskEntity>) {
         clearDevices()
@@ -383,8 +411,9 @@ interface TagentDao {
         ConversationEntity::class,
         MessageEntity::class,
         ChatRunEntity::class,
+        ConfigDocEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 abstract class TagentDatabase : androidx.room.RoomDatabase() {
@@ -395,5 +424,11 @@ val MIGRATION_2_3 = object : androidx.room.migration.Migration(2, 3) {
     override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
         db.execSQL("ALTER TABLE conversations ADD COLUMN target TEXT NOT NULL DEFAULT 'mac'")
         db.execSQL("ALTER TABLE conversations ADD COLUMN handoffCount INTEGER NOT NULL DEFAULT 0")
+    }
+}
+
+val MIGRATION_3_4 = object : androidx.room.migration.Migration(3, 4) {
+    override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS config_docs (id TEXT NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL, version INTEGER NOT NULL, json TEXT NOT NULL, PRIMARY KEY(id))")
     }
 }

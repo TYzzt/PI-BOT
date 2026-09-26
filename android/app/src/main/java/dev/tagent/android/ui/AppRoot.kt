@@ -5,6 +5,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -50,7 +51,7 @@ private fun MainScaffold(repository: TagentRepository) {
     val nav = rememberNavController()
     val entry by nav.currentBackStackEntryAsState()
     val route = entry?.destination?.route
-    val tabs = route == "projects" || route == "tasks" || route == "chats"
+    val tabs = route == "projects" || route == "tasks" || route == "chats" || route == "configs"
     Scaffold(
         bottomBar = {
             if (tabs) {
@@ -73,6 +74,12 @@ private fun MainScaffold(repository: TagentRepository) {
                         label = { Text("聊天") },
                         icon = { Icon(Icons.Filled.Email, contentDescription = null) },
                     )
+                    NavigationBarItem(
+                        selected = route == "configs",
+                        onClick = { nav.navigate("configs") { popUpTo(nav.graph.findStartDestination().id) { saveState = true }; launchSingleTop = true; restoreState = true } },
+                        label = { Text("配置") },
+                        icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
+                    )
                 }
             }
         },
@@ -81,6 +88,10 @@ private fun MainScaffold(repository: TagentRepository) {
             composable("projects") { ProjectListScreen(repository, onOpen = { nav.navigate("new/$it") }, onLogout = { repository.logout() }) }
             composable("tasks") { TaskListScreen(repository, onOpen = { nav.navigate("task/$it") }) }
             composable("chats") { ChatListScreen(repository, onOpen = { nav.navigate("chat/$it") }) }
+            composable("configs") { ConfigListScreen(repository, onOpen = { kind, id -> nav.navigate("config/$kind/$id") }) }
+            composable("config/{kind}/{id}") { entry ->
+                ConfigEditScreen(repository, entry.arguments?.getString("kind").orEmpty(), entry.arguments?.getString("id").orEmpty(), onBack = { nav.popBackStack() })
+            }
             composable("chat/{conversationId}") { entry ->
                 ChatScreen(repository, entry.arguments?.getString("conversationId").orEmpty(), onBack = { nav.popBackStack() }, onOpen = { nav.navigate("chat/$it") })
             }
