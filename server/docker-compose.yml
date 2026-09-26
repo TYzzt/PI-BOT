@@ -40,5 +40,20 @@ services:
       retries: 12
       start_period: 20s
 
+  # DeepAgents worker for cloud chat. Same image; waits for the API so migrations have run.
+  worker:
+    build: .
+    command: ["uv", "run", "--no-dev", "python", "-m", "tagent_server.worker"]
+    environment:
+      T_AGNET_DATABASE_URL: postgresql+psycopg://tagent:tagent@postgres:5432/tagent
+      T_AGNET_ADMIN_PASSWORD: ${T_AGNET_ADMIN_PASSWORD:?set T_AGNET_ADMIN_PASSWORD}
+      T_AGNET_JWT_SECRET: ${T_AGNET_JWT_SECRET:?set T_AGNET_JWT_SECRET}
+      T_AGNET_TAVILY_API_KEY: ${T_AGNET_TAVILY_API_KEY:-}
+      T_AGNET_WORKER_LEASE_SECONDS: ${T_AGNET_WORKER_LEASE_SECONDS:-60}
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   pgdata:

@@ -17,7 +17,7 @@ from tagent_server.shared_schemas import ModelPublic, ConversationPublic, ChatRu
 router = APIRouter(tags=['shared'])
 TERMINAL = {'completed', 'failed', 'cancelled', 'interrupted'}
 # Worker bookkeeping and credential ciphertext never leave the server.
-PRIVATE = {'secret', 'worker_id', 'lease_until', 'generation', 'handoff_messages'}
+PRIVATE = {'secret', 'worker_id', 'lease_until', 'generation'}
 CAPABILITY = 'shared_v1'
 class Strict(BaseModel):
     model_config = ConfigDict(extra='forbid')

@@ -54,6 +54,7 @@ class ChatRunPublic(Identity):
     acked: bool
     cancel_requested: bool
     local_run_id: uuid.UUID | None
+    error: str | None = None
 class MessagePage(BaseModel):
     pending_messages: list[MessagePublic]
     messages: list[MessagePublic]
