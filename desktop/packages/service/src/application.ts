@@ -4,6 +4,9 @@ import { ConfigSync, configMethods, type ConfigMethod, type ConfigHost } from '.
 import { dataDir } from './paths.js';
 import { join } from 'node:path';
 import { CodingController } from './coding/controller.js';
+import { BrowserService } from './browser/index.js';
+import { JevConfig } from './browser/jev.js';
+import { browserSchemas } from '../../protocol/src/browser.js';
 import { codingSchemas } from '../../protocol/src/coding.js';
 import { cloudSchemas } from '../../protocol/src/cloud.js';
 import { CloudSync, type CloudOptions } from './cloud/sync.js';
@@ -19,9 +22,11 @@ export class Application {
   private active: { run: Run; assistantId: string; agent?: AgentHandle; cancelled: boolean; done?: Promise<void> } | null = null;
   private testing = false;
   private serial: Promise<unknown> = Promise.resolve();
-  readonly coding: CodingController; readonly cloud: CloudSync; readonly shared: SharedSync; readonly cloudChat: CloudChat; readonly configs: ConfigSync;
-  constructor(readonly store: Store, private credentials: Credentials, private factory: AgentFactory, private emit: (event: AppEvent) => void, cloud: { credentials?: Credentials; options?: CloudOptions; configs?: { dir?: string; intervalMs?: number; env?: ConfigHost['env'] } } = {}) {
-    this.coding = new CodingController(store, credentials, factory, emit, () => this.idle());
+  readonly coding: CodingController; readonly cloud: CloudSync; readonly shared: SharedSync; readonly cloudChat: CloudChat; readonly configs: ConfigSync; readonly browser: BrowserService;
+  constructor(readonly store: Store, private credentials: Credentials, private factory: AgentFactory, private emit: (event: AppEvent) => void, cloud: { credentials?: Credentials; options?: CloudOptions; configs?: { dir?: string; intervalMs?: number; env?: ConfigHost['env'] }; browser?: { profileDir?: string; executable?: string; headless?: boolean; args?: string[]; lockTimeoutMs?: number; fetch?: typeof fetch } } = {}) {
+    const b = cloud.browser ?? {};
+    this.browser = new BrowserService({ profileDir: b.profileDir ?? join(dataDir, 'chrome-profile'), executable: b.executable, headless: b.headless, args: b.args, lockTimeoutMs: b.lockTimeoutMs, jev: new JevConfig(store.db, credentials, b.fetch) });
+    this.coding = new CodingController(store, credentials, factory, emit, () => this.idle(), this.browser);
     this.cloud = new CloudSync({ store, coding: this.coding, credentials: cloud.credentials ?? new MemoryCredentials(), serial: fn => this.enqueue(fn), busy: () => this.busy(), emit }, cloud.options);
     this.shared = new SharedSync({ store, keys: credentials, cloud: this.cloud, coding: this.coding, busy: () => this.busy(), serial: fn => this.enqueue(fn), call: (method, input) => this.dispatch(method as Method, input, true), emit });
     this.cloudChat = new CloudChat({ paired: () => !!this.cloud.db.link(), request: (method, path, body) => this.cloud.request(method, path, body) });
@@ -34,8 +39,20 @@ export class Application {
     // Cloud chat is plain server I/O: it must not wait behind local generation or sync work in the serial queue.
     if (cloudChatMethods.has(method)) return this.cloudChat.dispatch(method as CloudChatMethod, input as never) as Promise<Api[M]['output']>;
     if (configMethods.has(method)) return this.configs.dispatch(method as ConfigMethod, input as never) as Promise<Api[M]['output']>;
+    if (Object.hasOwn(browserSchemas, method)) return this.browserCall(method, input) as Promise<Api[M]['output']>;
     const result = this.enqueue(() => this.dispatch(method, input));
     return result.then(value => value && typeof value === 'object' && 'deferred' in value ? (value as { deferred: Promise<unknown> }).deferred : value) as Promise<Api[M]['output']>;
+  }
+  private async browserCall(method: Method, data: any): Promise<unknown> {
+    const jev = this.browser.jev;
+    switch (method) {
+      case 'jevGet': return jev.status();
+      case 'jevSave': return jev.save(data);
+      case 'jevDelete': return jev.remove();
+      case 'jevTest': return jev.test();
+      case 'browserStatus': return this.browser.status();
+    }
+    throw new Error('不支持的浏览器请求');
   }
   private changed() { this.emit({ type: 'state.changed' }); }
   private busy() { return !!(this.active || this.testing || this.coding.active); }
@@ -135,7 +152,7 @@ export class Application {
       this.emit({ type: state === 'completed' ? 'run.completed' : state === 'cancelled' ? 'run.cancelled' : 'run.failed', ...ids }); this.changed();
     }
   }
-  async shutdown() { await this.configs.stop(); await this.shared.stop(); this.cloud.stop(); await this.coding.shutdown(); if (this.active) { const active = this.active; active.cancelled = true; await active.agent?.abort(); await active.done; } }
+  async shutdown() { await this.configs.stop(); await this.shared.stop(); this.cloud.stop(); await this.coding.shutdown(); if (this.active) { const active = this.active; active.cancelled = true; await active.agent?.abort(); await active.done; } await this.browser.close(); }
 }
 export function safeFailure(error: unknown): string {
   const text = error instanceof Error ? error.message : '';
