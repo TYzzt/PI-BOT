@@ -411,7 +411,7 @@ flowchart LR
     Pi --> Context[本机项目与 Pi 会话]
 ```
 
-这部分是同步阶段的交付范围。Android 应用与 DeepAgents 云端问答已在后续阶段实现（见下一节）；Skills/MCP、Chrome 和 launchd 仍属于后续设计。完整部署与验收状态见根目录 SYNC.md、VALIDATION-SYNC.md 和 CLOUD-CHAT.md。
+这部分是同步阶段的交付范围。Android 应用、DeepAgents 云端问答和 Skills/MCP 配置同步已在后续阶段实现（见后续各节）；Skills/MCP 的运行接入、Chrome 和 launchd 仍属于后续设计。完整部署与验收状态见根目录 SYNC.md、VALIDATION-SYNC.md、CLOUD-CHAT.md 和 CONFIGS.md。
 
 ## DeepAgents 云端问答实现补充
 
@@ -436,3 +436,25 @@ shared_documents device_id 为空)]
 ```
 
 部署、配置、接口和验收记录见根目录 CLOUD-CHAT.md。
+
+## Skills 与 MCP 配置同步实现补充（A11）
+
+Skill 包和 MCP 服务配置是全局共享文档（`kind` 为 `skill` / `mcp_server`，`device_id` 为空），带版本号和 revision，用 `expected_version` 检测并发修改。Mac 和 Android 都可以编辑；secret 只以引用名出现在配置中，值保存在各台 Mac 的 Keychain。
+
+Mac 每 5 秒拉取配置包，只做静态依赖检查：在 PATH 与常见 Homebrew 目录中查找可执行文件、核对平台、包内脚本、依赖的 MCP 和本机 secret。检查不启动任何进程，安装提示只展示，包内脚本以 0644 权限写入本地目录。检查结果按设备回报：可用时 `applied_version` 前进；不可用时保留上一可用版本，并列出原因码。手机和 Mac 都能看到每台设备的"最新版本 / 生效版本 / 原因"。
+
+本阶段不把 Skills 加载进 Pi，不连接或启动 MCP，云端 Worker 也不加载这些配置；运行环境为"仅云端"的条目标注"云端暂未加载"。
+
+```mermaid
+flowchart LR
+    Android -->|"JWT PUT expected_version"| API[FastAPI]
+    MacUI[Electron] -->|IPC| MacSvc[Mac 服务]
+    MacSvc -->|"设备签名 PUT"| API
+    API --> PG[(PostgreSQL shared_documents)]
+    API -->|"skill.changed / mcp_server.changed"| Android
+    MacSvc -->|"拉取 /device/configs/bundle"| API
+    MacSvc --> Check[静态依赖检查 不启动进程]
+    Check -->|"applied: 状态与原因"| API
+```
+
+数据模型、原因码、接口和验收步骤见根目录 CONFIGS.md。

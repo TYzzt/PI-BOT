@@ -1,6 +1,7 @@
 > 新增共享会话、远程问答与模型/密钥同步。启用前配置独立 vault 密钥文件，见 [SYNC.md](../SYNC.md)。下文第一、二阶段的“不提供 /conversations、/configs”描述已由本次接口扩展取代。
 >
 > 新增 DeepAgents 云端问答：`/cloud/*` 接口、迁移 `0005`、独立进程 `python -m tagent_server.worker`（Compose 中的 `worker` 服务）。部署、Tavily 配置和验收见 [CLOUD-CHAT.md](../CLOUD-CHAT.md)。
+> 新增共享 Skills/MCP 配置：`/configs/skills`、`/configs/mcp-servers` 与设备侧 `/device/configs/*`，无新迁移。见 [CONFIGS.md](../CONFIGS.md)。
 
 # T-AGNET server
 
@@ -174,6 +175,6 @@ uv run pytest
 
 ## 阶段边界
 
-（第二阶段原始边界，保留作记录。）共享消息与 `/conversations`、DeepAgents 云端问答、模型/Skills/MCP 配置和 skill 同步都不在本阶段；其中前三项已在后续阶段实现，见 [SYNC.md](../SYNC.md) 与 [CLOUD-CHAT.md](../CLOUD-CHAT.md)，Skills/MCP 仍未实现。云端不保存代码目录，也不把设备在线状态写成任务状态。
+（第二阶段原始边界，保留作记录。）共享消息与 `/conversations`、DeepAgents 云端问答、模型/Skills/MCP 配置和 skill 同步都不在本阶段；均已在后续阶段实现，见 [SYNC.md](../SYNC.md)、[CLOUD-CHAT.md](../CLOUD-CHAT.md) 与 [CONFIGS.md](../CONFIGS.md)（Skills/MCP 目前只有配置同步与依赖检查，尚未接入运行）。云端不保存代码目录，也不把设备在线状态写成任务状态。
 
 桌面端已在其第三阶段接入（见 [desktop/PHASE-3.md](../desktop/PHASE-3.md)）：配对、项目目录、计划发布、双端审批、命令执行和脱敏事件回传。桌面端的 `desktop/tests/cloud-e2e.test.ts` 可以对着本地 Compose 跑完整链路。Android 的接入在其自身阶段完成。
