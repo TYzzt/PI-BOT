@@ -1,4 +1,6 @@
 > 新增共享会话、远程问答与模型/密钥同步。启用前配置独立 vault 密钥文件，见 [SYNC.md](../SYNC.md)。下文第一、二阶段的“不提供 /conversations、/configs”描述已由本次接口扩展取代。
+>
+> 新增 DeepAgents 云端问答：`/cloud/*` 接口、迁移 `0005`、独立进程 `python -m tagent_server.worker`（Compose 中的 `worker` 服务）。部署、Tavily 配置和验收见 [CLOUD-CHAT.md](../CLOUD-CHAT.md)。
 
 # T-AGNET server
 
@@ -17,7 +19,7 @@ cp .env.example .env
 docker compose up --build
 ```
 
-API 只监听本机 `127.0.0.1:8000`。数据库口令是 Compose 里的本地默认值 `tagent`，端口只绑定 `127.0.0.1:5432`。本地 Compose 只包含 API 和 PostgreSQL。将来部署到 Kubernetes 时，入口和 HTTPS/WSS 由集群 Ingress 承担；Ingress 需要放行 WebSocket 升级。
+API 只监听本机 `127.0.0.1:8000`。数据库口令是 Compose 里的本地默认值 `tagent`，端口只绑定 `127.0.0.1:5432`。本地 Compose 包含 API、PostgreSQL 和云端问答 Worker；Worker 需要 vault 文件才能解密云端模型密钥，用 `docker-compose.sync.yml` 叠加启动。将来部署到 Kubernetes 时，入口和 HTTPS/WSS 由集群 Ingress 承担；Ingress 需要放行 WebSocket 升级。
 
 健康检查：
 
@@ -172,6 +174,6 @@ uv run pytest
 
 ## 阶段边界
 
-共享消息与 `/conversations`、DeepAgents 云端问答、模型/Skills/MCP 配置和 skill 同步都不在本阶段。云端不保存代码目录，也不把设备在线状态写成任务状态。
+（第二阶段原始边界，保留作记录。）共享消息与 `/conversations`、DeepAgents 云端问答、模型/Skills/MCP 配置和 skill 同步都不在本阶段；其中前三项已在后续阶段实现，见 [SYNC.md](../SYNC.md) 与 [CLOUD-CHAT.md](../CLOUD-CHAT.md)，Skills/MCP 仍未实现。云端不保存代码目录，也不把设备在线状态写成任务状态。
 
 桌面端已在其第三阶段接入（见 [desktop/PHASE-3.md](../desktop/PHASE-3.md)）：配对、项目目录、计划发布、双端审批、命令执行和脱敏事件回传。桌面端的 `desktop/tests/cloud-e2e.test.ts` 可以对着本地 Compose 跑完整链路。Android 的接入在其自身阶段完成。

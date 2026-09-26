@@ -1,6 +1,6 @@
 # 共享聊天、模型配置与远程续聊
 
-本阶段实现 Mac 与云端同步，Android 和 DeepAgents 尚未接入。执行仍由会话所属 Mac 的 Pi 完成，不迁移 Pi 私有上下文。
+本阶段实现 Mac 与云端同步。执行仍由会话所属 Mac 的 Pi 完成，不迁移 Pi 私有上下文。后续已接入：Android 应用可查看共享会话并继续提问（见 `android/`）；DeepAgents 云端问答见 [CLOUD-CHAT.md](CLOUD-CHAT.md)。
 
 ## 使用规则
 
@@ -112,6 +112,6 @@ T_AGNET_TEST_FILE=tests/cloud-e2e.test.ts uv run python scripts/check_shared.py
 T_AGNET_REAL_SYNC=1 uv run python scripts/check_shared.py
 ```
 
-报告保存到 `desktop/work/shared-real-report.json`，不包含密钥和完整聊天内容。数据库迁移为 SQLite v4、Alembic 0004；升级前备份，旧应用不能打开新版 SQLite。Android 工程、DeepAgents 和安装包不属于本次交付。
+报告保存到 `desktop/work/shared-real-report.json`，不包含密钥和完整聊天内容。数据库迁移为 SQLite v4、Alembic 0004；升级前备份，旧应用不能打开新版 SQLite。安装包不属于本次交付；Android 应用与 DeepAgents 云端问答在后续阶段交付（后者新增 Alembic 0005，见 CLOUD-CHAT.md）。
 
 验证结果、已知限制及尚未完成的部署验收见 [VALIDATION-SYNC.md](VALIDATION-SYNC.md)。

@@ -391,12 +391,12 @@ Android：会话列表；server/本地聊天；项目和在线状态；Plan 审�
 
 Mac 是本地会话的唯一执行设备；云端保存共享用户消息、完整助手回答及版本，远程问答通过持久化 chat_run 队列交给所属 Mac。读代码直接回答，不触发编程审批。新会话在配对后默认共享，旧会话手动选择；不传输 Pi 会话、源码目录、diff 或原始工具输出。
 
-所有模型配置与 API Key 自动同步到可信云端，API Key 采用独立主密钥的 AES-256-GCM 加密；只有绑定设备能下载到 Keychain。使用 expected_version、desired/applied 版本和显式冲突解决。Android 未来通过 JWT 读取共享记录、发送问题与编辑配置，不获得密钥查询权限。详细规则与冻结接口见项目根目录 SYNC.md 及 server/openapi.json。
+所有模型配置与 API Key 自动同步到可信云端，API Key 采用独立主密钥的 AES-256-GCM 加密；只有绑定设备能下载到 Keychain。使用 expected_version、desired/applied 版本和显式冲突解决。Android 通过 JWT 读取共享记录、发送问题（已实现），不获得密钥查询权限。详细规则与冻结接口见项目根目录 SYNC.md 及 server/openapi.json。
 
 
 ```mermaid
 flowchart LR
-    Client[独立客户端 / 未来 Android] -->|JWT · REST / WSS 通知| API[云端 FastAPI]
+    Client[独立客户端 / Android] -->|JWT · REST / WSS 通知| API[云端 FastAPI]
     API --> DB[(PostgreSQL
 共享历史 / 请求队列 / 配置版本)]
     API --> Vault[AES-256-GCM
@@ -411,4 +411,28 @@ flowchart LR
     Pi --> Context[本机项目与 Pi 会话]
 ```
 
-这部分是当前交付范围。前文的 Android、DeepAgents、Skills/MCP、Chrome 和 launchd 仍属于后续设计；完整部署与验收状态见根目录 SYNC.md 和 VALIDATION-SYNC.md。
+这部分是同步阶段的交付范围。Android 应用与 DeepAgents 云端问答已在后续阶段实现（见下一节）；Skills/MCP、Chrome 和 launchd 仍属于后续设计。完整部署与验收状态见根目录 SYNC.md、VALIDATION-SYNC.md 和 CLOUD-CHAT.md。
+
+## DeepAgents 云端问答实现补充
+
+云端问答是第三种执行位置：会话、消息和 chat_run 仍存放在共享文档表，`device_id` 为空表示由云端 Worker 执行，因此 Android 的会话列表、消息分页和 `/ws/events` 刷新逻辑直接复用。Worker 是与 API 同镜像的独立进程，用 `SELECT ... FOR UPDATE SKIP LOCKED` 领取排队的云端 run，写入租约并定期续租，租约过期的 run 标为 interrupted，不自动重跑。
+
+执行使用 DeepAgents `create_deep_agent`：OpenAI 兼容模型、可选 Tavily 搜索、DeepAgents 自带的规划与虚拟文件（仅存在于 agent 状态，没有 shell，不访问任何 Mac 的代码）。多轮上下文存放在 LangGraph Postgres checkpoint，线程为"会话:代次"；取消、失败或中断后换新代次，并用共享消息历史重建。流式输出每秒最多写一次累计快照，取消在下一次快照或续租时生效。
+
+云端模型是独立的配置文档，密钥使用同一 vault 加密。"复制到云端"由服务端在内部解密再加密，密钥不经过客户端；Worker 只在内存中解密。"转到云端继续"从已共享的 Mac 会话复制最近的共享消息（上限 40 条 / 60000 字）新建云端会话，原会话不变，不支持同一会话来回切换。本阶段不含云端 MCP、Skills、多用户和推送。
+
+```mermaid
+flowchart LR
+    Android -->|JWT REST| API[FastAPI]
+    MacUI[Electron] -->|IPC| MacSvc[Mac 服务]
+    MacSvc -->|设备签名 REST /device/cloud| API
+    API --> PG[(PostgreSQL
+shared_documents device_id 为空)]
+    Worker[DeepAgents Worker] -->|领取 queued 云端 run / 租约| PG
+    Worker --> Model[OpenAI 兼容模型]
+    Worker --> Tavily[Tavily 搜索]
+    Worker --> CP[(LangGraph checkpoint)]
+    API -->|/ws/events 变更通知| Android
+```
+
+部署、配置、接口和验收记录见根目录 CLOUD-CHAT.md。
