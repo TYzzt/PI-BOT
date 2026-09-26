@@ -4,7 +4,7 @@ from pathlib import Path
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-MAX_BODY_BYTES = 256 * 1024
+MAX_BODY_BYTES = 8 * 1024 * 1024
 
 
 def utcnow() -> datetime:
@@ -22,6 +22,7 @@ def project_root() -> Path:
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="T_AGNET_", env_file=".env", extra="ignore")
 
+    sync_key_file: Path | None = None
     database_url: str
     admin_password: SecretStr = Field(min_length=8)
     jwt_secret: SecretStr = Field(min_length=32)

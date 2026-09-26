@@ -6,7 +6,7 @@ import { z } from 'zod';
 
 export type RunState = 'running' | 'cancelling' | 'completed' | 'cancelled' | 'failed' | 'interrupted';
 export interface ModelConfig { id: string; name: string; baseUrl: string; modelId: string; contextWindow: number; maxTokens: number; isDefault: boolean; hasKey: boolean; revision?: number; }
-export interface Conversation { kind?: 'ask' | 'coding'; projectId?: string | null; id: string; title: string; modelConfigId: string; createdAt: number; updatedAt: number; }
+export interface Conversation { shared?: boolean | number; kind?: 'ask' | 'coding'; projectId?: string | null; id: string; title: string; modelConfigId: string; createdAt: number; updatedAt: number; }
 export interface Message { id: string; conversationId: string; runId: string; role: 'user' | 'assistant'; content: string; status: string; visibility: 'local_only' | 'shared'; }
 export interface Run { id: string; taskId: string; conversationId: string; state: RunState; error: string | null; }
 export interface Snapshot { models: ModelConfig[]; conversations: Conversation[]; activeRun: Run | null; testing: boolean; }
@@ -20,7 +20,7 @@ export interface Api extends CodingApi, CloudApi {
   modelDelete: { input: { id: string; replacementId?: string }; output: null };
   modelDefault: { input: { id: string }; output: null };
   modelTest: { input: { id: string }; output: { ok: boolean } };
-  conversationCreate: { input: { modelConfigId: string }; output: Conversation };
+  conversationCreate: { input: { modelConfigId: string; shared?: boolean }; output: Conversation };
   conversationGet: { input: { id: string }; output: ConversationDetail };
   conversationRename: { input: { id: string; title: string }; output: null };
   conversationDelete: { input: { id: string }; output: null };
@@ -36,7 +36,7 @@ export const schemas = {
   health: z.object({}).strict(), snapshot: z.object({}).strict(),
   modelSave: z.object({ id: id.optional(), name: z.string().trim().min(1).max(80), baseUrl: endpoint, modelId: z.string().trim().min(1).max(200), apiKey: z.string().max(8192).optional(), contextWindow: z.number().int().min(1024).max(4000000), maxTokens: z.number().int().min(16).max(1000000) }).strict().refine(v => v.maxTokens < v.contextWindow, '输出上限必须小于上下文长度'),
   modelDelete: z.object({ id, replacementId: id.optional() }).strict(), modelDefault: z.object({ id }).strict(), modelTest: z.object({ id }).strict(),
-  conversationCreate: z.object({ modelConfigId: id }).strict(), conversationGet: z.object({ id }).strict(),
+  conversationCreate: z.object({ modelConfigId: id, shared: z.boolean().optional() }).strict(), conversationGet: z.object({ id }).strict(),
   conversationRename: z.object({ id, title: z.string().trim().min(1).max(120) }).strict(), conversationDelete: z.object({ id }).strict(),
   messageSend: z.object({ conversationId: id, text: z.string().trim().min(1).max(100000), requestId: id }).strict(), runCancel: z.object({ id }).strict(),
 } satisfies Record<Method, z.ZodType>;

@@ -1,3 +1,4 @@
+import { SharedSync } from './cloud/shared.js';
 import { CodingController } from './coding/controller.js';
 import { codingSchemas } from '../../protocol/src/coding.js';
 import { cloudSchemas } from '../../protocol/src/cloud.js';
@@ -14,10 +15,11 @@ export class Application {
   private active: { run: Run; assistantId: string; agent?: AgentHandle; cancelled: boolean; done?: Promise<void> } | null = null;
   private testing = false;
   private serial: Promise<unknown> = Promise.resolve();
-  readonly coding: CodingController; readonly cloud: CloudSync;
+  readonly coding: CodingController; readonly cloud: CloudSync; readonly shared: SharedSync;
   constructor(readonly store: Store, private credentials: Credentials, private factory: AgentFactory, private emit: (event: AppEvent) => void, cloud: { credentials?: Credentials; options?: CloudOptions } = {}) {
     this.coding = new CodingController(store, credentials, factory, emit, () => this.idle());
     this.cloud = new CloudSync({ store, coding: this.coding, credentials: cloud.credentials ?? new MemoryCredentials(), serial: fn => this.enqueue(fn), busy: () => this.busy(), emit }, cloud.options);
+    this.shared = new SharedSync({ store, keys: credentials, cloud: this.cloud, coding: this.coding, busy: () => this.busy(), serial: fn => this.enqueue(fn), call: (method, input) => this.dispatch(method as Method, input, true), emit });
     void this.cloud.start();
   }
   private enqueue<T>(fn: () => Promise<T>): Promise<T> { const result = this.serial.then(fn); this.serial = result.catch(() => {}); return result; }
@@ -29,8 +31,12 @@ export class Application {
   private changed() { this.emit({ type: 'state.changed' }); }
   private busy() { return !!(this.active || this.testing || this.coding.active); }
   private idle() { if (this.busy()) throw new Error('正在生成或测试连接，请先等待当前请求完成'); }
-  private async dispatch(method: Method, data: any): Promise<unknown> {
-    if (Object.hasOwn(cloudSchemas, method)) return this.cloud.dispatch(method as keyof typeof cloudSchemas, data);
+  private async dispatch(method: Method, data: any, syncing = false): Promise<unknown> {
+    if (method === 'sharedStatus') return this.shared.status();
+    if (method === 'sharedConversation') { await this.shared.share(data.ids, data.shared); return null; }
+    if (method === 'sharedResolve') { await this.shared.resolve(data.id, data.choice); return null; }
+    if (method === 'cloudUnpair') { const result = await this.cloud.dispatch(method, data); await this.shared.reset(); return result; }
+    if (Object.hasOwn(cloudSchemas, method)) return this.cloud.dispatch(method as Extract<Method, `cloud${string}`>, data);
     if (method === 'codingGet') { const detail = await this.coding.dispatch(method, data) as Api['codingGet']['output']; return { ...detail, cloud: this.cloud.taskInfo(detail.task.id) }; }
     if (Object.hasOwn(codingSchemas, method)) return this.coding.dispatch(method, data);
     switch (method) {
@@ -48,20 +54,22 @@ export class Application {
         if (data.replacementId) { this.store.model(data.replacementId); if (data.replacementId === data.id) throw new Error('替代模型不能是当前模型'); }
         if (this.store.conversations().some(c => c.modelConfigId === data.id) && !data.replacementId) throw new Error('此模型被会话引用，请选择替代模型');
         if (this.coding.modelReferences(data.id) && !data.replacementId) throw new Error('此模型被编程任务引用，请选择替代模型');
+        if (!syncing) await this.shared.beforeDeleteModel(data.id, data.replacementId);
         await this.credentials.delete(data.id); if (data.replacementId) this.coding.replaceModel(data.id, data.replacementId); this.store.deleteModel(data.id, data.replacementId); this.changed(); return null;
       }
       case 'modelDefault': this.idle(); this.store.defaultModel(data.id); this.changed(); return null;
       case 'modelTest': {
-        this.idle(); const m = this.store.model(data.id); this.testing = true; this.changed();
+        this.idle(); const m = this.store.model(data.id); this.store.assertModelReady(m.id); this.testing = true; this.changed();
         // Do not block other RPCs behind a network test. The busy flag serializes model calls.
         const operation = this.testModel(m);
         return { deferred: operation };
       }
-      case 'conversationCreate': { const c = this.store.createConversation(data.modelConfigId); this.changed(); return c; }
+      case 'conversationCreate': { const c = this.store.createConversation(data.modelConfigId, data.shared); this.changed(); return c; }
       case 'conversationGet': return { conversation: this.store.conversation(data.id), messages: this.store.messages(data.id), runs: this.store.runs(data.id) };
       case 'conversationRename': this.store.rename(data.id, data.title); this.changed(); return null;
       case 'conversationDelete': {
-        if (this.active?.run.conversationId === data.id) throw new Error('请先停止该会话的生成');
+        if (this.active?.run.conversationId === data.id || this.coding.active?.run.conversationId === data.id) throw new Error('请先停止该会话的生成');
+        if (!syncing) await this.shared.beforeDeleteConversation(data.id);
         this.coding.removeConversation(data.id);
         this.store.conversation(data.id);
         const sessionPath = this.store.sessionPath(data.id);
@@ -70,7 +78,7 @@ export class Application {
       }
       case 'messageSend': {
         const previous = this.store.existing(data.requestId, data.conversationId, data.text); if (previous) return previous;
-        this.idle(); const c = this.store.conversation(data.conversationId); if (c.kind === 'coding') throw new Error('编程会话请使用规划接口'); const model = this.store.model(c.modelConfigId);
+        this.idle(); const c = this.store.conversation(data.conversationId); if (c.kind === 'coding') throw new Error('编程会话请使用规划接口'); const model = this.store.model(c.modelConfigId); this.store.assertModelReady(model.id);
         const entry = this.store.start(c.id, data.text, data.requestId); this.active = { ...entry, cancelled: false };
         const active = this.active;
         this.emit({ type: 'run.started', conversation_id: c.id, task_id: entry.run.taskId, run_id: entry.run.id, message_id: entry.assistantId });
@@ -118,7 +126,7 @@ export class Application {
       this.emit({ type: state === 'completed' ? 'run.completed' : state === 'cancelled' ? 'run.cancelled' : 'run.failed', ...ids }); this.changed();
     }
   }
-  async shutdown() { this.cloud.stop(); await this.coding.shutdown(); if (this.active) { const active = this.active; active.cancelled = true; await active.agent?.abort(); await active.done; } }
+  async shutdown() { await this.shared.stop(); this.cloud.stop(); await this.coding.shutdown(); if (this.active) { const active = this.active; active.cancelled = true; await active.agent?.abort(); await active.done; } }
 }
 export function safeFailure(error: unknown): string {
   const text = error instanceof Error ? error.message : '';

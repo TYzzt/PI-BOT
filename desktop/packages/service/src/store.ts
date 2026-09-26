@@ -8,7 +8,7 @@ export class Store {
     this.db = new DatabaseSync(path);
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=3000;');
     const version = (this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
-    if (version > 3) throw new Error('数据库版本较新，不能使用旧版本应用打开');
+    if (version > 4) throw new Error('数据库版本较新，不能使用旧版本应用打开');
     if (version < 1) this.transaction(() => this.db.exec(`
       CREATE TABLE IF NOT EXISTS models(id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS conversations(id TEXT PRIMARY KEY, title TEXT NOT NULL, modelConfigId TEXT NOT NULL REFERENCES models(id), createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL, sessionPath TEXT);
@@ -39,11 +39,24 @@ export class Store {
       CREATE TABLE cloud_outbox(seq INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL, error TEXT, createdAt INTEGER NOT NULL);
       PRAGMA user_version=3;
     `));
+    if (version < 4) this.transaction(() => this.db.exec(`
+      ALTER TABLE conversations ADD COLUMN shared INTEGER NOT NULL DEFAULT 0;
+      CREATE TABLE shared_state(kind TEXT NOT NULL,id TEXT NOT NULL,data TEXT NOT NULL,PRIMARY KEY(kind,id));
+      CREATE TABLE shared_dirty(id TEXT PRIMARY KEY,revision INTEGER NOT NULL DEFAULT 1);
+      CREATE TRIGGER shared_message_insert AFTER INSERT ON messages BEGIN
+        INSERT INTO shared_dirty VALUES(NEW.id,1) ON CONFLICT(id) DO UPDATE SET revision=revision+1;
+      END;
+      CREATE TRIGGER shared_message_update AFTER UPDATE OF content,status ON messages BEGIN
+        INSERT INTO shared_dirty VALUES(NEW.id,1) ON CONFLICT(id) DO UPDATE SET revision=revision+1;
+      END;
+      PRAGMA user_version=4;
+    `));
     this.db.exec(`UPDATE messages SET status='interrupted' WHERE role='assistant' AND runId IN (SELECT id FROM runs WHERE state IN ('running','cancelling'));
       UPDATE runs SET state='interrupted', error='本地服务已重启，上次运行未完成；不会自动重发请求' WHERE state IN ('running','cancelling');`);
   }
   transaction<T>(fn: () => T): T { const savepoint = 'sp_' + randomUUID().replaceAll('-', ''); this.db.exec(`SAVEPOINT ${savepoint}`); try { const r = fn(); this.db.exec(`RELEASE ${savepoint}`); return r; } catch (e) { this.db.exec(`ROLLBACK TO ${savepoint}; RELEASE ${savepoint}`); throw e; } }
   models(): ModelConfig[] { return (this.db.prepare('SELECT data FROM models ORDER BY rowid').all() as { data: string }[]).map(r => JSON.parse(r.data)); }
+  assertModelReady(id: string) { const state = this.db.prepare("SELECT data FROM shared_state WHERE kind='model' AND id=?").get(id) as { data: string } | undefined; if (state && JSON.parse(state.data).applying) throw new Error('此模型配置尚未完整应用，请等待同步或处理 Keychain 错误'); }
   model(id: string): ModelConfig { const m = this.models().find(m => m.id === id); if (!m) throw new Error('模型配置不存在'); return m; }
   putModel(model: ModelConfig) { this.db.prepare('INSERT INTO models(id,data) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(model.id, JSON.stringify(model)); }
   defaultModel(id: string) { this.model(id); this.transaction(() => { for (const m of this.models()) this.putModel({ ...m, isDefault: m.id === id }); }); }
@@ -57,9 +70,9 @@ export class Store {
       if (m.isDefault) { const next = this.models().find(v => v.id === replacement) ?? this.models()[0]; if (next) this.putModel({ ...next, isDefault: true }); }
     });
   }
-  conversations(): Conversation[] { return this.db.prepare('SELECT id,title,modelConfigId,createdAt,updatedAt,kind,projectId FROM conversations ORDER BY updatedAt DESC').all() as unknown as Conversation[]; }
+  conversations(): Conversation[] { return this.db.prepare('SELECT id,title,modelConfigId,createdAt,updatedAt,kind,projectId,shared FROM conversations ORDER BY updatedAt DESC').all() as unknown as Conversation[]; }
   conversation(id: string): Conversation { const c = this.conversations().find(c => c.id === id); if (!c) throw new Error('会话不存在'); return c; }
-  createConversation(modelConfigId: string): Conversation { this.model(modelConfigId); const id = randomUUID(), now = Date.now(); this.db.prepare('INSERT INTO conversations(id,title,modelConfigId,createdAt,updatedAt) VALUES(?,?,?,?,?)').run(id, '新会话', modelConfigId, now, now); return this.conversation(id); }
+  createConversation(modelConfigId: string, shared?: boolean, suppliedId?: string): Conversation { this.model(modelConfigId); const id = suppliedId ?? randomUUID(), now = Date.now(); this.db.prepare('INSERT INTO conversations(id,title,modelConfigId,createdAt,updatedAt,shared) VALUES(?,?,?,?,?,?)').run(id, '新会话', modelConfigId, now, now, Number(shared ?? !!this.db.prepare('SELECT 1 FROM cloud_link').get())); return this.conversation(id); }
   rename(id: string, title: string) { this.conversation(id); this.db.prepare('UPDATE conversations SET title=?,updatedAt=? WHERE id=?').run(title, Date.now(), id); }
   deleteConversation(id: string) { this.db.prepare('DELETE FROM conversations WHERE id=?').run(id); }
   sessionPath(id: string): string | null { return (this.db.prepare('SELECT sessionPath FROM conversations WHERE id=?').get(id) as { sessionPath: string | null }).sessionPath; }
@@ -80,7 +93,10 @@ export class Store {
     this.transaction(() => {
       this.db.prepare('INSERT INTO runs VALUES(?,?,?,?,?,?,?)').run(id, taskId, conversationId, requestId, this.hash(conversationId, text), 'running', null);
       const stmt = this.db.prepare('INSERT INTO messages(id,conversationId,runId,role,content,status) VALUES(?,?,?,?,?,?)');
-      stmt.run(randomUUID(), conversationId, id, 'user', text, 'completed');
+      const sharedRun = this.db.prepare("SELECT data FROM shared_state WHERE kind='run' AND id=?").get(requestId) as { data: string } | undefined;
+      const mapping = sharedRun ? JSON.parse(sharedRun.data) : null;
+      stmt.run(mapping?.messageId ?? randomUUID(), conversationId, id, 'user', text, 'completed');
+      if (mapping) this.db.prepare("UPDATE shared_state SET data=? WHERE kind='run' AND id=?").run(JSON.stringify({ ...mapping, starting: false, localRunId: id }), requestId);
       stmt.run(assistantId, conversationId, id, 'assistant', '', 'running');
       const c = this.conversation(conversationId);
       this.db.prepare('UPDATE conversations SET title=?,updatedAt=? WHERE id=?').run(c.title === '新会话' ? text.slice(0, 30) : c.title, Date.now(), conversationId);

@@ -1,8 +1,8 @@
 import uuid
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator, model_validator
 
 from tagent_server.security import decode_public_key
 
@@ -172,6 +172,37 @@ class PlanStep(StrictModel):
     description: str = Field(max_length=3000)
 
 
+class PlanOption(StrictModel):
+    id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,64}$")
+    label: str = Field(min_length=1, max_length=200)
+
+
+class PlanQuestion(StrictModel):
+    id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,64}$")
+    prompt: str = Field(min_length=1, max_length=500)
+    options: list[PlanOption] = Field(min_length=2, max_length=5)
+    allow_multiple: bool = False
+
+    @model_validator(mode="after")
+    def unique_options(self) -> "PlanQuestion":
+        if len({option.id for option in self.options}) != len(self.options):
+            raise ValueError("选项 id 必须唯一")
+        return self
+
+
+def _parse_question(value: Any) -> str | PlanQuestion:
+    if isinstance(value, str):
+        if len(value) > 2000:
+            raise ValueError("问题过长")
+        return value
+    if isinstance(value, PlanQuestion):
+        return value
+    return PlanQuestion.model_validate(value)
+
+
+QuestionItem = Annotated[str | PlanQuestion, BeforeValidator(_parse_question)]
+
+
 class PlanBody(StrictModel):
     goal: str = Field(min_length=1, max_length=4000)
     scope: list[ShortText] = Field(min_length=1, max_length=30)
@@ -182,12 +213,15 @@ class PlanBody(StrictModel):
     external_actions: list[ShortText] = Field(max_length=30)
     verification: list[Annotated[str, Field(min_length=1, max_length=1000)]] = Field(min_length=1, max_length=30)
     acceptance: list[Annotated[str, Field(min_length=1, max_length=1000)]] = Field(min_length=1, max_length=30)
-    questions: list[Annotated[str, Field(max_length=2000)]] = Field(max_length=20)
+    questions: list[QuestionItem] = Field(max_length=20)
 
     @model_validator(mode="after")
     def unique_steps(self) -> "PlanBody":
         if len({step.step_id for step in self.steps}) != len(self.steps):
             raise ValueError("step_id 必须唯一")
+        ids = [item.id for item in self.questions if isinstance(item, PlanQuestion)]
+        if len(set(ids)) != len(ids):
+            raise ValueError("问题 id 必须唯一")
         return self
 
 

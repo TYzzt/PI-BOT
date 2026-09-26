@@ -11,8 +11,10 @@ async function detail(response: Response) {
   return `云端拒绝请求（HTTP ${response.status}）`;
 }
 export async function cloudFetch<T>(serverUrl: string, method: string, path: string, options: { body?: unknown; headers?: Record<string, string>; signer?: Signer } = {}): Promise<T> {
+  const transport = new URL(serverUrl);
+  if (transport.protocol !== 'https:' && !(transport.protocol === 'http:' && ['localhost','127.0.0.1','[::1]'].includes(transport.hostname))) throw new CloudNetworkError('云端连接必须使用 HTTPS');
   const body = options.body === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(options.body), 'utf8');
-  const headers: Record<string, string> = { ...(options.body === undefined ? {} : { 'content-type': 'application/json' }), ...options.headers, ...(options.signer ? options.signer(method, path, body) : {}) };
+  const headers: Record<string, string> = { ...(options.body === undefined ? {} : { 'content-type': 'application/json' }), ...options.headers, ...(options.signer ? options.signer(method, path.split('?')[0], body) : {}) };
   let response: Response;
   try { response = await fetch(serverUrl.replace(/\/$/, '') + path, { method, headers, body: options.body === undefined ? undefined : body, signal: AbortSignal.timeout(TIMEOUT_MS), redirect: 'error' }); }
   catch { throw new CloudNetworkError('无法连接云端服务器'); }

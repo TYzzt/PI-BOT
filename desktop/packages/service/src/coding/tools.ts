@@ -1,14 +1,15 @@
 import { Type } from 'typebox';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
-import { readFile, writeFile, mkdir, readdir, lstat } from 'node:fs/promises';
+import { writeFile, mkdir, readdir } from 'node:fs/promises';
 import { dirname, relative } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { planBodySchema, type PlanBody, type StepStatus, type ToolCall } from '../../../protocol/src/index.js';
-import { safePath, entries, fileImage, projectStatus, type FileImage } from './workspace.js';
+import { safePath, fileImage, projectStatus, searchProject, findProjectFiles, readProjectText, windowProjectText, type FileImage } from './workspace.js';
 import { command, commandPath } from './command.js';
 import type { CodingStore } from './store.js';
 const strings = () => Type.Array(Type.String());
-const planSchema = Type.Object({ goal: Type.String(), scope: strings(), nonGoals: strings(), modules: strings(), steps: Type.Array(Type.Object({ stepId: Type.String(), title: Type.String(), description: Type.String() })), commands: strings(), externalActions: strings(), verification: strings(), acceptance: strings(), questions: strings() });
+const planQuestion = Type.Object({ id: Type.String(), prompt: Type.String(), options: Type.Array(Type.Object({ id: Type.String(), label: Type.String() })), allowMultiple: Type.Optional(Type.Boolean()) });
+const planSchema = Type.Object({ goal: Type.String(), scope: strings(), nonGoals: strings(), modules: strings(), steps: Type.Array(Type.Object({ stepId: Type.String(), title: Type.String(), description: Type.String() })), commands: strings(), externalActions: strings(), verification: strings(), acceptance: strings(), questions: Type.Array(Type.Union([Type.String(), planQuestion])) });
 export interface ToolContext {
   taskId: string; runId: string; root: string; mode: 'read' | 'plan' | 'execute'; store: CodingStore; key: string;
   cancelled: () => boolean; signal: AbortSignal; notify: (toolId?: string) => void; onTool?: (tool: ToolCall) => void; onStep?: (step: StepStatus) => void;
@@ -43,30 +44,21 @@ export function codingTools(ctx: ToolContext): ToolDefinition[] {
     } };
   }
   async function read(path: string) {
-    const target = await safePath(ctx.root, path); const stat = await lstat(target);
-    if (!stat.isFile() && !stat.isSymbolicLink()) throw new Error('只能读取文本文件');
-    if (stat.size > 128 * 1024) throw new Error('单次文件读取上限 128 KiB');
-    const text = await readFile(target, 'utf8'); if (text.includes('\0')) throw new Error('不支持读取二进制内容');
-    const image = await fileImage(target); if (image) ctx.readImages.set(relative(ctx.root, target), image);
-    return text;
+    const loaded = await readProjectText(ctx.root, path);
+    const image = await fileImage(loaded.absolute); if (image) ctx.readImages.set(loaded.path, image);
+    return loaded;
   }
   const tools = [
-    tool('read_file', '读取项目内文本文件，最多 128 KiB。路径相对于项目根目录。', Type.Object({ path: Type.String() }), async p => read(p.path)),
+    tool('read_file', '按行窗口读取项目内文本文件。startLine 从 1 开始，默认第 1 行；maxLines 默认 400。单次不超过 128 KiB。路径相对于项目根目录。', Type.Object({ path: Type.String(), startLine: Type.Optional(Type.Number({ minimum: 1 })), maxLines: Type.Optional(Type.Number({ minimum: 1, maximum: 400 })) }), async p => { const loaded = await read(p.path); return windowProjectText(loaded.path, loaded.text, p.startLine ?? 1, p.maxLines ?? 400); }),
     tool('list_files', '列举项目目录，省略 .git，最多 500 项。', Type.Object({ path: Type.Optional(Type.String()) }), async p => { const target = await safePath(ctx.root, p.path || '.'); const names = await readdir(target, { withFileTypes: true }); return names.filter(e => e.name !== '.git').slice(0, 500).map(e => ({ name: e.name, directory: e.isDirectory(), symlink: e.isSymbolicLink() })); }),
-    tool('search_files', '在受跟踪和非忽略文本文件内搜索普通字符串（非正则），最多 100 个结果。', Type.Object({ query: Type.String({ minLength: 1 }), path: Type.Optional(Type.String()) }), async p => {
-      if (!p.query || p.query.length > 500) throw new Error('搜索词长度必须为 1 到 500');
-      if (p.path) await safePath(ctx.root, p.path);
-      const { names, submodules } = await entries(ctx.root); const matches: { path: string; line: number; text: string }[] = [];
-      for (const name of names) { if (ctx.signal.aborted) throw new Error('运行已停止'); if (submodules.includes(name) || (p.path && p.path !== '.' && name !== p.path && !name.startsWith(p.path.replace(/\/$/, '') + '/'))) continue;
-        try { const text = await read(name); for (const [i, line] of text.split('\n').entries()) { if (line.includes(p.query)) matches.push({ path: name, line: i + 1, text: line.slice(0, 500) }); if (matches.length >= 100) return { matches, truncated: true }; } } catch { /* Unreadable/binary files are omitted; direct read exposes the error. */ }
-      } return { matches, truncated: false };
-    }),
+    tool('search_files', '在受跟踪和非忽略文本文件内搜索普通字符串（非正则），最多 100 个结果。', Type.Object({ query: Type.String({ minLength: 1, maxLength: 500 }), path: Type.Optional(Type.String()) }), async p => searchProject(ctx.root, p.query, p.path)),
+    tool('find_files', '按文件名片段查找项目内文件，最多 200 条，不读取文件内容。', Type.Object({ query: Type.String({ minLength: 1, maxLength: 200 }) }), async p => findProjectFiles(ctx.root, p.query)),
     tool('git_status', '只读查询分支和暂存/未暂存/未跟踪状态。', Type.Object({}), async () => projectStatus(ctx.root)),
   ];
-  if (ctx.mode === 'plan') tools.push(tool('update_plan', '提交结构化计划。每次修改保留相同语义步骤的 stepId。问题未解决时填写 questions；此工具不修改项目。', Type.Object({ plan: planSchema }), async p => { ctx.plan = planBodySchema.parse(JSON.parse(redact(JSON.stringify(p.plan)))); return { saved: true, questions: ctx.plan.questions }; }));
+  if (ctx.mode === 'plan') tools.push(tool('update_plan', '提交结构化计划。每次修改保留相同语义步骤的 stepId。需要用户决定时，questions 使用对象：id、prompt、2 到 5 个 options（id 与 label），可设 allowMultiple。选项写在 options 里。此工具不修改项目。', Type.Object({ plan: planSchema }), async p => { ctx.plan = planBodySchema.parse(JSON.parse(redact(JSON.stringify(p.plan)))); return { saved: true, questions: ctx.plan.questions }; }));
   else if (ctx.mode === 'execute') tools.push(
     tool('write_file', '创建或替换项目内文本文件。保留用户已有修改；优先使用 edit_file。', Type.Object({ path: Type.String(), content: Type.String() }), async p => { if (p.content.length > 256000) throw new Error('单次写入上限 256000 字符'); const path = await safePath(ctx.root, p.path, true); const existing = await fileImage(path); if (existing && ctx.readImages.get(relative(ctx.root, path))?.hash !== existing.hash) throw new Error('覆盖现有文件前必须读取，且读取后文件不能被外部修改'); await mkdir(dirname(path), { recursive: true }); await safePath(ctx.root, p.path, true); if (ctx.signal.aborted) throw new Error('运行已停止'); await writeFile(path, p.content, 'utf8'); return '文件已写入'; }),
-    tool('edit_file', '以唯一精确文本匹配修改文件，匹配不存在或不唯一时拒绝。', Type.Object({ path: Type.String(), oldText: Type.String(), newText: Type.String() }), async p => { const path = await safePath(ctx.root, p.path, true); const text = await read(p.path); if (!p.oldText || text.split(p.oldText).length !== 2) throw new Error('原文本不存在或不唯一，请重新读取文件'); const changed = text.replace(p.oldText, p.newText); if (changed.length > 256000) throw new Error('结果文件过大'); if (ctx.signal.aborted) throw new Error('运行已停止'); await safePath(ctx.root, p.path, true); await writeFile(path, changed, 'utf8'); return '文件已编辑'; }),
+    tool('edit_file', '以唯一精确文本匹配修改文件，匹配不存在或不唯一时拒绝。', Type.Object({ path: Type.String(), oldText: Type.String(), newText: Type.String() }), async p => { const path = await safePath(ctx.root, p.path, true); const text = (await read(p.path)).text; if (!p.oldText || text.split(p.oldText).length !== 2) throw new Error('原文本不存在或不唯一，请重新读取文件'); const changed = text.replace(p.oldText, p.newText); if (changed.length > 256000) throw new Error('结果文件过大'); if (ctx.signal.aborted) throw new Error('运行已停止'); await safePath(ctx.root, p.path, true); await writeFile(path, changed, 'utf8'); return '文件已编辑'; }),
     tool('run_command', '在项目目录执行非交互 zsh 命令，stdin 关闭。timeoutSeconds 默认 120，上限 600。验证计划中的测试或检查时 verification=true；直接运行验证命令，不追加 echo 或用 || true 掩盖失败。禁止提交、推送、重置、清理和后台常驻。需要交互时暂停任务。', Type.Object({ command: Type.String(), timeoutSeconds: Type.Optional(Type.Number({ minimum: 1, maximum: 600 })), verification: Type.Boolean() }), async (p, signal, append, record) => {
       if (!p.command || p.command.length > 12000) throw new Error('命令长度无效');
       const result = await command(p.command, ctx.root, (p.timeoutSeconds ?? 120) * 1000, signal, (stream, text, truncated) => { record.truncated ||= !!truncated; append(`[${stream}] ${text}`); });

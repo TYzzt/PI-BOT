@@ -24,7 +24,7 @@ export class CodingController {
   observer: CodingObserver | null = null; cloudOwned: (taskId: string) => boolean = () => false;
   constructor(private store: Store, private credentials: Credentials, private factory: AgentFactory, private emit: (e: AppEvent) => void, private idle: () => void) { this.db = new CodingStore(store); }
   private event(task: CodingTask, type: AppEvent['type'] = 'coding.changed', extra: Partial<AppEvent> = {}) { const event = this.db.event(task.id, { type, task_id: task.id, conversation_id: task.conversationId, project_id: task.projectId, run_id: task.activeRunId ?? undefined, ...extra }); this.emit(event); }
-  private config(task: CodingTask) { return { plan: this.store.model(task.planModelId), execute: this.store.model(task.executeModelId) }; }
+  private config(task: CodingTask) { this.store.assertModelReady(task.planModelId); this.store.assertModelReady(task.executeModelId); return { plan: this.store.model(task.planModelId), execute: this.store.model(task.executeModelId) }; }
   private async root(task: CodingTask) { const project = this.db.project(task.projectId); if (project.removed) throw new Error('项目已移除，请重新添加'); if (await projectRoot(project.path) !== project.path) throw new Error('项目根目录已变化'); return project.path; }
   // Observers must never break a local run; cloud sync failures are recorded by the observer itself.
   private observe(fn: (o: CodingObserver) => void) { try { if (this.observer) fn(this.observer); } catch { /* ignored */ } }
@@ -48,7 +48,7 @@ export class CodingController {
         this.store.model(input.planModelId); this.store.model(input.executeModelId);
         let task!: CodingTask, entry!: { run: Run; assistantId: string };
         this.store.transaction(() => {
-          const conversation = this.store.createConversation(input.planModelId);
+          const conversation = this.store.createConversation(input.planModelId, input.shared, input.conversationId);
           this.store.db.prepare("UPDATE conversations SET kind='coding',projectId=? WHERE id=?").run(project.id, conversation.id);
           task = { intent: input.intent ?? 'code', id: randomUUID(), conversationId: conversation.id, projectId: project.id, requirement: input.requirement, planModelId: input.planModelId, executeModelId: input.executeModelId, state: input.intent === 'read' ? 'reading' : 'planning', latestPlanId: null, activeRunId: null, message: '', createdAt: Date.now() };
           this.db.putTask(task); entry = this.store.start(task.conversationId, task.requirement, input.requestId, task.id);
@@ -137,8 +137,9 @@ export class CodingController {
       if (active.controller.signal.aborted) throw new Error('运行已停止');
       context = { taskId: task.id, runId: active.run.id, root, mode: active.mode, store: this.db, key, cancelled: () => active.controller.signal.aborted, signal: active.controller.signal, notify: toolId => this.event(task, toolId ? 'tool.updated' : 'coding.changed', { tool_call_id: toolId }), onTool: tool => this.observe(o => o.toolFinished(task, tool)), onStep: step => this.observe(o => o.stepChanged(task, active.run.id, step)), readImages: new Map(), calls: 0 };
       const tools = codingTools(context);
-      const systemPrompt = basePrompt + (active.mode === 'read' ? ' 当前为只读代码问答。直接阅读、搜索项目并回答用户问题，不生成待审批计划，不要求批准，不修改文件，不运行命令。尽量引用具体相对文件路径与代码位置，区分代码事实与推断；无法确认时直接说明。用户提到修改时解释建议，但只有用户选择生成修改计划后才进入修改流程。' : active.mode === 'plan'
-        ? ' 当前为只读规划。先使用文件工具了解项目，禁止运行命令或修改项目。通过 update_plan 提交结构化计划。需要补充信息时填写 questions，禁止猜测用户授权。生成计划后简述要点。'
+      const locate = '先用 find_files 或 search_files 定位，再用 read_file 的行窗口阅读，不要靠逐层列目录扫完整仓。';
+      const systemPrompt = basePrompt + (active.mode === 'read' ? ` 当前为只读代码问答。直接阅读、搜索项目并回答用户问题，不生成待审批计划，不要求批准，不修改文件，不运行命令。${locate}尽量引用具体相对文件路径与代码位置，区分代码事实与推断；无法确认时直接说明。用户提到修改时解释建议，但只有用户选择生成修改计划后才进入修改流程。` : active.mode === 'plan'
+        ? ` 当前为只读规划。${locate}禁止运行命令或修改项目。通过 update_plan 提交结构化计划。需要用户决定时，questions 必须是带 id、prompt 和 2 到 5 个 options 的对象，选项文案放在 options.label，不要把「A 还是 B」写进 prompt；允许多选时 allowMultiple 为 true。无法拆成选项时才使用字符串。禁止猜测用户授权。生成计划后简述要点。`
         : ' 当前为已批准计划的执行阶段。严格按计划范围修改，保留已有修改，不自动 commit/push/reset/clean、删除用户文件或运行后台常驻程序。使用 update_step 报告进度，实际执行计划中的验证并将 run_command.verification 标为 true。范围扩大必须调用 request_replan 并停止；需要交互调用 request_local_action。最终说明实际变更、验证和遗留问题，不能编造测试结果。');
       const previousRead = active.mode === 'read' ? this.db.runs(task.id).filter(r => r.run.id !== active.run.id && r.mode === 'read' && r.run.state === 'completed').at(-1) : undefined;
       // Reuse only a read-only session, never an execution session with broader permissions.

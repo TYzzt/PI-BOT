@@ -18,7 +18,7 @@
 
 ## 权限与运行边界
 
-Read 仅注册 `read_file`、`list_files`、`search_files`、`git_status`，直接回答，不注册计划、写入或命令工具。Plan 仅注册 `read_file`、`list_files`、`search_files`、`git_status`、`update_plan`。Execute 创建新的 Pi 会话，开放受控文件读写、精确编辑、非交互命令、步骤更新和暂停工具。所有模式不自动加载 AGENTS、Skills、MCP、插件扩展或命令模板。
+Read 仅注册 `read_file`、`list_files`、`search_files`、`find_files`、`git_status`，直接回答，不注册计划、写入或命令工具。`search_files` 使用固定字符串的 `git grep`，`find_files` 按文件名片段查找，`read_file` 默认返回最多 400 行。Plan 仅注册 `read_file`、`list_files`、`search_files`、`find_files`、`git_status`、`update_plan`。Execute 创建新的 Pi 会话，开放受控文件读写、精确编辑、非交互命令、步骤更新和暂停工具。所有模式不自动加载 AGENTS、Skills、MCP、插件扩展或命令模板。
 
 文件工具拒绝 `..`、绝对路径、`.git`、指向项目外的符号链接及子模块内部路径。写入不通过符号链接；覆盖已有文件前需读取并核对内容指纹。Git 查询固定参数，关闭 fsmonitor、外部 diff、textconv 和可选索引写入。
 

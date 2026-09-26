@@ -7,14 +7,29 @@ import { resolve, relative, isAbsolute, dirname, join } from 'node:path';
 import { createTwoFilesPatch } from 'diff';
 import type { Changes } from '../../../protocol/src/index.js';
 const exec = promisify(execFile);
+const gitFailure = 'Git 查询失败：请确认项目目录可用且 Git 索引未损坏';
 export const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 export interface FileImage { hash: string; mode: number; size: number; text?: string; kind: 'file' | 'symlink' | 'submodule'; }
 export interface WorkspaceImage { head: string; index: string; files: Record<string, FileImage>; fingerprint: string; status: string; extras: string[]; }
+export interface TextMatch { path: string; line: number; text: string; }
+export interface FileWindow { path: string; startLine: number; totalLines: number; truncated: boolean; text: string; note?: string; }
+async function gitRaw(root: string, args: string[]) {
+  try {
+    const result = await exec('/usr/bin/git', ['--no-optional-locks', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', '-c', 'core.quotePath=false', '-c', 'diff.external=', ...args], {
+      cwd: root, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, timeout: 20000,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', GIT_ATTR_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0', GIT_PAGER: 'cat' },
+    });
+    return { code: 0, stdout: result.stdout };
+  } catch (error) {
+    const failed = error as NodeJS.ErrnoException & { stdout?: string };
+    if (typeof failed.code === 'number') return { code: failed.code, stdout: failed.stdout ?? '' };
+    throw new Error(gitFailure);
+  }
+}
 export async function git(root: string, args: string[]) {
-  try { const result = await exec('/usr/bin/git', ['--no-optional-locks', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', '-c', 'core.quotePath=false', '-c', 'diff.external=', ...args], {
-    cwd: root, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, timeout: 20000,
-    env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', GIT_ATTR_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0', GIT_PAGER: 'cat' },
-  }); return result.stdout; } catch { throw new Error('Git 查询失败：请确认项目目录可用且 Git 索引未损坏'); }
+  const result = await gitRaw(root, args);
+  if (result.code !== 0) throw new Error(gitFailure);
+  return result.stdout;
 }
 export async function projectRoot(path: string) {
   const selected = await realpath(path).catch(() => { throw new Error('项目目录不存在或无法访问'); });
@@ -34,6 +49,76 @@ export async function entries(root: string) {
   const submodules = index.split('\0').filter(x => x.startsWith('160000 ')).map(x => x.slice(x.indexOf('\t') + 1));
   const names = (await git(root, ['ls-files', '--cached', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean);
   return { index, submodules, names: [...new Set(names)].sort() };
+}
+function parseGrep(stdout: string) {
+  const matches: TextMatch[] = [];
+  let rest = stdout;
+  while (rest.length && matches.length < 101) {
+    const pathEnd = rest.indexOf('\0');
+    const lineEnd = pathEnd < 0 ? -1 : rest.indexOf('\0', pathEnd + 1);
+    if (pathEnd < 0 || lineEnd < 0) break;
+    const path = rest.slice(0, pathEnd);
+    const line = Number(rest.slice(pathEnd + 1, lineEnd));
+    const after = rest.slice(lineEnd + 1);
+    const nl = after.indexOf('\n');
+    const text = nl < 0 ? after : after.slice(0, nl);
+    rest = nl < 0 ? '' : after.slice(nl + 1);
+    if (!path || !Number.isInteger(line) || line < 1 || path.split('/').some(part => part === '..' || part.toLowerCase() === '.git')) continue;
+    matches.push({ path, line, text: text.slice(0, 500) });
+  }
+  return { matches: matches.slice(0, 100), truncated: matches.length > 100 || rest.length > 0 };
+}
+export async function searchProject(root: string, query: string, path?: string) {
+  if (!query || query.length > 500) throw new Error('搜索词长度必须为 1 到 500');
+  const args = ['grep', '-n', '-F', '-I', '--full-name', '--untracked', '-z', '-e', query];
+  if (path && path !== '.') {
+    await safePath(root, path);
+    args.push('--', path.replace(/\\/g, '/').replace(/^\.\//, ''));
+  }
+  const result = await gitRaw(root, args);
+  if (result.code === 1) return { matches: [] as TextMatch[], truncated: false };
+  if (result.code !== 0) throw new Error(gitFailure);
+  return parseGrep(result.stdout);
+}
+export async function findProjectFiles(root: string, query: string) {
+  if (!query || query.length > 200) throw new Error('文件名片段长度必须为 1 到 200');
+  const { names, submodules } = await entries(root);
+  const found = names.filter(name => !submodules.some(item => name === item || name.startsWith(item + '/')) && !name.split('/').some(part => part.toLowerCase() === '.git') && name.includes(query));
+  return { matches: found.slice(0, 200), truncated: found.length > 200 };
+}
+export function fileLines(text: string) {
+  if (text === '') return [];
+  const lines = text.split('\n');
+  if (lines.at(-1) === '') lines.pop();
+  return lines;
+}
+export function windowProjectText(path: string, text: string, startLine = 1, maxLines = 400): FileWindow {
+  const start = Math.floor(startLine);
+  const requested = Math.floor(maxLines);
+  if (!Number.isInteger(start) || start < 1) throw new Error('起始行必须从 1 开始');
+  if (!Number.isInteger(requested) || requested < 1) throw new Error('读取行数必须至少为 1');
+  const lines = fileLines(text);
+  if (lines.length === 0) return { path, startLine: 1, totalLines: 0, truncated: false, text: '' };
+  if (start > lines.length) throw new Error('起始行超出文件');
+  const count = Math.min(requested, 400);
+  let slice = lines.slice(start - 1, start - 1 + count);
+  let shown = slice.map((line, index) => `${start + index}|${line}`).join('\n');
+  while (slice.length > 1 && Buffer.byteLength(shown) > 128 * 1024) {
+    slice = slice.slice(0, -1);
+    shown = slice.map((line, index) => `${start + index}|${line}`).join('\n');
+  }
+  const truncated = start - 1 + slice.length < lines.length;
+  const note = truncated ? `文件共 ${lines.length} 行，本次从第 ${start} 行返回 ${slice.length} 行。可指定 startLine 继续阅读。` : undefined;
+  return { path, startLine: start, totalLines: lines.length, truncated, text: shown, note };
+}
+export async function readProjectText(root: string, input: string) {
+  const absolute = await safePath(root, input);
+  const stat = await lstat(absolute);
+  if (!stat.isFile() && !stat.isSymbolicLink()) throw new Error('只能读取文本文件');
+  if (stat.size > 128 * 1024) throw new Error('单次文件读取上限 128 KiB');
+  const text = await readFile(absolute, 'utf8');
+  if (text.includes('\0')) throw new Error('不支持读取二进制内容');
+  return { path: relative(root, absolute), absolute, text };
 }
 function inside(root: string, path: string) { const rel = relative(root, path); return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith('../')); }
 export async function safePath(root: string, input: string, writable = false) {

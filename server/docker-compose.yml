@@ -28,7 +28,8 @@ services:
       T_AGNET_APPROVAL_TTL_SECONDS: ${T_AGNET_APPROVAL_TTL_SECONDS:-900}
       T_AGNET_COMMAND_TTL_SECONDS: ${T_AGNET_COMMAND_TTL_SECONDS:-86400}
     ports:
-      - "127.0.0.1:8000:8000"
+      # 0.0.0.0 so a phone on the same LAN can reach the API. Postgres stays on loopback.
+      - "8000:8000"
     depends_on:
       postgres:
         condition: service_healthy

@@ -81,7 +81,7 @@ export class CloudSync implements CodingObserver {
     const login = await cloudFetch<{ access_token: string }>(serverUrl, 'POST', '/auth/login', { body: { password: input.password } }).catch(e => { throw pairingError(e, '管理员密码错误'); });
     const code = await cloudFetch<{ pairing_code: string }>(serverUrl, 'POST', '/devices/pairing-codes', { headers: { authorization: `Bearer ${login.access_token}` } }).catch(e => { throw pairingError(e, '无法生成配对码'); });
     const identity = newIdentity();
-    const device = await cloudFetch<{ device_id: string }>(serverUrl, 'POST', '/devices/pair', { body: { pairing_code: code.pairing_code, public_key: identity.publicKey, label: input.label, capabilities: ['plan', 'execute'] } }).catch(e => { throw pairingError(e, '配对失败'); });
+    const device = await cloudFetch<{ device_id: string }>(serverUrl, 'POST', '/devices/pair', { body: { pairing_code: code.pairing_code, public_key: identity.publicKey, label: input.label, capabilities: ['plan', 'execute', 'shared_v1'] } }).catch(e => { throw pairingError(e, '配对失败'); });
     const account = randomUUID();
     await this.host.credentials.set(account, identity.privateKey);
     this.db.putLink({ account, serverUrl, deviceId: device.device_id, label: input.label, publicKey: identity.publicKey, pairedAt: Date.now(), producerSeq: 0, lastSyncAt: Date.now() });
@@ -118,7 +118,7 @@ export class CloudSync implements CodingObserver {
     this.kick(0); return null;
   }
 
-  private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     if (!this.sign) throw new Error('尚未配对云端');
     const result = await cloudFetch<T>(this.serverUrl, method, path, { body, signer: this.sign });
     const link = this.db.link(); if (link) this.db.putLink({ ...link, lastSyncAt: Date.now() });

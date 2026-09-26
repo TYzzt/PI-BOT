@@ -143,7 +143,7 @@ def test_s3_06_openapi_lists_device_decision_endpoints() -> None:
     )
     spec = app.openapi()
     device_paths = {"/device/plans/{plan_id}/approve", "/device/plans/{plan_id}/reject", "/device/plans/{plan_id}/revise"}
-    assert set(spec["paths"]) == EXPECTED_PATHS | device_paths
+    assert EXPECTED_PATHS | device_paths <= set(spec["paths"])
     for path in device_paths:
         assert spec["paths"][path]["post"]["security"] == [
             {"DeviceId": [], "DeviceTimestamp": [], "DeviceNonce": [], "DeviceSignature": []}

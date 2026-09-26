@@ -1,0 +1,7 @@
+# Optional overlay: generate the key file before enabling model/credential synchronization.
+services:
+  api:
+    environment:
+      T_AGNET_SYNC_KEY_FILE: /run/secrets/sync-vault.json
+    volumes:
+      - ${T_AGNET_SYNC_KEY_FILE:?set T_AGNET_SYNC_KEY_FILE to an absolute vault file path}:/run/secrets/sync-vault.json:ro

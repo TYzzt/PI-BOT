@@ -1,6 +1,46 @@
 {
   "components": {
     "schemas": {
+      "Applied": {
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "enum": [
+                  "keychain_failed",
+                  "referenced",
+                  "invalid_config"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "state": {
+            "enum": [
+              "applied",
+              "failed"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "state"
+        ],
+        "title": "Applied",
+        "type": "object"
+      },
       "ApprovalPublic": {
         "properties": {
           "actor": {
@@ -129,6 +169,166 @@
         "title": "CancelRequest",
         "type": "object"
       },
+      "ChangePage": {
+        "properties": {
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/ChangePublic"
+            },
+            "title": "Changes",
+            "type": "array"
+          },
+          "has_more": {
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "title": "Next Cursor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "changes",
+          "next_cursor",
+          "has_more"
+        ],
+        "title": "ChangePage",
+        "type": "object"
+      },
+      "ChangePublic": {
+        "properties": {
+          "cursor": {
+            "title": "Cursor",
+            "type": "integer"
+          },
+          "document": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModelPublic"
+              },
+              {
+                "$ref": "#/components/schemas/ConversationPublic"
+              },
+              {
+                "$ref": "#/components/schemas/MessagePublic"
+              },
+              {
+                "$ref": "#/components/schemas/ChatRunPublic"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "model",
+              "conversation",
+              "message",
+              "chat_run"
+            ],
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cursor",
+          "kind",
+          "id",
+          "document"
+        ],
+        "title": "ChangePublic",
+        "type": "object"
+      },
+      "ChatRunPublic": {
+        "properties": {
+          "acked": {
+            "title": "Acked",
+            "type": "boolean"
+          },
+          "cancel_requested": {
+            "title": "Cancel Requested",
+            "type": "boolean"
+          },
+          "conversation_id": {
+            "format": "uuid",
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "device_id": {
+            "format": "uuid",
+            "title": "Device Id",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "local_run_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Local Run Id"
+          },
+          "message_id": {
+            "format": "uuid",
+            "title": "Message Id",
+            "type": "string"
+          },
+          "share_version": {
+            "title": "Share Version",
+            "type": "integer"
+          },
+          "state": {
+            "enum": [
+              "queued",
+              "running",
+              "completed",
+              "failed",
+              "cancelled",
+              "interrupted"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "device_id",
+          "version",
+          "conversation_id",
+          "message_id",
+          "text",
+          "state",
+          "share_version",
+          "acked",
+          "cancel_requested",
+          "local_run_id"
+        ],
+        "title": "ChatRunPublic",
+        "type": "object"
+      },
       "CommandAckResponse": {
         "properties": {
           "acked_at": {
@@ -215,6 +415,221 @@
           "created_at"
         ],
         "title": "CommandPublic",
+        "type": "object"
+      },
+      "ConversationPublic": {
+        "properties": {
+          "deleted": {
+            "title": "Deleted",
+            "type": "boolean"
+          },
+          "device_id": {
+            "format": "uuid",
+            "title": "Device Id",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "ask",
+              "read_code"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "model_config_id": {
+            "format": "uuid",
+            "title": "Model Config Id",
+            "type": "string"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "share_version": {
+            "title": "Share Version",
+            "type": "integer"
+          },
+          "shared": {
+            "title": "Shared",
+            "type": "boolean"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "device_id",
+          "version",
+          "title",
+          "kind",
+          "model_config_id",
+          "project_id",
+          "task_id",
+          "shared",
+          "share_version",
+          "deleted"
+        ],
+        "title": "ConversationPublic",
+        "type": "object"
+      },
+      "ConversationWrite": {
+        "additionalProperties": false,
+        "properties": {
+          "deleted": {
+            "default": false,
+            "title": "Deleted",
+            "type": "boolean"
+          },
+          "device_id": {
+            "format": "uuid",
+            "title": "Device Id",
+            "type": "string"
+          },
+          "expected_version": {
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "ask",
+              "read_code"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "model_config_id": {
+            "format": "uuid",
+            "title": "Model Config Id",
+            "type": "string"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "request_id": {
+            "format": "uuid",
+            "title": "Request Id",
+            "type": "string"
+          },
+          "shared": {
+            "default": true,
+            "title": "Shared",
+            "type": "boolean"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "title": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_version",
+          "request_id",
+          "device_id",
+          "title",
+          "kind",
+          "model_config_id"
+        ],
+        "title": "ConversationWrite",
+        "type": "object"
+      },
+      "CredentialPublic": {
+        "properties": {
+          "api_key": {
+            "title": "Api Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "api_key"
+        ],
+        "title": "CredentialPublic",
+        "type": "object"
+      },
+      "DeleteModel": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_version": {
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "replacement_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replacement Id"
+          },
+          "request_id": {
+            "format": "uuid",
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_version",
+          "request_id"
+        ],
+        "title": "DeleteModel",
         "type": "object"
       },
       "DeviceEventBatch": {
@@ -699,6 +1114,358 @@
         "title": "LoginRequest",
         "type": "object"
       },
+      "MessagePage": {
+        "properties": {
+          "has_more": {
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/MessagePublic"
+            },
+            "title": "Messages",
+            "type": "array"
+          },
+          "next_cursor": {
+            "title": "Next Cursor",
+            "type": "integer"
+          },
+          "pending_messages": {
+            "items": {
+              "$ref": "#/components/schemas/MessagePublic"
+            },
+            "title": "Pending Messages",
+            "type": "array"
+          }
+        },
+        "required": [
+          "pending_messages",
+          "messages",
+          "next_cursor",
+          "has_more"
+        ],
+        "title": "MessagePage",
+        "type": "object"
+      },
+      "MessagePublic": {
+        "properties": {
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "conversation_id": {
+            "format": "uuid",
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "device_id": {
+            "format": "uuid",
+            "title": "Device Id",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "user",
+              "assistant"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "sequence": {
+            "title": "Sequence",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "running",
+              "completed",
+              "failed",
+              "cancelled",
+              "interrupted"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "device_id",
+          "version",
+          "conversation_id",
+          "run_id",
+          "role",
+          "content",
+          "status",
+          "sequence"
+        ],
+        "title": "MessagePublic",
+        "type": "object"
+      },
+      "MessageWrite": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "maxLength": 1000000,
+            "title": "Content",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "revision": {
+            "minimum": 1.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "role": {
+            "enum": [
+              "user",
+              "assistant"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "sequence": {
+            "minimum": 1.0,
+            "title": "Sequence",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "running",
+              "completed",
+              "failed",
+              "cancelled",
+              "interrupted"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "run_id",
+          "role",
+          "content",
+          "status",
+          "revision",
+          "sequence"
+        ],
+        "title": "MessageWrite",
+        "type": "object"
+      },
+      "ModelFields": {
+        "additionalProperties": false,
+        "properties": {
+          "base_url": {
+            "format": "uri",
+            "minLength": 1,
+            "title": "Base Url",
+            "type": "string"
+          },
+          "context_window": {
+            "maximum": 4000000.0,
+            "minimum": 1024.0,
+            "title": "Context Window",
+            "type": "integer"
+          },
+          "is_default": {
+            "default": false,
+            "title": "Is Default",
+            "type": "boolean"
+          },
+          "max_tokens": {
+            "maximum": 1000000.0,
+            "minimum": 16.0,
+            "title": "Max Tokens",
+            "type": "integer"
+          },
+          "model_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Model Id",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "base_url",
+          "model_id",
+          "context_window",
+          "max_tokens"
+        ],
+        "title": "ModelFields",
+        "type": "object"
+      },
+      "ModelPublic": {
+        "properties": {
+          "applied_version": {
+            "title": "Applied Version",
+            "type": "integer"
+          },
+          "apply_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Apply Error"
+          },
+          "apply_state": {
+            "enum": [
+              "pending",
+              "applied",
+              "failed"
+            ],
+            "title": "Apply State",
+            "type": "string"
+          },
+          "config": {
+            "$ref": "#/components/schemas/PublicModelFields"
+          },
+          "credential_version": {
+            "title": "Credential Version",
+            "type": "integer"
+          },
+          "deleted": {
+            "title": "Deleted",
+            "type": "boolean"
+          },
+          "device_id": {
+            "format": "uuid",
+            "title": "Device Id",
+            "type": "string"
+          },
+          "has_key": {
+            "title": "Has Key",
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "replacement_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replacement Id"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "device_id",
+          "version",
+          "config",
+          "has_key",
+          "credential_version",
+          "deleted",
+          "applied_version",
+          "apply_state"
+        ],
+        "title": "ModelPublic",
+        "type": "object"
+      },
+      "ModelWrite": {
+        "additionalProperties": false,
+        "properties": {
+          "api_key": {
+            "anyOf": [
+              {
+                "maxLength": 8192,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key",
+            "writeOnly": true
+          },
+          "config": {
+            "$ref": "#/components/schemas/ModelFields"
+          },
+          "device_id": {
+            "format": "uuid",
+            "title": "Device Id",
+            "type": "string"
+          },
+          "expected_version": {
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "request_id": {
+            "format": "uuid",
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_version",
+          "request_id",
+          "device_id",
+          "config"
+        ],
+        "title": "ModelWrite",
+        "type": "object"
+      },
+      "Ok": {
+        "properties": {
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "Ok",
+        "type": "object"
+      },
       "PairRequest": {
         "additionalProperties": false,
         "properties": {
@@ -814,8 +1581,14 @@
           },
           "questions": {
             "items": {
-              "maxLength": 2000,
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "$ref": "#/components/schemas/PlanQuestion"
+                }
+              ]
             },
             "maxItems": 20,
             "title": "Questions",
@@ -865,6 +1638,28 @@
           "questions"
         ],
         "title": "PlanBody",
+        "type": "object"
+      },
+      "PlanOption": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label"
+        ],
+        "title": "PlanOption",
         "type": "object"
       },
       "PlanPublic": {
@@ -986,6 +1781,43 @@
           "config_snapshot_id"
         ],
         "title": "PlanPublish",
+        "type": "object"
+      },
+      "PlanQuestion": {
+        "additionalProperties": false,
+        "properties": {
+          "allow_multiple": {
+            "default": false,
+            "title": "Allow Multiple",
+            "type": "boolean"
+          },
+          "id": {
+            "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+            "title": "Id",
+            "type": "string"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/PlanOption"
+            },
+            "maxItems": 5,
+            "minItems": 2,
+            "title": "Options",
+            "type": "array"
+          },
+          "prompt": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Prompt",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "prompt",
+          "options"
+        ],
+        "title": "PlanQuestion",
         "type": "object"
       },
       "PlanStep": {
@@ -1177,6 +2009,44 @@
         "title": "ProjectPublic",
         "type": "object"
       },
+      "PublicModelFields": {
+        "properties": {
+          "base_url": {
+            "title": "Base Url",
+            "type": "string"
+          },
+          "context_window": {
+            "title": "Context Window",
+            "type": "integer"
+          },
+          "is_default": {
+            "title": "Is Default",
+            "type": "boolean"
+          },
+          "max_tokens": {
+            "title": "Max Tokens",
+            "type": "integer"
+          },
+          "model_id": {
+            "title": "Model Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "base_url",
+          "model_id",
+          "context_window",
+          "max_tokens",
+          "is_default"
+        ],
+        "title": "PublicModelFields",
+        "type": "object"
+      },
       "RejectRequest": {
         "additionalProperties": false,
         "properties": {
@@ -1192,6 +2062,39 @@
           "idempotency_key"
         ],
         "title": "RejectRequest",
+        "type": "object"
+      },
+      "Result": {
+        "additionalProperties": false,
+        "properties": {
+          "local_run_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Local Run Id"
+          },
+          "state": {
+            "enum": [
+              "running",
+              "completed",
+              "failed",
+              "cancelled",
+              "interrupted"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "Result",
         "type": "object"
       },
       "ReviseRequest": {
@@ -1286,6 +2189,28 @@
           "updated_at"
         ],
         "title": "RunPublic",
+        "type": "object"
+      },
+      "Send": {
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "format": "uuid",
+            "title": "Request Id",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 30000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "text"
+        ],
+        "title": "Send",
         "type": "object"
       },
       "SequenceGap": {
@@ -1584,6 +2509,30 @@
         "title": "TokenResponse",
         "type": "object"
       },
+      "Upload": {
+        "additionalProperties": false,
+        "properties": {
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/MessageWrite"
+            },
+            "maxItems": 50,
+            "title": "Messages",
+            "type": "array"
+          },
+          "share_version": {
+            "minimum": 1.0,
+            "title": "Share Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "share_version",
+          "messages"
+        ],
+        "title": "Upload",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -1867,7 +2816,7 @@
     }
   },
   "info": {
-    "description": "阶段 2：单用户认证、设备配对、项目目录、持久任务、计划版本审批、设备命令投递与任务事件回放。WebSocket：/ws/device（设备签名握手）与 /ws/events（用户 JWT），消息格式见 components 中 Ws* 模型。不包含共享聊天、配置同步和云端问答。",
+    "description": "阶段 2：单用户认证、设备配对、项目目录、持久任务、计划版本审批、设备命令投递与任务事件回放。WebSocket：/ws/device（设备签名握手）与 /ws/events（用户 JWT），消息格式见 components 中 Ws* 模型。包含共享聊天、模型配置同步；不包含云端问答。",
     "title": "T-AGNET Server",
     "version": "0.2.0"
   },
@@ -1911,6 +2860,620 @@
         "summary": "Login",
         "tags": [
           "auth"
+        ]
+      }
+    },
+    "/chat-runs/{id}": {
+      "get": {
+        "operationId": "chat_run_chat_runs__id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRunPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "UserBearer": []
+          }
+        ],
+        "summary": "Chat Run",
+        "tags": [
+          "shared"
+        ]
+      }
+    },
+    "/chat-runs/{id}/cancel": {
+      "post": {
+        "operationId": "cancel_chat_runs__id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRunPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "UserBearer": []
+          }
+        ],
+        "summary": "Cancel",
+        "tags": [
+          "shared"
+        ]
+      }
+    },
+    "/configs/models": {
+      "get": {
+        "operationId": "models_configs_models_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ModelPublic"
+                  },
+                  "title": "Response Models Configs Models Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "UserBearer": []
+          }
+        ],
+        "summary": "Models",
+        "tags": [
+          "shared"
+        ]
+      }
+    },
+    "/configs/models/{id}": {
+      "put": {
+        "operationId": "model_put_configs_models__id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModelWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "UserBearer": []
+          }
+        ],
+        "summary": "Model Put",
+        "tags": [
+          "shared"
+        ]
+      }
+    },
+    "/configs/models/{id}/delete": {
+      "post": {
+        "operationId": "model_delete_configs_models__id__delete_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteModel"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "UserBearer": []
+          }
+        ],
+        "summary": "Model Delete",
+        "tags": [
+          "shared"
+        ]
+      }
+    },
+    "/conversations": {
+      "get": {
+        "operationId": "conversations_conversations_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ConversationPublic"
+                  },
+                  "title": "Response Conversations Conversations Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "UserBearer": []
+          }
+        ],
+        "summary": "Conversations",
+        "tags": [
+          "shared"
+        ]
+      }
+    },
+    "/conversations/{id}": {
+      "get": {
+        "operationId": "conversation_get_conversations__id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "UserBearer": []
+          }
+        ],
+        "summary": "Conversation Get",
+        "tags": [
+          "shared"
+        ]
+      },
+      "put": {
+        "operationId": "conversation_put_conversations__id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConversationWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "UserBearer": []
+          }
+        ],
+        "summary": "Conversation Put",
+        "tags": [
+          "shared"
+        ]
+      }
+    },
+    "/conversations/{id}/messages": {
+      "get": {
+        "operationId": "messages_conversations__id__messages_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "After",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessagePage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "UserBearer": []
+          }
+        ],
+        "summary": "Messages",
+        "tags": [
+          "shared"
+        ]
+      },
+      "post": {
+        "operationId": "send_conversations__id__messages_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Send"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRunPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "UserBearer": []
+          }
+        ],
+        "summary": "Send",
+        "tags": [
+          "shared"
+        ]
+      }
+    },
+    "/device/chat-runs/{id}/ack": {
+      "post": {
+        "operationId": "ack_device_chat_runs__id__ack_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRunPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "DeviceId": [],
+            "DeviceNonce": [],
+            "DeviceSignature": [],
+            "DeviceTimestamp": []
+          }
+        ],
+        "summary": "Ack",
+        "tags": [
+          "shared"
+        ]
+      }
+    },
+    "/device/chat-runs/{id}/result": {
+      "post": {
+        "operationId": "result_device_chat_runs__id__result_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Result"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRunPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "DeviceId": [],
+            "DeviceNonce": [],
+            "DeviceSignature": [],
+            "DeviceTimestamp": []
+          }
+        ],
+        "summary": "Result",
+        "tags": [
+          "shared"
         ]
       }
     },
@@ -1995,6 +3558,371 @@
         "summary": "Ack",
         "tags": [
           "device"
+        ]
+      }
+    },
+    "/device/configs/models/{id}": {
+      "put": {
+        "operationId": "device_model_put_device_configs_models__id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModelWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "DeviceId": [],
+            "DeviceNonce": [],
+            "DeviceSignature": [],
+            "DeviceTimestamp": []
+          }
+        ],
+        "summary": "Device Model Put",
+        "tags": [
+          "shared"
+        ]
+      }
+    },
+    "/device/configs/models/{id}/applied": {
+      "post": {
+        "operationId": "applied_device_configs_models__id__applied_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Applied"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "DeviceId": [],
+            "DeviceNonce": [],
+            "DeviceSignature": [],
+            "DeviceTimestamp": []
+          }
+        ],
+        "summary": "Applied",
+        "tags": [
+          "shared"
+        ]
+      }
+    },
+    "/device/configs/models/{id}/credential": {
+      "get": {
+        "operationId": "credential_device_configs_models__id__credential_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "DeviceId": [],
+            "DeviceNonce": [],
+            "DeviceSignature": [],
+            "DeviceTimestamp": []
+          }
+        ],
+        "summary": "Credential",
+        "tags": [
+          "shared"
+        ]
+      }
+    },
+    "/device/configs/models/{id}/delete": {
+      "post": {
+        "operationId": "device_model_delete_device_configs_models__id__delete_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteModel"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "DeviceId": [],
+            "DeviceNonce": [],
+            "DeviceSignature": [],
+            "DeviceTimestamp": []
+          }
+        ],
+        "summary": "Device Model Delete",
+        "tags": [
+          "shared"
+        ]
+      }
+    },
+    "/device/conversations/{id}": {
+      "put": {
+        "operationId": "device_conversation_put_device_conversations__id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConversationWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "DeviceId": [],
+            "DeviceNonce": [],
+            "DeviceSignature": [],
+            "DeviceTimestamp": []
+          }
+        ],
+        "summary": "Device Conversation Put",
+        "tags": [
+          "shared"
+        ]
+      }
+    },
+    "/device/conversations/{id}/messages": {
+      "post": {
+        "operationId": "upload_device_conversations__id__messages_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Upload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "DeviceId": [],
+            "DeviceNonce": [],
+            "DeviceSignature": [],
+            "DeviceTimestamp": []
+          }
+        ],
+        "summary": "Upload",
+        "tags": [
+          "shared"
         ]
       }
     },
@@ -2227,6 +4155,125 @@
         "summary": "Device Revise",
         "tags": [
           "device"
+        ]
+      }
+    },
+    "/device/shared/changes": {
+      "get": {
+        "operationId": "changes_device_shared_changes_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "After",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChangePage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "DeviceId": [],
+            "DeviceNonce": [],
+            "DeviceSignature": [],
+            "DeviceTimestamp": []
+          }
+        ],
+        "summary": "Changes",
+        "tags": [
+          "shared"
+        ]
+      }
+    },
+    "/device/shared/enable": {
+      "post": {
+        "operationId": "enable_device_shared_enable_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "DeviceId": [],
+            "DeviceNonce": [],
+            "DeviceSignature": [],
+            "DeviceTimestamp": []
+          }
+        ],
+        "summary": "Enable",
+        "tags": [
+          "shared"
+        ]
+      }
+    },
+    "/device/shared/snapshot": {
+      "get": {
+        "operationId": "snapshot_device_shared_snapshot_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "DeviceId": [],
+            "DeviceNonce": [],
+            "DeviceSignature": [],
+            "DeviceTimestamp": []
+          }
+        ],
+        "summary": "Snapshot",
+        "tags": [
+          "shared"
         ]
       }
     },

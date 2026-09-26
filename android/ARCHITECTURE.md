@@ -386,3 +386,29 @@ Android：会话列表；server/本地聊天；项目和在线状态；Plan 审�
 - [DeepAgents 概览](https://docs.langchain.com/oss/python/deepagents/overview)、[人工干预](https://docs.langchain.com/oss/python/deepagents/human-in-the-loop)：云端 harness 与执行干预。
 
 三端事件协议、任务审批、配置版本、离线恢复和数据分流为本方案提出的工程设计，不是以上任一框架开箱即用的完整功能。
+
+## 共享会话与模型同步实现补充
+
+Mac 是本地会话的唯一执行设备；云端保存共享用户消息、完整助手回答及版本，远程问答通过持久化 chat_run 队列交给所属 Mac。读代码直接回答，不触发编程审批。新会话在配对后默认共享，旧会话手动选择；不传输 Pi 会话、源码目录、diff 或原始工具输出。
+
+所有模型配置与 API Key 自动同步到可信云端，API Key 采用独立主密钥的 AES-256-GCM 加密；只有绑定设备能下载到 Keychain。使用 expected_version、desired/applied 版本和显式冲突解决。Android 未来通过 JWT 读取共享记录、发送问题与编辑配置，不获得密钥查询权限。详细规则与冻结接口见项目根目录 SYNC.md 及 server/openapi.json。
+
+
+```mermaid
+flowchart LR
+    Client[独立客户端 / 未来 Android] -->|JWT · REST / WSS 通知| API[云端 FastAPI]
+    API --> DB[(PostgreSQL
+共享历史 / 请求队列 / 配置版本)]
+    API --> Vault[AES-256-GCM
+独立主密钥文件]
+    Mac[Mac Node 服务] -->|设备签名 · HTTPS
+快照 / cursor / 回执| API
+    UI[Electron] -->|受控 IPC| Mac
+    Mac --> Local[(SQLite
+消息修订 / 同步状态 / 执行映射)]
+    Mac --> Keychain[macOS Keychain]
+    Mac --> Pi[Pi Ask / 只读代码问答]
+    Pi --> Context[本机项目与 Pi 会话]
+```
+
+这部分是当前交付范围。前文的 Android、DeepAgents、Skills/MCP、Chrome 和 launchd 仍属于后续设计；完整部署与验收状态见根目录 SYNC.md 和 VALIDATION-SYNC.md。

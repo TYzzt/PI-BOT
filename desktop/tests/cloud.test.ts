@@ -35,18 +35,18 @@ test('device signature follows the server canonical message', () => {
   assert.equal(Buffer.from(identity.publicKey, 'base64').length, 32);
 });
 
-test('v2 database migrates to v3 without touching existing data', () => {
+test('v2 database migrates to v4 without touching existing data', () => {
   const dir = temp(), path = join(dir.path, 'v2.sqlite');
   try {
     let store = new Store(path);
     store.putModel({ id: randomUUID(), name: 'kept', baseUrl: 'https://example.com/v1', modelId: 'm', contextWindow: 32000, maxTokens: 4096, isDefault: true, hasKey: true });
     const conversation = store.createConversation(store.models()[0].id); store.start(conversation.id, '旧问题', randomUUID());
-    store.db.exec('DROP TABLE cloud_link; DROP TABLE cloud_projects; DROP TABLE cloud_tasks; DROP TABLE cloud_commands; DROP TABLE cloud_outbox; PRAGMA user_version=2;'); store.close();
+    store.db.exec('DROP TRIGGER shared_message_insert; DROP TRIGGER shared_message_update; DROP TABLE shared_state; DROP TABLE shared_dirty; ALTER TABLE conversations DROP COLUMN shared; DROP TABLE cloud_link; DROP TABLE cloud_projects; DROP TABLE cloud_tasks; DROP TABLE cloud_commands; DROP TABLE cloud_outbox; PRAGMA user_version=2;'); store.close();
     store = new Store(path);
-    assert.equal((store.db.prepare('PRAGMA user_version').get() as any).user_version, 3);
+    assert.equal((store.db.prepare('PRAGMA user_version').get() as any).user_version, 4);
     assert.equal(store.models()[0].name, 'kept'); assert.equal(store.messages(conversation.id)[0].content, '旧问题');
     assert.equal((store.db.prepare('SELECT count(*) AS n FROM cloud_outbox').get() as any).n, 0);
-    store.db.exec('PRAGMA user_version=4'); store.close();
+    store.db.exec('PRAGMA user_version=5'); store.close();
     assert.throws(() => new Store(path), /数据库版本较新/);
   } finally { dir.cleanup(); }
 });

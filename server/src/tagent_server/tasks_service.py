@@ -334,7 +334,7 @@ def publish_plan(session: Session, device: Device, task_id: uuid.UUID, payload: 
         now=now,
         payload={"plan_id": str(plan.plan_id), "version": plan.version, "content_hash": plan.content_hash},
     )
-    set_task_status(session, task, "awaiting_review", now)
+    set_task_status(session, task, "waiting_for_input" if body.get("questions") else "awaiting_review", now)
     return plan
 
 
@@ -362,6 +362,8 @@ def approve_plan(
     _require_latest(task, plan)
     if task.status != "awaiting_review" or task.cancel_requested_at is not None:
         raise HTTPException(status_code=409, detail="任务当前不能批准")
+    if plan.body.get("questions"):
+        raise HTTPException(status_code=409, detail="请先回答计划中的待确认问题")
     _require_target_usable(session, task)
     approval = Approval(
         plan_id=plan.plan_id,
@@ -438,7 +440,7 @@ def reject_plan(
             raise HTTPException(status_code=409, detail="幂等键已用于其他请求")
         return task
     _require_latest(task, plan)
-    if task.status != "awaiting_review":
+    if task.status not in ("awaiting_review", "waiting_for_input"):
         raise HTTPException(status_code=409, detail="任务当前不能拒绝")
     approval = Approval(
         plan_id=plan.plan_id,
@@ -483,7 +485,7 @@ def revise_plan(
             raise HTTPException(status_code=409, detail="幂等键已用于其他请求")
         return task
     _require_latest(task, plan)
-    if task.status not in ("awaiting_review", "needs_replan", "interrupted") or task.cancel_requested_at is not None:
+    if task.status not in ("awaiting_review", "waiting_for_input", "needs_replan", "interrupted") or task.cancel_requested_at is not None:
         raise HTTPException(status_code=409, detail="任务当前不能修改计划")
     device = _require_target_usable(session, task)
     run = _new_run(session, task, "plan", now)

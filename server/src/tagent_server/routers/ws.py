@@ -2,6 +2,8 @@ import asyncio
 import json
 import time
 import uuid
+
+import anyio
 from collections.abc import Awaitable, Callable
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
@@ -62,9 +64,10 @@ async def _race(*coroutines: Awaitable[None]) -> None:
             if exception is not None and not isinstance(exception, WebSocketDisconnect):
                 raise exception
     finally:
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        with anyio.CancelScope(shield=True):
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def _wait(event: asyncio.Event, timeout: float) -> None:

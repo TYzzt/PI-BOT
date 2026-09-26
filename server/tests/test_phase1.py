@@ -191,7 +191,7 @@ def test_openapi_contract() -> None:
     )
     spec = app.openapi()
     assert EXPECTED_PATHS <= set(spec["paths"])
-    for reserved in ("/conversations", "/configs"):
+    for reserved in ("/configs",):
         assert reserved not in spec["paths"]
     schemas = spec["components"]["schemas"]
     for name in ("ProjectCreate", "ProjectPatch", "PairRequest", "LoginRequest"):

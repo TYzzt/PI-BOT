@@ -1,3 +1,5 @@
+> 新增：聊天记录、模型配置/API Key 同步与远程续聊已接入。共享规则、加密密钥部署及验收命令见 [SYNC.md](../SYNC.md)。原阶段说明保留作为历史记录。
+
 # T-AGNET desktop
 
 macOS 个人智能体桌面应用：本地 Ask + 项目代码问答 + Git 项目编程闭环 + 云端任务执行。Electron + React + TypeScript + Vite / Electron Forge，独立 Node.js 24 服务，真实 Pi SDK，SQLite 和 macOS Keychain。

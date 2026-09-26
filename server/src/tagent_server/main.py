@@ -16,6 +16,7 @@ from tagent_server.openapi_extra import SECURITY_SCHEMES
 from tagent_server.realtime import ChangeHub
 from tagent_server.routers import auth, device_sync, devices, events, health, plans, projects, tasks, ws
 from tagent_server.schemas import WS_MODELS
+from tagent_server.routers import shared
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         description=(
             "阶段 2：单用户认证、设备配对、项目目录、持久任务、计划版本审批、设备命令投递与任务事件回放。"
             "WebSocket：/ws/device（设备签名握手）与 /ws/events（用户 JWT），消息格式见 components 中 Ws* 模型。"
-            "不包含共享聊天、配置同步和云端问答。"
+            "包含共享聊天、模型配置同步；不包含云端问答。"
         ),
         lifespan=lifespan,
         redirect_slashes=False,
@@ -75,6 +76,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(device_sync.router)
     app.include_router(events.router)
     app.include_router(ws.router)
+    app.include_router(shared.router)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(_request: Request, exc: RequestValidationError) -> JSONResponse:
