@@ -1,5 +1,8 @@
 import { SharedSync } from './cloud/shared.js';
 import { CloudChat, cloudChatMethods, type CloudChatMethod } from './cloud/chat.js';
+import { ConfigSync, configMethods, type ConfigMethod, type ConfigHost } from './cloud/configs.js';
+import { dataDir } from './paths.js';
+import { join } from 'node:path';
 import { CodingController } from './coding/controller.js';
 import { codingSchemas } from '../../protocol/src/coding.js';
 import { cloudSchemas } from '../../protocol/src/cloud.js';
@@ -16,12 +19,13 @@ export class Application {
   private active: { run: Run; assistantId: string; agent?: AgentHandle; cancelled: boolean; done?: Promise<void> } | null = null;
   private testing = false;
   private serial: Promise<unknown> = Promise.resolve();
-  readonly coding: CodingController; readonly cloud: CloudSync; readonly shared: SharedSync; readonly cloudChat: CloudChat;
-  constructor(readonly store: Store, private credentials: Credentials, private factory: AgentFactory, private emit: (event: AppEvent) => void, cloud: { credentials?: Credentials; options?: CloudOptions } = {}) {
+  readonly coding: CodingController; readonly cloud: CloudSync; readonly shared: SharedSync; readonly cloudChat: CloudChat; readonly configs: ConfigSync;
+  constructor(readonly store: Store, private credentials: Credentials, private factory: AgentFactory, private emit: (event: AppEvent) => void, cloud: { credentials?: Credentials; options?: CloudOptions; configs?: { dir?: string; intervalMs?: number; env?: ConfigHost['env'] } } = {}) {
     this.coding = new CodingController(store, credentials, factory, emit, () => this.idle());
     this.cloud = new CloudSync({ store, coding: this.coding, credentials: cloud.credentials ?? new MemoryCredentials(), serial: fn => this.enqueue(fn), busy: () => this.busy(), emit }, cloud.options);
     this.shared = new SharedSync({ store, keys: credentials, cloud: this.cloud, coding: this.coding, busy: () => this.busy(), serial: fn => this.enqueue(fn), call: (method, input) => this.dispatch(method as Method, input, true), emit });
     this.cloudChat = new CloudChat({ paired: () => !!this.cloud.db.link(), request: (method, path, body) => this.cloud.request(method, path, body) });
+    this.configs = new ConfigSync({ paired: () => !!this.cloud.db.link(), connected: () => this.cloud.connected, request: (method, path, body) => this.cloud.request(method, path, body), keys: credentials, db: store.db, dir: cloud.configs?.dir ?? join(dataDir, 'skills'), env: cloud.configs?.env, emit: () => emit({ type: 'cloud.changed' }) }, cloud.configs?.intervalMs);
     void this.cloud.start();
   }
   private enqueue<T>(fn: () => Promise<T>): Promise<T> { const result = this.serial.then(fn); this.serial = result.catch(() => {}); return result; }
@@ -29,6 +33,7 @@ export class Application {
     const input = parseInput(method, raw);
     // Cloud chat is plain server I/O: it must not wait behind local generation or sync work in the serial queue.
     if (cloudChatMethods.has(method)) return this.cloudChat.dispatch(method as CloudChatMethod, input as never) as Promise<Api[M]['output']>;
+    if (configMethods.has(method)) return this.configs.dispatch(method as ConfigMethod, input as never) as Promise<Api[M]['output']>;
     const result = this.enqueue(() => this.dispatch(method, input));
     return result.then(value => value && typeof value === 'object' && 'deferred' in value ? (value as { deferred: Promise<unknown> }).deferred : value) as Promise<Api[M]['output']>;
   }
@@ -130,7 +135,7 @@ export class Application {
       this.emit({ type: state === 'completed' ? 'run.completed' : state === 'cancelled' ? 'run.cancelled' : 'run.failed', ...ids }); this.changed();
     }
   }
-  async shutdown() { await this.shared.stop(); this.cloud.stop(); await this.coding.shutdown(); if (this.active) { const active = this.active; active.cancelled = true; await active.agent?.abort(); await active.done; } }
+  async shutdown() { await this.configs.stop(); await this.shared.stop(); this.cloud.stop(); await this.coding.shutdown(); if (this.active) { const active = this.active; active.cancelled = true; await active.agent?.abort(); await active.done; } }
 }
 export function safeFailure(error: unknown): string {
   const text = error instanceof Error ? error.message : '';
