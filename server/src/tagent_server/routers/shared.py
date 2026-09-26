@@ -16,6 +16,8 @@ from tagent_server.shared_schemas import ModelPublic, ConversationPublic, ChatRu
 
 router = APIRouter(tags=['shared'])
 TERMINAL = {'completed', 'failed', 'cancelled', 'interrupted'}
+# Worker bookkeeping and credential ciphertext never leave the server.
+PRIVATE = {'secret', 'worker_id', 'lease_until', 'generation', 'handoff_messages'}
 CAPABILITY = 'shared_v1'
 class Strict(BaseModel):
     model_config = ConfigDict(extra='forbid')
@@ -75,7 +77,7 @@ class Ack(Strict):
     pass
 
 def public(d: Doc):
-    return {'id': str(d.id), 'device_id': str(d.device_id), 'version': d.version, **{k: v for k,v in d.data.items() if k not in {'secret'}}}
+    return {'id': str(d.id), 'device_id': str(d.device_id) if d.device_id else None, 'version': d.version, **{k: v for k,v in d.data.items() if k not in PRIVATE}}
 def load(s, id, kind, device=None):
     d = s.get(Doc,id)
     if not d or d.kind != kind or (device and d.device_id != device.device_id): raise HTTPException(404,'记录不存在')
@@ -88,7 +90,10 @@ def target(s, id):
 
 def change(s, d):
     s.add(SharedChange(device_id=d.device_id,kind=d.kind,entity_id=d.id,version=d.version))
-    append_event(s,type=f'{d.kind}.changed',task_id=None,now=utcnow(),payload={'id':str(d.id),'version':d.version,'device_id':str(d.device_id)})
+    append_event(s,type=f'{d.kind}.changed',task_id=None,now=utcnow(),payload={'id':str(d.id),'version':d.version,'device_id':str(d.device_id) if d.device_id else None})
+
+def owned(device_id):
+    return Doc.device_id.is_(None) if device_id is None else Doc.device_id==device_id
 
 def receipt(s, key, value):
     digest = hashlib.sha256(value.model_dump_json().encode()).hexdigest()
@@ -174,6 +179,7 @@ def put_conversation(s,id,p,device=None):
     key=f'conversation:{p.device_id}:{p.request_id}';digest,old=receipt(s,key,p)
     if old is not None:return old
     d=s.get(Doc,id)
+    if d and d.kind=='conversation' and d.device_id is None:raise HTTPException(409,'云端会话请使用 /cloud/conversations 接口')
     if d and (d.kind!='conversation' or d.device_id!=p.device_id):raise HTTPException(403,'会话归属不匹配')
     check_version(d,p.expected_version)
     model=load(s,p.model_config_id,'model')
@@ -208,8 +214,9 @@ def conversation_get(id:uuid.UUID,user:User=Depends(require_user),s:Session=Depe
 def messages(id:uuid.UUID,after:int=0,limit:int=Query(default=100,ge=1,le=500),user:User=Depends(require_user),s:Session=Depends(get_session)):
     c=load(s,id,'conversation')
     if c.data.get('deleted'):raise HTTPException(410,'会话已删除')
-    rows=sorted([public(d) for d in s.scalars(select(Doc).where(Doc.kind=='message',Doc.device_id==c.device_id)).all() if d.data['conversation_id']==str(id) and d.data['sequence']>after],key=lambda d:d['sequence'])
-    pending=[public(d) for d in s.scalars(select(Doc).where(Doc.kind=='message',Doc.device_id==c.device_id)).all() if d.data['conversation_id']==str(id) and d.data['sequence']==0]
+    docs=s.scalars(select(Doc).where(Doc.kind=='message',owned(c.device_id),Doc.data['conversation_id'].astext==str(id))).all()
+    rows=sorted([public(d) for d in docs if d.data['sequence']>after],key=lambda d:d['sequence'])
+    pending=[public(d) for d in docs if d.data['sequence']==0]
     return {'pending_messages':pending,'messages':rows[:limit],'next_cursor':rows[:limit][-1]['sequence'] if rows[:limit] else after,'has_more':len(rows)>limit}
 @router.post('/device/conversations/{id}/messages', response_model=Ok)
 def upload(id:uuid.UUID,p:Upload,device:Device=Depends(require_device),s:Session=Depends(get_session)):
@@ -226,14 +233,18 @@ def upload(id:uuid.UUID,p:Upload,device:Device=Depends(require_device),s:Session
     return {'ok':True}
 @router.post('/conversations/{id}/messages', response_model=ChatRunPublic)
 def send(id:uuid.UUID,p:Send,user:User=Depends(require_user),s:Session=Depends(get_session)):
-    write_lock(s);c=load(s,id,'conversation');target(s,c.device_id)
+    write_lock(s);c=load(s,id,'conversation')
+    if c.device_id is not None:target(s,c.device_id)
     key=f'send:{id}:{p.request_id}';digest,old=receipt(s,key,p)
     if old is not None:return old
     if not c.data['shared'] or c.data.get('deleted'):raise HTTPException(409,'会话已停止共享')
     if c.data['kind']=='read_code':
         project=s.get(Project,uuid.UUID(c.data['project_id']))
         if not project or project.device_id!=c.device_id or project.availability!='available':raise HTTPException(409,'项目不可用')
-    for r in s.scalars(select(Doc).where(Doc.kind=='chat_run',Doc.device_id==c.device_id)).all():
+    if c.device_id is None:
+        model=s.get(Doc,uuid.UUID(c.data['model_config_id']))
+        if not model or model.kind!='cloud_model' or model.data.get('deleted'):raise HTTPException(409,'云端模型不可用，请更换模型')
+    for r in s.scalars(select(Doc).where(Doc.kind=='chat_run',owned(c.device_id))).all():
         if r.data['conversation_id']==str(id) and r.data['state'] not in TERMINAL:raise HTTPException(409,'该会话已有未结束请求')
     rid=uuid.uuid4();mid=uuid.uuid4()
     data={'conversation_id':str(id),'message_id':str(mid),'text':p.text,'state':'queued','share_version':c.data['share_version'],'acked':False,'cancel_requested':False,'local_run_id':None}

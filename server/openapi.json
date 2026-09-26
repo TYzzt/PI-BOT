@@ -262,9 +262,16 @@
             "type": "string"
           },
           "device_id": {
-            "format": "uuid",
-            "title": "Device Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Device Id"
           },
           "id": {
             "format": "uuid",
@@ -327,6 +334,175 @@
           "local_run_id"
         ],
         "title": "ChatRunPublic",
+        "type": "object"
+      },
+      "CloudConversationWrite": {
+        "additionalProperties": false,
+        "properties": {
+          "deleted": {
+            "default": false,
+            "title": "Deleted",
+            "type": "boolean"
+          },
+          "expected_version": {
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "model_config_id": {
+            "format": "uuid",
+            "title": "Model Config Id",
+            "type": "string"
+          },
+          "request_id": {
+            "format": "uuid",
+            "title": "Request Id",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_version",
+          "request_id",
+          "title",
+          "model_config_id"
+        ],
+        "title": "CloudConversationWrite",
+        "type": "object"
+      },
+      "CloudModelDelete": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_version": {
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "replacement_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replacement Id"
+          },
+          "request_id": {
+            "format": "uuid",
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_version",
+          "request_id"
+        ],
+        "title": "CloudModelDelete",
+        "type": "object"
+      },
+      "CloudModelPublic": {
+        "properties": {
+          "config": {
+            "$ref": "#/components/schemas/PublicModelFields"
+          },
+          "deleted": {
+            "title": "Deleted",
+            "type": "boolean"
+          },
+          "device_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Device Id"
+          },
+          "has_key": {
+            "title": "Has Key",
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "source_model_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Model Id"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "device_id",
+          "version",
+          "config",
+          "has_key",
+          "deleted"
+        ],
+        "title": "CloudModelPublic",
+        "type": "object"
+      },
+      "CloudModelWrite": {
+        "additionalProperties": false,
+        "properties": {
+          "api_key": {
+            "anyOf": [
+              {
+                "maxLength": 8192,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key",
+            "writeOnly": true
+          },
+          "config": {
+            "$ref": "#/components/schemas/ModelFields"
+          },
+          "expected_version": {
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "request_id": {
+            "format": "uuid",
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_version",
+          "request_id",
+          "config"
+        ],
+        "title": "CloudModelWrite",
         "type": "object"
       },
       "CommandAckResponse": {
@@ -424,9 +600,26 @@
             "type": "boolean"
           },
           "device_id": {
-            "format": "uuid",
-            "title": "Device Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Device Id"
+          },
+          "handoff": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Handoff-Output"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "id": {
             "format": "uuid",
@@ -465,6 +658,15 @@
           "shared": {
             "title": "Shared",
             "type": "boolean"
+          },
+          "target": {
+            "default": "mac",
+            "enum": [
+              "mac",
+              "cloud"
+            ],
+            "title": "Target",
+            "type": "string"
           },
           "task_id": {
             "anyOf": [
@@ -1072,6 +1274,27 @@
         "title": "EventPublic",
         "type": "object"
       },
+      "FromMac": {
+        "additionalProperties": false,
+        "properties": {
+          "model_id": {
+            "format": "uuid",
+            "title": "Model Id",
+            "type": "string"
+          },
+          "request_id": {
+            "format": "uuid",
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "model_id"
+        ],
+        "title": "FromMac",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -1083,6 +1306,59 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "Handoff-Input": {
+        "additionalProperties": false,
+        "properties": {
+          "model_config_id": {
+            "format": "uuid",
+            "title": "Model Config Id",
+            "type": "string"
+          },
+          "request_id": {
+            "format": "uuid",
+            "title": "Request Id",
+            "type": "string"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "required": [
+          "request_id",
+          "model_config_id"
+        ],
+        "title": "Handoff",
+        "type": "object"
+      },
+      "Handoff-Output": {
+        "properties": {
+          "from_conversation_id": {
+            "format": "uuid",
+            "title": "From Conversation Id",
+            "type": "string"
+          },
+          "message_count": {
+            "title": "Message Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "from_conversation_id",
+          "message_count"
+        ],
+        "title": "Handoff",
         "type": "object"
       },
       "HealthResponse": {
@@ -1160,9 +1436,16 @@
             "type": "string"
           },
           "device_id": {
-            "format": "uuid",
-            "title": "Device Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Device Id"
           },
           "id": {
             "format": "uuid",
@@ -1364,9 +1647,16 @@
             "type": "boolean"
           },
           "device_id": {
-            "format": "uuid",
-            "title": "Device Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Device Id"
           },
           "has_key": {
             "title": "Has Key",
@@ -2816,7 +3106,7 @@
     }
   },
   "info": {
-    "description": "阶段 2：单用户认证、设备配对、项目目录、持久任务、计划版本审批、设备命令投递与任务事件回放。WebSocket：/ws/device（设备签名握手）与 /ws/events（用户 JWT），消息格式见 components 中 Ws* 模型。包含共享聊天、模型配置同步；不包含云端问答。",
+    "description": "阶段 2：单用户认证、设备配对、项目目录、持久任务、计划版本审批、设备命令投递与任务事件回放。WebSocket：/ws/device（设备签名握手）与 /ws/events（用户 JWT），消息格式见 components 中 Ws* 模型。包含共享聊天、模型配置同步，以及由 DeepAgents Worker 执行的云端问答（/cloud/*）。",
     "title": "T-AGNET Server",
     "version": "0.2.0"
   },
@@ -2956,6 +3246,324 @@
         "summary": "Cancel",
         "tags": [
           "shared"
+        ]
+      }
+    },
+    "/cloud/conversations/{id}": {
+      "put": {
+        "operationId": "conversation_put_cloud_conversations__id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CloudConversationWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "UserBearer": []
+          }
+        ],
+        "summary": "Conversation Put",
+        "tags": [
+          "cloud"
+        ]
+      }
+    },
+    "/cloud/conversations/{id}/handoff-from/{source_id}": {
+      "post": {
+        "operationId": "conversation_handoff_cloud_conversations__id__handoff_from__source_id__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Source Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Handoff-Input"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "UserBearer": []
+          }
+        ],
+        "summary": "Conversation Handoff",
+        "tags": [
+          "cloud"
+        ]
+      }
+    },
+    "/cloud/models": {
+      "get": {
+        "operationId": "models_cloud_models_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CloudModelPublic"
+                  },
+                  "title": "Response Models Cloud Models Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "UserBearer": []
+          }
+        ],
+        "summary": "Models",
+        "tags": [
+          "cloud"
+        ]
+      }
+    },
+    "/cloud/models/from-mac": {
+      "post": {
+        "operationId": "model_copy_cloud_models_from_mac_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FromMac"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CloudModelPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "UserBearer": []
+          }
+        ],
+        "summary": "Model Copy",
+        "tags": [
+          "cloud"
+        ]
+      }
+    },
+    "/cloud/models/{id}": {
+      "put": {
+        "operationId": "model_put_cloud_models__id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CloudModelWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CloudModelPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "UserBearer": []
+          }
+        ],
+        "summary": "Model Put",
+        "tags": [
+          "cloud"
+        ]
+      }
+    },
+    "/cloud/models/{id}/delete": {
+      "post": {
+        "operationId": "model_delete_cloud_models__id__delete_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CloudModelDelete"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CloudModelPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "UserBearer": []
+          }
+        ],
+        "summary": "Model Delete",
+        "tags": [
+          "cloud"
         ]
       }
     },
@@ -3474,6 +4082,487 @@
         "summary": "Result",
         "tags": [
           "shared"
+        ]
+      }
+    },
+    "/device/cloud/chat-runs/{id}": {
+      "get": {
+        "operationId": "device_chat_run_device_cloud_chat_runs__id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRunPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "DeviceId": [],
+            "DeviceNonce": [],
+            "DeviceSignature": [],
+            "DeviceTimestamp": []
+          }
+        ],
+        "summary": "Device Chat Run",
+        "tags": [
+          "cloud"
+        ]
+      }
+    },
+    "/device/cloud/chat-runs/{id}/cancel": {
+      "post": {
+        "operationId": "device_cancel_device_cloud_chat_runs__id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRunPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "DeviceId": [],
+            "DeviceNonce": [],
+            "DeviceSignature": [],
+            "DeviceTimestamp": []
+          }
+        ],
+        "summary": "Device Cancel",
+        "tags": [
+          "cloud"
+        ]
+      }
+    },
+    "/device/cloud/conversations": {
+      "get": {
+        "operationId": "device_conversations_device_cloud_conversations_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ConversationPublic"
+                  },
+                  "title": "Response Device Conversations Device Cloud Conversations Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "DeviceId": [],
+            "DeviceNonce": [],
+            "DeviceSignature": [],
+            "DeviceTimestamp": []
+          }
+        ],
+        "summary": "Device Conversations",
+        "tags": [
+          "cloud"
+        ]
+      }
+    },
+    "/device/cloud/conversations/{id}": {
+      "put": {
+        "operationId": "device_conversation_put_device_cloud_conversations__id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CloudConversationWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "DeviceId": [],
+            "DeviceNonce": [],
+            "DeviceSignature": [],
+            "DeviceTimestamp": []
+          }
+        ],
+        "summary": "Device Conversation Put",
+        "tags": [
+          "cloud"
+        ]
+      }
+    },
+    "/device/cloud/conversations/{id}/handoff-from/{source_id}": {
+      "post": {
+        "operationId": "device_conversation_handoff_device_cloud_conversations__id__handoff_from__source_id__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Source Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Handoff-Input"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "DeviceId": [],
+            "DeviceNonce": [],
+            "DeviceSignature": [],
+            "DeviceTimestamp": []
+          }
+        ],
+        "summary": "Device Conversation Handoff",
+        "tags": [
+          "cloud"
+        ]
+      }
+    },
+    "/device/cloud/conversations/{id}/messages": {
+      "get": {
+        "operationId": "device_messages_device_cloud_conversations__id__messages_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "After",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessagePage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "DeviceId": [],
+            "DeviceNonce": [],
+            "DeviceSignature": [],
+            "DeviceTimestamp": []
+          }
+        ],
+        "summary": "Device Messages",
+        "tags": [
+          "cloud"
+        ]
+      },
+      "post": {
+        "operationId": "device_send_device_cloud_conversations__id__messages_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Send"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRunPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "DeviceId": [],
+            "DeviceNonce": [],
+            "DeviceSignature": [],
+            "DeviceTimestamp": []
+          }
+        ],
+        "summary": "Device Send",
+        "tags": [
+          "cloud"
+        ]
+      }
+    },
+    "/device/cloud/models": {
+      "get": {
+        "operationId": "device_models_device_cloud_models_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CloudModelPublic"
+                  },
+                  "title": "Response Device Models Device Cloud Models Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "DeviceId": [],
+            "DeviceNonce": [],
+            "DeviceSignature": [],
+            "DeviceTimestamp": []
+          }
+        ],
+        "summary": "Device Models",
+        "tags": [
+          "cloud"
+        ]
+      }
+    },
+    "/device/cloud/models/from-mac": {
+      "post": {
+        "operationId": "device_model_copy_device_cloud_models_from_mac_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FromMac"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CloudModelPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "DeviceId": [],
+            "DeviceNonce": [],
+            "DeviceSignature": [],
+            "DeviceTimestamp": []
+          }
+        ],
+        "summary": "Device Model Copy",
+        "tags": [
+          "cloud"
         ]
       }
     },

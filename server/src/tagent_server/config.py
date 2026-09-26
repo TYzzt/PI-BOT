@@ -32,3 +32,6 @@ class Settings(BaseSettings):
     signature_skew_seconds: int = Field(default=300, ge=30, le=3600)
     approval_ttl_seconds: int = Field(default=900, ge=60, le=86400)
     command_ttl_seconds: int = Field(default=86400, ge=60, le=604800)
+    tavily_api_key: SecretStr | None = None
+    worker_lease_seconds: int = Field(default=60, ge=15, le=3600)
+    worker_poll_seconds: float = Field(default=1.0, gt=0, le=60)

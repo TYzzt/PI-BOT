@@ -5,7 +5,8 @@ from pydantic import BaseModel
 
 class Identity(BaseModel):
     id: uuid.UUID
-    device_id: uuid.UUID
+    # null for cloud-executed documents
+    device_id: uuid.UUID | None
     version: int
 class PublicModelFields(BaseModel):
     name: str
@@ -23,15 +24,20 @@ class ModelPublic(Identity):
     apply_state: Literal['pending','applied','failed']
     apply_error: str | None = None
     replacement_id: uuid.UUID | None = None
+class Handoff(BaseModel):
+    from_conversation_id: uuid.UUID
+    message_count: int
 class ConversationPublic(Identity):
     title: str
     kind: Literal['ask','read_code']
+    target: Literal['mac','cloud'] = 'mac'
     model_config_id: uuid.UUID
     project_id: uuid.UUID | None
     task_id: uuid.UUID | None
     shared: bool
     share_version: int
     deleted: bool
+    handoff: Handoff | None = None
 class MessagePublic(Identity):
     conversation_id: uuid.UUID
     run_id: uuid.UUID
@@ -62,6 +68,11 @@ class ChangePage(BaseModel):
     changes: list[ChangePublic]
     next_cursor: int
     has_more: bool
+class CloudModelPublic(Identity):
+    config: PublicModelFields
+    has_key: bool
+    deleted: bool
+    source_model_id: uuid.UUID | None = None
 class CredentialPublic(BaseModel):
     api_key: str
 class Ok(BaseModel):

@@ -10,7 +10,8 @@ class SharedDocument(Base):
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
     position: Mapped[int] = mapped_column(BigInteger, Identity(), nullable=False)
     kind: Mapped[str] = mapped_column(Text, nullable=False)
-    device_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey('devices.device_id'), nullable=False, index=True)
+    # NULL marks a cloud-executed document (cloud models, cloud conversations and their runs).
+    device_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey('devices.device_id'), nullable=True, index=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     data: Mapped[dict] = mapped_column(JSONB, nullable=False)
 
@@ -25,7 +26,7 @@ class SharedRevision(Base):
 class SharedChange(Base):
     __tablename__ = 'shared_changes'
     cursor: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
-    device_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey('devices.device_id'), nullable=False, index=True)
+    device_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey('devices.device_id'), nullable=True, index=True)
     kind: Mapped[str] = mapped_column(Text, nullable=False)
     entity_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
