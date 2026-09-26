@@ -16,7 +16,7 @@ from tagent_server.openapi_extra import SECURITY_SCHEMES
 from tagent_server.realtime import ChangeHub
 from tagent_server.routers import auth, device_sync, devices, events, health, plans, projects, tasks, ws
 from tagent_server.schemas import WS_MODELS
-from tagent_server.routers import cloud, shared
+from tagent_server.routers import cloud, configs, shared
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +78,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(ws.router)
     app.include_router(shared.router)
     app.include_router(cloud.router)
+    app.include_router(configs.router)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(_request: Request, exc: RequestValidationError) -> JSONResponse:

@@ -604,6 +604,142 @@
         "title": "CommandPublic",
         "type": "object"
       },
+      "ConfigApplied": {
+        "additionalProperties": false,
+        "properties": {
+          "hash": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Hash",
+            "type": "string"
+          },
+          "reasons": {
+            "items": {
+              "$ref": "#/components/schemas/Reason"
+            },
+            "maxItems": 50,
+            "title": "Reasons",
+            "type": "array"
+          },
+          "state": {
+            "enum": [
+              "available",
+              "unavailable",
+              "not_applicable",
+              "failed"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "hash",
+          "state"
+        ],
+        "title": "ConfigApplied",
+        "type": "object"
+      },
+      "ConfigBundle": {
+        "properties": {
+          "mcp_servers": {
+            "items": {
+              "$ref": "#/components/schemas/McpServerPublic"
+            },
+            "title": "Mcp Servers",
+            "type": "array"
+          },
+          "skills": {
+            "items": {
+              "$ref": "#/components/schemas/SkillPublic"
+            },
+            "title": "Skills",
+            "type": "array"
+          }
+        },
+        "required": [
+          "skills",
+          "mcp_servers"
+        ],
+        "title": "ConfigBundle",
+        "type": "object"
+      },
+      "ConfigDelete": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_version": {
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "request_id": {
+            "format": "uuid",
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_version",
+          "request_id"
+        ],
+        "title": "ConfigDelete",
+        "type": "object"
+      },
+      "ConfigReason": {
+        "properties": {
+          "code": {
+            "enum": [
+              "command_missing",
+              "platform_unsupported",
+              "script_missing",
+              "mcp_missing",
+              "mcp_unavailable",
+              "secret_missing",
+              "invalid_config",
+              "write_failed"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "detail"
+        ],
+        "title": "ConfigReason",
+        "type": "object"
+      },
+      "ConfigRevision": {
+        "properties": {
+          "content_hash": {
+            "title": "Content Hash",
+            "type": "string"
+          },
+          "deleted": {
+            "title": "Deleted",
+            "type": "boolean"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "content_hash",
+          "deleted"
+        ],
+        "title": "ConfigRevision",
+        "type": "object"
+      },
       "ConversationPublic": {
         "properties": {
           "deleted": {
@@ -843,6 +979,72 @@
           "request_id"
         ],
         "title": "DeleteModel",
+        "type": "object"
+      },
+      "DeviceConfigState": {
+        "properties": {
+          "applied_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Applied Hash"
+          },
+          "applied_version": {
+            "title": "Applied Version",
+            "type": "integer"
+          },
+          "checked_at": {
+            "title": "Checked At",
+            "type": "string"
+          },
+          "checked_version": {
+            "title": "Checked Version",
+            "type": "integer"
+          },
+          "device_id": {
+            "format": "uuid",
+            "title": "Device Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "reasons": {
+            "items": {
+              "$ref": "#/components/schemas/ConfigReason"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "state": {
+            "enum": [
+              "pending",
+              "available",
+              "unavailable",
+              "not_applicable",
+              "failed"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "device_id",
+          "label",
+          "state",
+          "checked_version",
+          "reasons",
+          "applied_version",
+          "applied_hash",
+          "checked_at"
+        ],
+        "title": "DeviceConfigState",
         "type": "object"
       },
       "DeviceEventBatch": {
@@ -1175,6 +1377,82 @@
         "title": "DevicePublic",
         "type": "object"
       },
+      "EnvVar": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$",
+            "title": "Name",
+            "type": "string"
+          },
+          "secret_ref": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Secret Ref"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "EnvVar",
+        "type": "object"
+      },
+      "EnvVarPublic": {
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "secret_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Secret Ref"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "name",
+          "value",
+          "secret_ref"
+        ],
+        "title": "EnvVarPublic",
+        "type": "object"
+      },
       "EventPage": {
         "properties": {
           "events": {
@@ -1399,6 +1677,258 @@
           "password"
         ],
         "title": "LoginRequest",
+        "type": "object"
+      },
+      "McpFields": {
+        "additionalProperties": false,
+        "properties": {
+          "args": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "Args",
+            "type": "array"
+          },
+          "command": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Command"
+          },
+          "disabled_tools": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Disabled Tools",
+            "type": "array"
+          },
+          "enabled": {
+            "default": true,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "env": {
+            "items": {
+              "$ref": "#/components/schemas/EnvVar"
+            },
+            "maxItems": 50,
+            "title": "Env",
+            "type": "array"
+          },
+          "name": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+            "title": "Name",
+            "type": "string"
+          },
+          "runtime": {
+            "default": "mac",
+            "enum": [
+              "mac",
+              "cloud",
+              "both"
+            ],
+            "title": "Runtime",
+            "type": "string"
+          },
+          "timeout_ms": {
+            "default": 30000,
+            "maximum": 600000.0,
+            "minimum": 1000.0,
+            "title": "Timeout Ms",
+            "type": "integer"
+          },
+          "transport": {
+            "enum": [
+              "stdio",
+              "http"
+            ],
+            "title": "Transport",
+            "type": "string"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "format": "uri",
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "required": [
+          "name",
+          "transport"
+        ],
+        "title": "McpFields",
+        "type": "object"
+      },
+      "McpFieldsPublic": {
+        "properties": {
+          "args": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Args",
+            "type": "array"
+          },
+          "command": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Command"
+          },
+          "disabled_tools": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Disabled Tools",
+            "type": "array"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "env": {
+            "items": {
+              "$ref": "#/components/schemas/EnvVarPublic"
+            },
+            "title": "Env",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "runtime": {
+            "enum": [
+              "mac",
+              "cloud",
+              "both"
+            ],
+            "title": "Runtime",
+            "type": "string"
+          },
+          "timeout_ms": {
+            "title": "Timeout Ms",
+            "type": "integer"
+          },
+          "transport": {
+            "enum": [
+              "stdio",
+              "http"
+            ],
+            "title": "Transport",
+            "type": "string"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "required": [
+          "name",
+          "transport",
+          "command",
+          "args",
+          "url",
+          "timeout_ms",
+          "env",
+          "runtime",
+          "enabled",
+          "disabled_tools"
+        ],
+        "title": "McpFieldsPublic",
+        "type": "object"
+      },
+      "McpServerPublic": {
+        "properties": {
+          "config": {
+            "$ref": "#/components/schemas/McpFieldsPublic"
+          },
+          "content_hash": {
+            "title": "Content Hash",
+            "type": "string"
+          },
+          "deleted": {
+            "title": "Deleted",
+            "type": "boolean"
+          },
+          "devices": {
+            "items": {
+              "$ref": "#/components/schemas/DeviceConfigState"
+            },
+            "title": "Devices",
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "version",
+          "content_hash",
+          "deleted",
+          "devices",
+          "config"
+        ],
+        "title": "McpServerPublic",
+        "type": "object"
+      },
+      "McpWrite": {
+        "additionalProperties": false,
+        "properties": {
+          "config": {
+            "$ref": "#/components/schemas/McpFields"
+          },
+          "expected_version": {
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "request_id": {
+            "format": "uuid",
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_version",
+          "request_id",
+          "config"
+        ],
+        "title": "McpWrite",
         "type": "object"
       },
       "MessagePage": {
@@ -2348,6 +2878,36 @@
         "title": "PublicModelFields",
         "type": "object"
       },
+      "Reason": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "enum": [
+              "command_missing",
+              "platform_unsupported",
+              "script_missing",
+              "mcp_missing",
+              "mcp_unavailable",
+              "secret_missing",
+              "invalid_config",
+              "write_failed"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "detail": {
+            "default": "",
+            "maxLength": 300,
+            "title": "Detail",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "title": "Reason",
+        "type": "object"
+      },
       "RejectRequest": {
         "additionalProperties": false,
         "properties": {
@@ -2363,6 +2923,95 @@
           "idempotency_key"
         ],
         "title": "RejectRequest",
+        "type": "object"
+      },
+      "Requires": {
+        "additionalProperties": false,
+        "properties": {
+          "commands": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Commands",
+            "type": "array"
+          },
+          "mcp": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Mcp",
+            "type": "array"
+          },
+          "platforms": {
+            "items": {
+              "enum": [
+                "darwin",
+                "linux",
+                "win32"
+              ],
+              "type": "string"
+            },
+            "maxItems": 3,
+            "title": "Platforms",
+            "type": "array"
+          },
+          "scripts": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Scripts",
+            "type": "array"
+          }
+        },
+        "title": "Requires",
+        "type": "object"
+      },
+      "RequiresPublic": {
+        "properties": {
+          "commands": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Commands",
+            "type": "array"
+          },
+          "mcp": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Mcp",
+            "type": "array"
+          },
+          "platforms": {
+            "items": {
+              "enum": [
+                "darwin",
+                "linux",
+                "win32"
+              ],
+              "type": "string"
+            },
+            "title": "Platforms",
+            "type": "array"
+          },
+          "scripts": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Scripts",
+            "type": "array"
+          }
+        },
+        "required": [
+          "commands",
+          "platforms",
+          "scripts",
+          "mcp"
+        ],
+        "title": "RequiresPublic",
         "type": "object"
       },
       "Result": {
@@ -2530,6 +3179,240 @@
           "received"
         ],
         "title": "SequenceGap",
+        "type": "object"
+      },
+      "SkillFields": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "maxLength": 200000,
+            "minLength": 1,
+            "title": "Content",
+            "type": "string"
+          },
+          "description": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Description",
+            "type": "string"
+          },
+          "enabled": {
+            "default": true,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/SkillFile"
+            },
+            "maxItems": 20,
+            "title": "Files",
+            "type": "array"
+          },
+          "install_hint": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Install Hint"
+          },
+          "name": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+            "title": "Name",
+            "type": "string"
+          },
+          "requires": {
+            "$ref": "#/components/schemas/Requires"
+          },
+          "runtime": {
+            "default": "mac",
+            "enum": [
+              "mac",
+              "cloud",
+              "both"
+            ],
+            "title": "Runtime",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "content"
+        ],
+        "title": "SkillFields",
+        "type": "object"
+      },
+      "SkillFieldsPublic": {
+        "properties": {
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/SkillFilePublic"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "install_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Install Hint"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "requires": {
+            "$ref": "#/components/schemas/RequiresPublic"
+          },
+          "runtime": {
+            "enum": [
+              "mac",
+              "cloud",
+              "both"
+            ],
+            "title": "Runtime",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "content",
+          "files",
+          "runtime",
+          "enabled",
+          "requires",
+          "install_hint"
+        ],
+        "title": "SkillFieldsPublic",
+        "type": "object"
+      },
+      "SkillFile": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "maxLength": 200000,
+            "title": "Content",
+            "type": "string"
+          },
+          "path": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "content"
+        ],
+        "title": "SkillFile",
+        "type": "object"
+      },
+      "SkillFilePublic": {
+        "properties": {
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "content"
+        ],
+        "title": "SkillFilePublic",
+        "type": "object"
+      },
+      "SkillPublic": {
+        "properties": {
+          "config": {
+            "$ref": "#/components/schemas/SkillFieldsPublic"
+          },
+          "content_hash": {
+            "title": "Content Hash",
+            "type": "string"
+          },
+          "deleted": {
+            "title": "Deleted",
+            "type": "boolean"
+          },
+          "devices": {
+            "items": {
+              "$ref": "#/components/schemas/DeviceConfigState"
+            },
+            "title": "Devices",
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "version",
+          "content_hash",
+          "deleted",
+          "devices",
+          "config"
+        ],
+        "title": "SkillPublic",
+        "type": "object"
+      },
+      "SkillWrite": {
+        "additionalProperties": false,
+        "properties": {
+          "config": {
+            "$ref": "#/components/schemas/SkillFields"
+          },
+          "expected_version": {
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "request_id": {
+            "format": "uuid",
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_version",
+          "request_id",
+          "config"
+        ],
+        "title": "SkillWrite",
         "type": "object"
       },
       "TaskCreate": {
@@ -3578,6 +4461,152 @@
         ]
       }
     },
+    "/configs/mcp-servers": {
+      "get": {
+        "operationId": "mcp_servers_configs_mcp_servers_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/McpServerPublic"
+                  },
+                  "title": "Response Mcp Servers Configs Mcp Servers Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "UserBearer": []
+          }
+        ],
+        "summary": "Mcp Servers",
+        "tags": [
+          "configs"
+        ]
+      }
+    },
+    "/configs/mcp-servers/{id}": {
+      "put": {
+        "operationId": "mcp_put_configs_mcp_servers__id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpServerPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "UserBearer": []
+          }
+        ],
+        "summary": "Mcp Put",
+        "tags": [
+          "configs"
+        ]
+      }
+    },
+    "/configs/mcp-servers/{id}/delete": {
+      "post": {
+        "operationId": "mcp_delete_configs_mcp_servers__id__delete_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfigDelete"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpServerPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "UserBearer": []
+          }
+        ],
+        "summary": "Mcp Delete",
+        "tags": [
+          "configs"
+        ]
+      }
+    },
     "/configs/models": {
       "get": {
         "operationId": "models_configs_models_get",
@@ -3721,6 +4750,217 @@
         "summary": "Model Delete",
         "tags": [
           "shared"
+        ]
+      }
+    },
+    "/configs/skills": {
+      "get": {
+        "operationId": "skills_configs_skills_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SkillPublic"
+                  },
+                  "title": "Response Skills Configs Skills Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "UserBearer": []
+          }
+        ],
+        "summary": "Skills",
+        "tags": [
+          "configs"
+        ]
+      }
+    },
+    "/configs/skills/{id}": {
+      "put": {
+        "operationId": "skill_put_configs_skills__id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SkillWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "UserBearer": []
+          }
+        ],
+        "summary": "Skill Put",
+        "tags": [
+          "configs"
+        ]
+      }
+    },
+    "/configs/skills/{id}/delete": {
+      "post": {
+        "operationId": "skill_delete_configs_skills__id__delete_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfigDelete"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "UserBearer": []
+          }
+        ],
+        "summary": "Skill Delete",
+        "tags": [
+          "configs"
+        ]
+      }
+    },
+    "/configs/{kind}/{id}/revisions": {
+      "get": {
+        "operationId": "revisions_configs__kind___id__revisions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kind",
+            "required": true,
+            "schema": {
+              "enum": [
+                "skills",
+                "mcp-servers"
+              ],
+              "title": "Kind",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ConfigRevision"
+                  },
+                  "title": "Response Revisions Configs  Kind   Id  Revisions Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "UserBearer": []
+          }
+        ],
+        "summary": "Revisions",
+        "tags": [
+          "configs"
         ]
       }
     },
@@ -4661,6 +5901,157 @@
         ]
       }
     },
+    "/device/configs/bundle": {
+      "get": {
+        "operationId": "bundle_device_configs_bundle_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigBundle"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "DeviceId": [],
+            "DeviceNonce": [],
+            "DeviceSignature": [],
+            "DeviceTimestamp": []
+          }
+        ],
+        "summary": "Bundle",
+        "tags": [
+          "configs"
+        ]
+      }
+    },
+    "/device/configs/mcp-servers/{id}": {
+      "put": {
+        "operationId": "device_mcp_put_device_configs_mcp_servers__id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpServerPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "DeviceId": [],
+            "DeviceNonce": [],
+            "DeviceSignature": [],
+            "DeviceTimestamp": []
+          }
+        ],
+        "summary": "Device Mcp Put",
+        "tags": [
+          "configs"
+        ]
+      }
+    },
+    "/device/configs/mcp-servers/{id}/delete": {
+      "post": {
+        "operationId": "device_mcp_delete_device_configs_mcp_servers__id__delete_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfigDelete"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpServerPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "DeviceId": [],
+            "DeviceNonce": [],
+            "DeviceSignature": [],
+            "DeviceTimestamp": []
+          }
+        ],
+        "summary": "Device Mcp Delete",
+        "tags": [
+          "configs"
+        ]
+      }
+    },
     "/device/configs/models/{id}": {
       "put": {
         "operationId": "device_model_put_device_configs_models__id__put",
@@ -4901,6 +6292,210 @@
         "summary": "Device Model Delete",
         "tags": [
           "shared"
+        ]
+      }
+    },
+    "/device/configs/skills/{id}": {
+      "put": {
+        "operationId": "device_skill_put_device_configs_skills__id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SkillWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "DeviceId": [],
+            "DeviceNonce": [],
+            "DeviceSignature": [],
+            "DeviceTimestamp": []
+          }
+        ],
+        "summary": "Device Skill Put",
+        "tags": [
+          "configs"
+        ]
+      }
+    },
+    "/device/configs/skills/{id}/delete": {
+      "post": {
+        "operationId": "device_skill_delete_device_configs_skills__id__delete_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfigDelete"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "DeviceId": [],
+            "DeviceNonce": [],
+            "DeviceSignature": [],
+            "DeviceTimestamp": []
+          }
+        ],
+        "summary": "Device Skill Delete",
+        "tags": [
+          "configs"
+        ]
+      }
+    },
+    "/device/configs/{kind}/{id}/applied": {
+      "post": {
+        "operationId": "applied_device_configs__kind___id__applied_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kind",
+            "required": true,
+            "schema": {
+              "enum": [
+                "skills",
+                "mcp-servers"
+              ],
+              "title": "Kind",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfigApplied"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/SkillPublic"
+                    },
+                    {
+                      "$ref": "#/components/schemas/McpServerPublic"
+                    }
+                  ],
+                  "title": "Response Applied Device Configs  Kind   Id  Applied Post"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "DeviceId": [],
+            "DeviceNonce": [],
+            "DeviceSignature": [],
+            "DeviceTimestamp": []
+          }
+        ],
+        "summary": "Applied",
+        "tags": [
+          "configs"
         ]
       }
     },

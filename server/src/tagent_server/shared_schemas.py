@@ -74,6 +74,68 @@ class CloudModelPublic(Identity):
     has_key: bool
     deleted: bool
     source_model_id: uuid.UUID | None = None
+class ConfigReason(BaseModel):
+    code: Literal['command_missing','platform_unsupported','script_missing','mcp_missing','mcp_unavailable','secret_missing','invalid_config','write_failed']
+    detail: str
+class DeviceConfigState(BaseModel):
+    device_id: uuid.UUID
+    label: str
+    # pending: the device has not checked the current version yet
+    state: Literal['pending','available','unavailable','not_applicable','failed']
+    checked_version: int
+    reasons: list[ConfigReason]
+    applied_version: int
+    applied_hash: str | None
+    checked_at: str
+class SkillFilePublic(BaseModel):
+    path: str
+    content: str
+class RequiresPublic(BaseModel):
+    commands: list[str]
+    platforms: list[Literal['darwin','linux','win32']]
+    scripts: list[str]
+    mcp: list[str]
+class SkillFieldsPublic(BaseModel):
+    name: str
+    description: str
+    content: str
+    files: list[SkillFilePublic]
+    runtime: Literal['mac','cloud','both']
+    enabled: bool
+    requires: RequiresPublic
+    install_hint: str | None
+class EnvVarPublic(BaseModel):
+    name: str
+    value: str | None
+    secret_ref: str | None
+class McpFieldsPublic(BaseModel):
+    name: str
+    transport: Literal['stdio','http']
+    command: str | None
+    args: list[str]
+    url: str | None
+    timeout_ms: int
+    env: list[EnvVarPublic]
+    runtime: Literal['mac','cloud','both']
+    enabled: bool
+    disabled_tools: list[str]
+class ConfigDocPublic(BaseModel):
+    id: uuid.UUID
+    version: int
+    content_hash: str
+    deleted: bool
+    devices: list[DeviceConfigState]
+class SkillPublic(ConfigDocPublic):
+    config: SkillFieldsPublic
+class McpServerPublic(ConfigDocPublic):
+    config: McpFieldsPublic
+class ConfigBundle(BaseModel):
+    skills: list[SkillPublic]
+    mcp_servers: list[McpServerPublic]
+class ConfigRevision(BaseModel):
+    version: int
+    content_hash: str
+    deleted: bool
 class CredentialPublic(BaseModel):
     api_key: str
 class Ok(BaseModel):
