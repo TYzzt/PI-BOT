@@ -14,7 +14,7 @@ from tagent_server.worker.runner import Worker
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    for noisy in ("httpx", "httpcore", "openai", "sqlalchemy.engine"):
+    for noisy in ("httpx", "httpx2", "httpcore", "openai", "sqlalchemy.engine"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     settings = Settings()
     engine = create_engine(settings.database_url, pool_pre_ping=True)

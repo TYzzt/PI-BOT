@@ -177,6 +177,8 @@ class Worker:
             if run is None or run.data["state"] in TERMINAL or run.data.get("worker_id") != self.worker_id:
                 job.lost.set()
                 return
+            if run.data.get("cancel_requested"):
+                job.cancel.set()
             message = s.get(Doc, job.assistant_id)
             if message is not None and message.data["content"] != content:
                 message.version += 1

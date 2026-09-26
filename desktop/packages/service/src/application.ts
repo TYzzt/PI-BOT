@@ -1,4 +1,5 @@
 import { SharedSync } from './cloud/shared.js';
+import { CloudChat, cloudChatMethods, type CloudChatMethod } from './cloud/chat.js';
 import { CodingController } from './coding/controller.js';
 import { codingSchemas } from '../../protocol/src/coding.js';
 import { cloudSchemas } from '../../protocol/src/cloud.js';
@@ -15,16 +16,19 @@ export class Application {
   private active: { run: Run; assistantId: string; agent?: AgentHandle; cancelled: boolean; done?: Promise<void> } | null = null;
   private testing = false;
   private serial: Promise<unknown> = Promise.resolve();
-  readonly coding: CodingController; readonly cloud: CloudSync; readonly shared: SharedSync;
+  readonly coding: CodingController; readonly cloud: CloudSync; readonly shared: SharedSync; readonly cloudChat: CloudChat;
   constructor(readonly store: Store, private credentials: Credentials, private factory: AgentFactory, private emit: (event: AppEvent) => void, cloud: { credentials?: Credentials; options?: CloudOptions } = {}) {
     this.coding = new CodingController(store, credentials, factory, emit, () => this.idle());
     this.cloud = new CloudSync({ store, coding: this.coding, credentials: cloud.credentials ?? new MemoryCredentials(), serial: fn => this.enqueue(fn), busy: () => this.busy(), emit }, cloud.options);
     this.shared = new SharedSync({ store, keys: credentials, cloud: this.cloud, coding: this.coding, busy: () => this.busy(), serial: fn => this.enqueue(fn), call: (method, input) => this.dispatch(method as Method, input, true), emit });
+    this.cloudChat = new CloudChat({ paired: () => !!this.cloud.db.link(), request: (method, path, body) => this.cloud.request(method, path, body) });
     void this.cloud.start();
   }
   private enqueue<T>(fn: () => Promise<T>): Promise<T> { const result = this.serial.then(fn); this.serial = result.catch(() => {}); return result; }
   call<M extends Method>(method: M, raw: unknown): Promise<Api[M]['output']> {
     const input = parseInput(method, raw);
+    // Cloud chat is plain server I/O: it must not wait behind local generation or sync work in the serial queue.
+    if (cloudChatMethods.has(method)) return this.cloudChat.dispatch(method as CloudChatMethod, input as never) as Promise<Api[M]['output']>;
     const result = this.enqueue(() => this.dispatch(method, input));
     return result.then(value => value && typeof value === 'object' && 'deferred' in value ? (value as { deferred: Promise<unknown> }).deferred : value) as Promise<Api[M]['output']>;
   }
