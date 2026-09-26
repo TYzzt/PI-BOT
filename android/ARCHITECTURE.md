@@ -458,3 +458,46 @@ flowchart LR
 ```
 
 数据模型、原因码、接口和验收步骤见根目录 CONFIGS.md。
+
+## Chrome 操作与 Jev 实现补充（A12）
+
+Mac 服务启动一个独立自动化 profile 的 Chrome（`<数据目录>/chrome-profile`，与日常 Chrome 分开），通过 CDP 控制：用 `--remote-debugging-port=0` 启动，从 `DevToolsActivePort` 读端口，再由 `playwright-core` 的 `connectOverCDP` 连接；服务重启后会先尝试接回已在运行的自动化 Chrome。6.6 节原定用 Chrome DevTools MCP，这一阶段改为服务内直接走 CDP，因为 MCP 客户端尚未接入；调试端口只监听 127.0.0.1。Chrome 路径默认是 `/Applications/Google Chrome.app`，可用环境变量 `TAGNET_CHROME` 覆盖。
+
+浏览器工具只在已批准计划的执行阶段注册，读代码和规划阶段看不到：
+
+| 工具 | 说明 |
+| --- | --- |
+| `browser_open(url)` | 只允许 http/https |
+| `browser_snapshot()` | 列出可交互元素，编号为「快照号.元素号」，附当前值和页面文字节选；密码框只标 `password`，不带值 |
+| `browser_click(ref)` / `browser_type(ref, text)` | 只接受最新一次快照的编号；输入会替换内容，不自动回车 |
+| `browser_press(key)` | 只允许回车、Tab、Esc、方向键等少数按键 |
+| `browser_task(goal, inputs?, maxSteps?)` | 配置了 Jev 才注册，见下文 |
+
+执行前检查：编号必须来自最新快照；页面跳转或刷新后旧编号失效；元素位置相对快照移动超过 40 像素要求重新快照；元素须可见、可用，并用 `elementFromPoint` 确认没有被遮挡。目标是密码框、名称含付款、删除、提交订单、转账一类字样，或页面出现验证码时，工具不执行，把任务置为 `waiting_for_local_action`，由用户在自动化 Chrome 里手动处理。
+
+浏览器锁：每个 profile 一把锁，任务第一次调用浏览器工具时获取，运行结束、取消或失败时释放。同一任务可重入；其他任务排队，60 秒内没拿到就报"浏览器正被任务 X 使用"。换持有者时清空上一次快照，新任务不能沿用旧编号。
+
+Jev（TypeSafe 的决策模型）：在设置页"Jev 浏览器决策"填 Base URL（默认 `https://api.typesafe.ai`）、模型（默认 `jev-latest`）和 API Key 后即启用，key 存在 Keychain（条目 `jev-key`），配置只存本机，不同步到云端。`browser_task` 每一步先快照，再向 `POST {Base URL}/v1/systemone` 发一个请求，包含三个问题：下一步操作（choice，选项是本页可执行的动作）、目标是否达成（noul）、是否卡住（noul）。
+
+- 选项只由执行器生成：点击某元素、在某输入框输入 `inputs` 中的第几段、在下拉框选某项、滚动、等待、结束、放弃。Jev 不生成文字，返回未列出的选项直接报错。密码框不会出现在选项里。
+- 达成或卡住的概率不低于 0.85 即停止；另有步数上限（默认 15，最多 40）和 90 秒时间上限。每一步仍走上面的执行前检查，敏感操作同样暂停任务。
+- 结束时把每一步的操作、概率和最终快照交回 Pi，由 Pi 核对结果。
+- 发送给 TypeSafe 的内容：目标、`inputs`、页面标题、网址、元素列表、页面文字节选（最多 3000 字）和最近几步记录。不发送 cookie 和截图。
+
+```mermaid
+flowchart LR
+    Pi["Pi 执行阶段"] --> Tools["browser_* 工具"]
+    Pi --> Task["browser_task"]
+    Task -->|"state + questions"| Jev["TypeSafe Jev"]
+    Tools --> Lock["profile 锁"]
+    Task --> Lock
+    Lock --> Guard["执行前检查 与 敏感操作暂停"]
+    Guard -->|CDP| Chrome["自动化 Chrome"]
+```
+
+验收：
+
+1. 自动化测试 `desktop/tests/browser.test.ts` 用本地测试页面和无头 Chromium 覆盖打开、快照、点击、输入（确认没有自动回车）、旧快照、元素移动、遮挡、密码框、付款按钮、验证码，以及两个任务争用锁；另有一个用假模型走完"规划、批准、执行"的用例，确认 Pi 在执行阶段打开测试页并完成输入和点击，结束后锁已释放。
+2. `desktop/tests/jev-task.test.ts` 用假的 Jev 服务覆盖：目标达成、卡住、步数上限、Jev 返回未列出的选项、Jev 选中付款按钮时暂停，以及设置的保存、测试和删除。
+3. 真 key 手动验证：`TYPESAFE_API_KEY=... node_modules/node/bin/node --import tsx work/jev-live.ts`（`work/` 不入库），在测试页上完成"输入并搜索"。
+4. Mac 上：设置页配置 Jev 并测试连接；新建一个需要打开网页的编程任务，批准后观察自动化 Chrome 被打开并完成操作；同时另一个任务要用浏览器时，设置页"自动化浏览器"显示当前占用任务，第二个任务排队。

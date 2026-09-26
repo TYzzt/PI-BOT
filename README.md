@@ -5,6 +5,7 @@
 - 同步部署与使用说明：[SYNC.md](SYNC.md)
 - 云端问答（Worker 部署、Tavily、使用与验收）：[CLOUD-CHAT.md](CLOUD-CHAT.md)
 - 共享 Skills 与 MCP 配置（依赖检查、不自动安装、验收）：[CONFIGS.md](CONFIGS.md)
+- Chrome 操作与 Jev 决策（执行阶段浏览器工具、profile 锁、敏感操作暂停，A12）：见整体架构文档末尾「Chrome 操作与 Jev 实现补充（A12）」
 
 | 目录 | 框架 | 本端需求 | 整体架构 |
 |---|---|---|---|

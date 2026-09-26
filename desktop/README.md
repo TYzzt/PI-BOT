@@ -4,7 +4,7 @@
 
 macOS 个人智能体桌面应用：本地 Ask + 项目代码问答 + Git 项目编程闭环 + 云端任务执行。Electron + React + TypeScript + Vite / Electron Forge，独立 Node.js 24 服务，真实 Pi SDK，SQLite 和 macOS Keychain。
 
-**当前状态：第三阶段（接入云端）已实现，自动化与对本地服务器的端到端测试通过，待 Mac 验收。** 第二阶段的项目管理、读代码问答、计划审批、代码编辑、命令、diff 和验证记录均已验收。第三阶段让 Mac 与云端配对，接收云端任务、本地规划与执行，手机或 Mac 任一方审批，进度脱敏回传。Skills、MCP、Chrome、交互终端、聊天记录和配置同步尚未开放。
+**当前状态：第三阶段（接入云端）已实现，自动化与对本地服务器的端到端测试通过，待 Mac 验收。** 第二阶段的项目管理、读代码问答、计划审批、代码编辑、命令、diff 和验证记录均已验收。第三阶段让 Mac 与云端配对，接收云端任务、本地规划与执行，手机或 Mac 任一方审批，进度脱敏回传。共享 Skills/MCP 配置（A11）和执行阶段的 Chrome 操作（A12，可选 Jev 决策）已实现，待 Mac 验收；Skills 加载进 Pi、MCP 客户端和交互终端尚未开放。
 
 编程使用说明见 [PHASE-2.md](./PHASE-2.md)，验收证据见 [VALIDATION-PHASE-2.md](./VALIDATION-PHASE-2.md)。云端接入说明与验证记录见 [PHASE-3.md](./PHASE-3.md)。
 

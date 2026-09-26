@@ -42,7 +42,7 @@
 - Ask 默认纯问答，可显式开放只读项目工具。
 - Plan 只读项目并调用 update_plan；禁止任意 shell、安装、构建、测试和有副作用 MCP。
 - Execute 才启用编辑、Shell/PTY 和授权工具；遵守当前用户的 macOS 权限。
-- Browser 使用 Chrome DevTools MCP；默认独立 profile，已有会话须按 Chrome 要求授权。
+- Browser 默认独立 profile，当前由本地服务直接通过 CDP 控制（A12）；接入 MCP 客户端后再评估 Chrome DevTools MCP。已有会话须按 Chrome 要求授权。
 - 一项目工作区同时只有一个写任务；保留用户已有修改，不自动 reset。
 - 实现 cwd、PATH、环境诊断、stdout/stderr、退出码、超时和受管进程取消。
 - sudo、系统权限、验证码和登录需要本机交互时，发送 waiting_for_local_action。
@@ -86,7 +86,8 @@
 | 同步扩展阶段 | 共享聊天、模型/API Key 同步、远程 Ask 与读代码 | 已实现，见 ../SYNC.md |
 | 云端问答阶段 | 云端问答页面、模型复制到云端、共享会话转到云端继续（执行在服务器 DeepAgents Worker） | 已实现，待 Mac 验收，见 ../CLOUD-CHAT.md |
 | 配置同步阶段 | 共享 Skills/MCP 配置的查看与编辑、静态依赖检查（不执行安装脚本）、各设备生效状态（A11） | 已实现，待 Mac 验收，见 ../CONFIGS.md |
-| 第四阶段 | Skills 加载进 Pi、MCP 客户端接入、Chrome 操作 | 未开始 |
+| Chrome 阶段 | 自动化 Chrome（独立 profile、CDP）、执行阶段浏览器工具、profile 锁、敏感操作暂停、配置 Jev 后的 browser_task（A12） | 已实现，待 Mac 验收，见 ARCHITECTURE.md「Chrome 操作与 Jev 实现补充」 |
+| 第四阶段 | Skills 加载进 Pi、MCP 客户端接入（含 Chrome DevTools MCP） | 未开始 |
 | 第五阶段 | launchd、独立 runtime、安装包签名公证、UI 退出后继续执行 | 未开始 |
 
 ## 重点验收
