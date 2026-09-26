@@ -42,7 +42,8 @@ fun mergeChatMessages(existing: List<ChatMessageSnapshot>, incoming: List<ChatMe
     return byId.values.sortedWith(compareBy({ if (it.sequence == 0) 1 else 0 }, { it.sequence }))
 }
 
-fun chatRunLabel(state: String, cancelRequested: Boolean, presence: String?): String = when {
+fun chatRunLabel(state: String, cancelRequested: Boolean, presence: String?, target: String = "mac"): String = when {
+    state == "queued" && target == "cloud" -> "排队，等待云端领取"
     state == "queued" && presence == "offline" -> "排队，等 Mac 恢复"
     state == "queued" -> "排队"
     (state == "running" && cancelRequested) || (cancelRequested && state !in TERMINAL_CHAT) -> "取消中"
@@ -70,3 +71,18 @@ fun conversationKindLabel(kind: String): String = when (kind) {
 }
 
 fun canCancelChat(state: String): Boolean = state !in TERMINAL_CHAT
+
+const val CLOUD_TARGET = "cloud"
+
+/** Cloud conversations run on the server worker, so Mac presence is irrelevant to them. */
+fun conversationSourceLabel(target: String, kind: String, deviceLabel: String?, presence: String?, handoffCount: Int = 0): String =
+    if (target == CLOUD_TARGET) {
+        "云端问答" + if (handoffCount > 0) " · 由 Mac 会话转来（$handoffCount 条）" else ""
+    } else {
+        "${conversationKindLabel(kind)} · ${deviceLabel ?: "Mac"} · ${presenceLabel(presence)}"
+    }
+
+fun assistantLabel(target: String): String = if (target == CLOUD_TARGET) "云端助手" else "Mac"
+
+/** Only shared Mac conversations can seed a cloud conversation; cloud ones already are. */
+fun canHandoff(target: String, shared: Boolean): Boolean = target != CLOUD_TARGET && shared

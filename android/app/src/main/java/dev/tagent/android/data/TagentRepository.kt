@@ -3,6 +3,7 @@ package dev.tagent.android.data
 import dev.tagent.android.data.api.API_JSON
 import dev.tagent.android.data.api.ApiException
 import dev.tagent.android.data.api.ChatRunPublic
+import dev.tagent.android.data.api.CloudModelPublic
 import dev.tagent.android.data.api.ConversationPublic
 import dev.tagent.android.data.api.DevicePublic
 import dev.tagent.android.data.api.EventPublic
@@ -62,6 +63,7 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import java.io.IOException
+import java.util.UUID
 
 class TagentRepository(
     private val database: TagentDatabase,
@@ -320,6 +322,41 @@ class TagentRepository(
         }
     }
 
+    suspend fun cloudModels(): List<CloudModelPublic> {
+        if (!online()) throw ActionException("需要连接云端后才能读取云端模型")
+        try {
+            return withContext(Dispatchers.IO) { api.cloudModels(requireUrl(), requireToken()) }.filter { !it.deleted }
+        } catch (error: Exception) {
+            throw asAction(error, "网络中断，未读取到云端模型")
+        }
+    }
+
+    /** Creates a cloud conversation and returns its id; Mac presence does not matter. */
+    suspend fun createCloudConversation(modelId: String): String {
+        if (!online()) throw ActionException("需要连接云端后才能新建云端会话")
+        val id = UUID.randomUUID().toString()
+        try {
+            val created = withContext(Dispatchers.IO) { api.createCloudConversation(requireUrl(), requireToken(), id, "云端问答", modelId) }
+            dao.upsertConversations(listOf(created.toEntity()))
+            return created.id
+        } catch (error: Exception) {
+            throw asAction(error, "网络中断，云端会话未创建")
+        }
+    }
+
+    /** Starts a cloud conversation seeded with the shared history of a Mac conversation; the source is untouched. */
+    suspend fun handoffToCloud(conversationId: String, modelId: String): String {
+        if (!online()) throw ActionException("需要连接云端后才能转到云端")
+        val id = UUID.randomUUID().toString()
+        try {
+            val created = withContext(Dispatchers.IO) { api.handoff(requireUrl(), requireToken(), id, conversationId, modelId, UUID.randomUUID().toString()) }
+            dao.upsertConversations(listOf(created.toEntity()))
+            return created.id
+        } catch (error: Exception) {
+            throw asAction(error, "网络中断，未能转到云端")
+        }
+    }
+
     suspend fun cancelChat(runId: String) {
         if (!online()) throw ActionException("网络中断，取消未送达")
         try {
@@ -520,19 +557,20 @@ private fun PlanPublic.toEntity() = PlanEntity(planId, taskId, version, contentH
 private fun EventPublic.toEntity() = EventEntity(eventId, serverCursor, type, taskId, occurredAt, payload.toString())
 
 private fun ConversationPublic.toEntity() = ConversationEntity(
-    id, deviceId, version, title, kind, modelConfigId, projectId, taskId, shared, shareVersion, deleted,
+    id, deviceId.orEmpty(), version, title, kind, modelConfigId, projectId, taskId, shared, shareVersion, deleted,
+    target = target, handoffCount = handoff?.messageCount ?: 0,
 )
 
 private fun MessagePublic.toEntity() = MessageEntity(
-    id, conversationId, deviceId, version, runId, role, content, status, sequence,
+    id, conversationId, deviceId.orEmpty(), version, runId, role, content, status, sequence,
 )
 
 private fun ChatRunPublic.toPendingMessage(text: String) = MessageEntity(
-    messageId, conversationId, deviceId, version = 0, runId = id, role = "user", content = text, status = "queued", sequence = 0,
+    messageId, conversationId, deviceId.orEmpty(), version = 0, runId = id, role = "user", content = text, status = "queued", sequence = 0,
 )
 
 private fun ChatRunPublic.toEntity(seenAt: Long) = ChatRunEntity(
-    id, conversationId, deviceId, version, messageId, text, state, shareVersion, acked, cancelRequested, localRunId, seenAt,
+    id, conversationId, deviceId.orEmpty(), version, messageId, text, state, shareVersion, acked, cancelRequested, localRunId, seenAt,
 )
 
 private fun JsonObject.stringField(name: String): String? {

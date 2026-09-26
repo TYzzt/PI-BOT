@@ -103,12 +103,17 @@ data class ConversationEntity(
     val shared: Boolean,
     val shareVersion: Int,
     val deleted: Boolean,
+    // "mac" or "cloud"; cloud conversations store an empty deviceId.
+    val target: String,
+    val handoffCount: Int,
 )
 
 data class ConversationListItem(
     val id: String,
     val title: String,
     val kind: String,
+    val target: String,
+    val handoffCount: Int,
     val deviceId: String,
     val projectId: String?,
     val shared: Boolean,
@@ -254,22 +259,22 @@ interface TagentDao {
 
     @Query(
         """
-        SELECT conversations.id, conversations.title, conversations.kind, conversations.deviceId,
-               conversations.projectId, conversations.shared, devices.label AS deviceLabel,
+        SELECT conversations.id, conversations.title, conversations.kind, conversations.target, conversations.handoffCount,
+               conversations.deviceId, conversations.projectId, conversations.shared, devices.label AS deviceLabel,
                devices.presence AS presence, projects.displayName AS projectName
         FROM conversations
         LEFT JOIN devices ON conversations.deviceId = devices.deviceId
         LEFT JOIN projects ON conversations.projectId = projects.projectId
         WHERE conversations.deleted = 0
-        ORDER BY conversations.title
+        ORDER BY CASE WHEN conversations.target = 'cloud' THEN 0 ELSE 1 END, conversations.title
         """,
     )
     fun observeConversations(): Flow<List<ConversationListItem>>
 
     @Query(
         """
-        SELECT conversations.id, conversations.title, conversations.kind, conversations.deviceId,
-               conversations.projectId, conversations.shared, devices.label AS deviceLabel,
+        SELECT conversations.id, conversations.title, conversations.kind, conversations.target, conversations.handoffCount,
+               conversations.deviceId, conversations.projectId, conversations.shared, devices.label AS deviceLabel,
                devices.presence AS presence, projects.displayName AS projectName
         FROM conversations
         LEFT JOIN devices ON conversations.deviceId = devices.deviceId
@@ -379,9 +384,16 @@ interface TagentDao {
         MessageEntity::class,
         ChatRunEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = false,
 )
 abstract class TagentDatabase : androidx.room.RoomDatabase() {
     abstract fun dao(): TagentDao
+}
+
+val MIGRATION_2_3 = object : androidx.room.migration.Migration(2, 3) {
+    override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE conversations ADD COLUMN target TEXT NOT NULL DEFAULT 'mac'")
+        db.execSQL("ALTER TABLE conversations ADD COLUMN handoffCount INTEGER NOT NULL DEFAULT 0")
+    }
 }

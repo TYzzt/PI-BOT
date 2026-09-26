@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -18,6 +19,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -29,30 +32,37 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.tagent.android.data.TagentRepository
+import dev.tagent.android.data.api.CloudModelPublic
 import dev.tagent.android.data.db.ChatRunEntity
 import dev.tagent.android.data.db.ConversationListItem
 import dev.tagent.android.data.db.MessageEntity
 import dev.tagent.android.domain.ActionException
 import dev.tagent.android.domain.TERMINAL_CHAT
 import dev.tagent.android.domain.canCancelChat
+import dev.tagent.android.domain.CLOUD_TARGET
+import dev.tagent.android.domain.assistantLabel
+import dev.tagent.android.domain.canHandoff
 import dev.tagent.android.domain.chatRunLabel
-import dev.tagent.android.domain.conversationKindLabel
+import dev.tagent.android.domain.conversationSourceLabel
 import dev.tagent.android.domain.messageStatusLabel
-import dev.tagent.android.domain.presenceLabel
 import kotlinx.coroutines.launch
 
 @Composable
 fun ChatListScreen(repository: TagentRepository, onOpen: (String) -> Unit) {
     val conversations by repository.observeConversations().collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
+    var picking by remember { mutableStateOf(false) }
+    var notice by remember { mutableStateOf<String?>(null) }
     Column(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 16.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text("聊天", style = MaterialTheme.typography.headlineMedium)
             TextButton(onClick = { scope.launch { runCatching { repository.catchUp() } } }) { Text("刷新") }
         }
-        Text("这里是 Mac 已共享的会话。源码和工具日志仍留在 Mac。", style = MaterialTheme.typography.bodyMedium)
+        Text("Mac 共享会话的源码和工具日志留在 Mac；云端问答由服务器执行，Mac 关机也能用。", style = MaterialTheme.typography.bodyMedium)
+        OutlinedButton(onClick = { notice = null; picking = true }, modifier = Modifier.fillMaxWidth().padding(top = 12.dp)) { Text("新建云端会话") }
+        notice?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         if (conversations.isEmpty()) {
-            Text("还没有共享会话。在 Mac 上开启共享后刷新。", Modifier.padding(top = 24.dp))
+            Text("还没有会话。在 Mac 上开启共享，或新建云端会话。", Modifier.padding(top = 24.dp))
         } else {
             LazyColumn {
                 items(conversations, key = { it.id }) { conversation ->
@@ -62,21 +72,75 @@ fun ChatListScreen(repository: TagentRepository, onOpen: (String) -> Unit) {
             }
         }
     }
+    if (picking) {
+        CloudModelDialog(repository, title = "新建云端会话", confirm = "新建", onDismiss = { picking = false }) { modelId ->
+            val id = repository.createCloudConversation(modelId)
+            picking = false
+            onOpen(id)
+        }
+    }
+}
+
+/** Lets the user pick a cloud model, then runs [action]; errors stay in the dialog. */
+@Composable
+private fun CloudModelDialog(repository: TagentRepository, title: String, confirm: String, onDismiss: () -> Unit, action: suspend (String) -> Unit) {
+    val scope = rememberCoroutineScope()
+    var models by remember { mutableStateOf<List<CloudModelPublic>?>(null) }
+    var selected by remember { mutableStateOf<String?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        try {
+            val list = repository.cloudModels()
+            models = list
+            selected = (list.firstOrNull { it.config.isDefault } ?: list.firstOrNull())?.id
+        } catch (e: ActionException) {
+            error = e.message
+            models = emptyList()
+        }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                when {
+                    models == null -> Text("正在读取云端模型…")
+                    models!!.isEmpty() && error == null -> Text("还没有云端模型。请在 Mac 的「模型设置」里点击“复制到云端”。")
+                }
+                models.orEmpty().forEach { m ->
+                    val mark = if (m.id == selected) "● " else "○ "
+                    Text(mark + m.config.name + " · " + m.config.modelId, Modifier.fillMaxWidth().clickable { selected = m.id }.padding(vertical = 8.dp))
+                }
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = !busy && selected != null, onClick = {
+                val modelId = selected ?: return@TextButton
+                busy = true
+                error = null
+                scope.launch {
+                    try { action(modelId) } catch (e: ActionException) { error = e.message } finally { busy = false }
+                }
+            }) { Text(if (busy) "处理中" else confirm) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
 }
 
 @Composable
 private fun ConversationRow(conversation: ConversationListItem, onClick: () -> Unit) {
     Column(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 14.dp)) {
         Text(conversation.title, style = MaterialTheme.typography.titleMedium)
-        val device = conversation.deviceLabel ?: "Mac"
         val project = conversation.projectName?.let { " · $it" }.orEmpty()
         val sharing = if (conversation.shared) "" else " · 已停止共享"
-        Text("${conversationKindLabel(conversation.kind)} · $device · ${presenceLabel(conversation.presence)}$project$sharing")
+        Text(conversationSourceLabel(conversation.target, conversation.kind, conversation.deviceLabel, conversation.presence, conversation.handoffCount) + project + sharing)
     }
 }
 
 @Composable
-fun ChatScreen(repository: TagentRepository, conversationId: String, onBack: () -> Unit) {
+fun ChatScreen(repository: TagentRepository, conversationId: String, onBack: () -> Unit, onOpen: (String) -> Unit) {
     val model = viewModel(key = conversationId) { ChatViewModel(repository, conversationId) }
     DisposableEffect(conversationId) {
         repository.watchConversation(conversationId)
@@ -84,24 +148,31 @@ fun ChatScreen(repository: TagentRepository, conversationId: String, onBack: () 
     }
     val conversation = model.conversation
     val active = model.run?.takeIf { it.state !in TERMINAL_CHAT }
+    val target = conversation?.target ?: "mac"
+    var handoff by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         TextButton(onClick = onBack) { Text("返回") }
         Text(conversation?.title ?: "会话", style = MaterialTheme.typography.headlineSmall)
         conversation?.let {
-            val device = it.deviceLabel ?: "Mac"
-            Text("${conversationKindLabel(it.kind)} · $device · ${presenceLabel(it.presence)}")
+            Text(conversationSourceLabel(it.target, it.kind, it.deviceLabel, it.presence, it.handoffCount))
             if (!it.shared) Text("已停止共享，不能继续提问")
+            if (canHandoff(it.target, it.shared)) {
+                OutlinedButton(onClick = { handoff = true }) { Text("转到云端继续") }
+            }
         }
         model.run?.let { run ->
-            Text(chatRunLabel(run.state, run.cancelRequested, conversation?.presence))
+            Text(chatRunLabel(run.state, run.cancelRequested, conversation?.presence, target))
             if (canCancelChat(run.state) && !run.cancelRequested) {
                 OutlinedButton(onClick = { model.cancel() }, enabled = !model.busy) { Text("取消") }
             }
         }
         LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
-            items(model.messages, key = { it.messageId }) { message -> MessageRow(message) }
+            items(model.messages, key = { it.messageId }) { message -> MessageRow(message, assistantLabel(target)) }
         }
-        Text("源码、diff 和工具日志留在 Mac。这里只显示已同步的对话。", style = MaterialTheme.typography.bodySmall)
+        Text(
+            if (target == CLOUD_TARGET) "云端助手可联网搜索（服务器已配置时），不能访问 Mac 上的项目和文件。" else "源码、diff 和工具日志留在 Mac。这里只显示已同步的对话。",
+            style = MaterialTheme.typography.bodySmall,
+        )
         model.notice?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         OutlinedTextField(
             model.text,
@@ -118,12 +189,19 @@ fun ChatScreen(repository: TagentRepository, conversationId: String, onBack: () 
         ) { Text(if (model.busy) "正在发送" else "发送") }
         if (model.canDiscard) TextButton(onClick = { model.discard() }) { Text("放弃这条草稿") }
     }
+    if (handoff) {
+        CloudModelDialog(repository, title = "转到云端继续", confirm = "转到云端", onDismiss = { handoff = false }) { modelId ->
+            val id = repository.handoffToCloud(conversationId, modelId)
+            handoff = false
+            onOpen(id)
+        }
+    }
 }
 
 @Composable
-private fun MessageRow(message: MessageEntity) {
+private fun MessageRow(message: MessageEntity, assistant: String) {
     Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
-        val who = if (message.role == "user") "你" else "Mac"
+        val who = if (message.role == "user") "你" else assistant
         val status = messageStatusLabel(message.status)?.let { " · $it" }.orEmpty()
         Text("$who$status", style = MaterialTheme.typography.labelLarge)
         Text(message.content)

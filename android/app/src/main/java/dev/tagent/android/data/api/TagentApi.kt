@@ -216,12 +216,21 @@ private class EmptyBody
 private data class SendMessageBody(val text: String, @SerialName("request_id") val requestId: String)
 
 @Serializable
+data class HandoffPublic(
+    @SerialName("from_conversation_id") val fromConversationId: String,
+    @SerialName("message_count") val messageCount: Int,
+)
+
+// device_id is null for cloud-executed documents.
+@Serializable
 data class ConversationPublic(
     val id: String,
-    @SerialName("device_id") val deviceId: String,
+    @SerialName("device_id") val deviceId: String? = null,
     val version: Int,
     val title: String,
     val kind: String,
+    val target: String = "mac",
+    val handoff: HandoffPublic? = null,
     @SerialName("model_config_id") val modelConfigId: String,
     @SerialName("project_id") val projectId: String? = null,
     @SerialName("task_id") val taskId: String? = null,
@@ -233,7 +242,7 @@ data class ConversationPublic(
 @Serializable
 data class MessagePublic(
     val id: String,
-    @SerialName("device_id") val deviceId: String,
+    @SerialName("device_id") val deviceId: String? = null,
     val version: Int,
     @SerialName("conversation_id") val conversationId: String,
     @SerialName("run_id") val runId: String,
@@ -246,7 +255,7 @@ data class MessagePublic(
 @Serializable
 data class ChatRunPublic(
     val id: String,
-    @SerialName("device_id") val deviceId: String,
+    @SerialName("device_id") val deviceId: String? = null,
     val version: Int,
     @SerialName("conversation_id") val conversationId: String,
     @SerialName("message_id") val messageId: String,
@@ -256,7 +265,31 @@ data class ChatRunPublic(
     val acked: Boolean,
     @SerialName("cancel_requested") val cancelRequested: Boolean,
     @SerialName("local_run_id") val localRunId: String? = null,
+    val error: String? = null,
 )
+
+@Serializable
+data class CloudModelConfig(val name: String, @SerialName("model_id") val modelId: String, @SerialName("is_default") val isDefault: Boolean = false)
+
+@Serializable
+data class CloudModelPublic(
+    val id: String,
+    val version: Int,
+    val config: CloudModelConfig,
+    val deleted: Boolean = false,
+    @SerialName("source_model_id") val sourceModelId: String? = null,
+)
+
+@Serializable
+private data class CloudConversationBody(
+    @SerialName("expected_version") val expectedVersion: Int,
+    @SerialName("request_id") val requestId: String,
+    val title: String,
+    @SerialName("model_config_id") val modelConfigId: String,
+)
+
+@Serializable
+private data class HandoffBody(@SerialName("request_id") val requestId: String, @SerialName("model_config_id") val modelConfigId: String)
 
 @Serializable
 data class MessagePage(
@@ -319,6 +352,14 @@ class TagentApi(private val http: OkHttpClient, private val json: Json = API_JSO
     fun cancelChatRun(url: ServerUrl, token: String, runId: String): ChatRunPublic =
         post("${url.base}/chat-runs/$runId/cancel", token, EmptyBody())
 
+    fun cloudModels(url: ServerUrl, token: String): List<CloudModelPublic> = get("${url.base}/cloud/models", token)
+
+    fun createCloudConversation(url: ServerUrl, token: String, id: String, title: String, modelId: String): ConversationPublic =
+        put("${url.base}/cloud/conversations/$id", token, CloudConversationBody(0, id, title, modelId))
+
+    fun handoff(url: ServerUrl, token: String, id: String, sourceId: String, modelId: String, requestId: String): ConversationPublic =
+        post("${url.base}/cloud/conversations/$id/handoff-from/$sourceId", token, HandoffBody(requestId, modelId))
+
     private inline fun <reified T> get(url: String, token: String): T = execute(Request.Builder().url(url).header("Authorization", "Bearer $token").build())
 
     private inline fun <reified T, reified B> post(url: String, token: String?, body: B): T {
@@ -326,6 +367,9 @@ class TagentApi(private val http: OkHttpClient, private val json: Json = API_JSO
         if (token != null) builder.header("Authorization", "Bearer $token")
         return execute(builder.build())
     }
+
+    private inline fun <reified T, reified B> put(url: String, token: String, body: B): T =
+        execute(Request.Builder().url(url).put(json.encodeToString(body).toRequestBody(JSON)).header("Authorization", "Bearer $token").build())
 
     private inline fun <reified T> execute(request: Request): T {
         http.newCall(request).execute().use { response ->

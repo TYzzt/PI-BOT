@@ -82,7 +82,7 @@ private fun MainScaffold(repository: TagentRepository) {
             composable("tasks") { TaskListScreen(repository, onOpen = { nav.navigate("task/$it") }) }
             composable("chats") { ChatListScreen(repository, onOpen = { nav.navigate("chat/$it") }) }
             composable("chat/{conversationId}") { entry ->
-                ChatScreen(repository, entry.arguments?.getString("conversationId").orEmpty(), onBack = { nav.popBackStack() })
+                ChatScreen(repository, entry.arguments?.getString("conversationId").orEmpty(), onBack = { nav.popBackStack() }, onOpen = { nav.navigate("chat/$it") })
             }
             composable("new/{projectId}") { entry ->
                 NewTaskScreen(repository, entry.arguments?.getString("projectId").orEmpty(), onCreated = { nav.navigate("task/$it") { popUpTo("projects") } }, onBack = { nav.popBackStack() })
