@@ -5,7 +5,7 @@ export interface CloudStatus { paired: boolean; serverUrl: string | null; device
 export interface CloudTaskInfo { cloudTaskId: string; connected: boolean; publishedPlanIds: string[]; }
 export interface SharedStatus { deviceLabel?: string; connected?: boolean; runs?: {id:string; conversationId:string; state:string; cancelRequested:boolean}[]; models: { id: string; version: number; applied: number; error?: string; conflict?: boolean }[]; conversations: { id: string; shared: boolean; version: number; error?: string; syncedAt?: number }[]; error?: string; }
 export interface CloudModel { id: string; version: number; name: string; modelId: string; isDefault: boolean; sourceModelId: string | null; }
-export interface CloudChatConversation { id: string; version: number; title: string; modelId: string; handoff: { fromConversationId: string; messageCount: number } | null; }
+export interface CloudChatConversation { updatedAt?: number; id: string; version: number; title: string; modelId: string; handoff: { fromConversationId: string; messageCount: number } | null; }
 export interface CloudChatMessage { id: string; runId: string; role: 'user' | 'assistant'; content: string; status: string; sequence: number; }
 export interface CloudChatRun { id: string; conversationId: string; state: string; cancelRequested: boolean; error: string | null; }
 export interface CloudChatDetail { conversation: CloudChatConversation; messages: CloudChatMessage[]; run: CloudChatRun | null; }

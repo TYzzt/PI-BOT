@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { readFileSync, writeFileSync, mkdirSync, symlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, symlinkSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { Store } from '../packages/service/src/store.js';
 import { Application } from '../packages/service/src/application.js';
@@ -12,7 +12,7 @@ import { codingEndpoint, fixtureProject } from './coding-helpers.js';
 
 test('Pi coding: read-only plan, revision, approval, tools, dirty baseline and real commands', { timeout: 90000 }, async () => {
   const dir = temp(), root = join(dir.path, 'project'); mkdirSync(root); fixtureProject(root);
-  const api = await codingEndpoint(), store = new Store(join(dir.path, 'app.sqlite')), app = new Application(store, new MemoryCredentials(), piFactory(dir.path), () => {});
+  const api = await codingEndpoint(), store = new Store(join(dir.path, 'app.sqlite')), app = new Application(store, new MemoryCredentials(), piFactory(dir.path), () => {}, { dataDir: dir.path });
   const wait = async (taskId: string) => { await eventually(() => !app.coding.active, 20000); return app.coding.db.task(taskId); };
   try {
     const model = await app.call('modelSave', { name: 'fixture', modelId: 'fixture', baseUrl: api.url, apiKey: 'coding-fixture-secret', contextWindow: 32000, maxTokens: 4096 });
@@ -37,12 +37,17 @@ test('Pi coding: read-only plan, revision, approval, tools, dirty baseline and r
     for (const req of api.requests.filter(r => r.tools?.some((t: any) => t.function.name === 'update_plan'))) assert.ok(!req.tools.some((t: any) => ['run_command', 'write_file', 'edit_file', 'bash'].includes(t.function.name)));
     await assert.rejects(app.call('messageSend', { conversationId: task.conversationId, text: 'bypass', requestId: randomUUID() }), /规划接口/);
     assert.ok(!JSON.stringify(detail).includes('coding-fixture-secret'));
+    const performanceLog = join(dir.path, 'logs', 'coding-performance.jsonl');
+    assert.equal(existsSync(performanceLog), true);
+    const performance = readFileSync(performanceLog, 'utf8');
+    assert.match(performance, /"kind":"run_summary"/);
+    for (const secret of ['coding-fixture-secret', 'a - b', 'node test.mjs', 'user uncommitted notes']) assert.ok(!performance.includes(secret), secret);
   } finally { await app.shutdown(); store.close(); await api.close(); dir.cleanup(); }
 });
 
 test('stale workspace, ignored read files and model revisions invalidate approval; cancellation stops commands', { timeout: 90000 }, async () => {
   const dir = temp(), root = join(dir.path, 'project'); mkdirSync(root); fixtureProject(root); writeFileSync(join(root, '.gitignore'), 'private.txt\n'); writeFileSync(join(root, 'private.txt'), 'private context');
-  const api = await codingEndpoint(), store = new Store(join(dir.path, 'app.sqlite')), app = new Application(store, new MemoryCredentials(), piFactory(dir.path), () => {});
+  const api = await codingEndpoint(), store = new Store(join(dir.path, 'app.sqlite')), app = new Application(store, new MemoryCredentials(), piFactory(dir.path), () => {}, { dataDir: dir.path });
   try {
     const model = await app.call('modelSave', { name: 'fixture', modelId: 'fixture', baseUrl: api.url, apiKey: 'secret', contextWindow: 32000, maxTokens: 4096 });
     const project = await app.call('projectAdd', { path: root, requestId: randomUUID() });
@@ -71,7 +76,7 @@ test('workspace rejects traversal and symlink escapes, accepts unborn Git, rejec
 
 test('unanswered questions block approval and scope expansion closes execution tools', { timeout: 60000 }, async () => {
   const dir = temp(), root = join(dir.path, 'repo'); mkdirSync(root); fixtureProject(root);
-  const api = await codingEndpoint(), store = new Store(join(dir.path, 'app.sqlite')), app = new Application(store, new MemoryCredentials(), piFactory(dir.path), () => {});
+  const api = await codingEndpoint(), store = new Store(join(dir.path, 'app.sqlite')), app = new Application(store, new MemoryCredentials(), piFactory(dir.path), () => {}, { dataDir: dir.path });
   try {
     const model = await app.call('modelSave', { name: 'fixture', modelId: 'fixture', baseUrl: api.url, apiKey: 'test-key', contextWindow: 32000, maxTokens: 4096 });
     const project = await app.call('projectAdd', { path: root, requestId: randomUUID() });
@@ -87,16 +92,16 @@ test('unanswered questions block approval and scope expansion closes execution t
 
 test('read-only code chat answers directly, retains history across restart and requires explicit planning for edits', { timeout: 60000 }, async () => {
   const dir = temp(), root = join(dir.path, 'repo'); mkdirSync(root); fixtureProject(root);
-  const api = await codingEndpoint(), path = join(dir.path, 'app.sqlite'), credentials = new MemoryCredentials(); let store = new Store(path), app = new Application(store, credentials, piFactory(dir.path), () => {});
+  const api = await codingEndpoint(), path = join(dir.path, 'app.sqlite'), credentials = new MemoryCredentials(); let store = new Store(path), app = new Application(store, credentials, piFactory(dir.path), () => {}, { dataDir: dir.path });
   try {
     const model = await app.call('modelSave', { name: 'fixture', modelId: 'fixture', baseUrl: api.url, apiKey: 'read-test-key', contextWindow: 32000, maxTokens: 4096 });
     const project = await app.call('projectAdd', { path: root, requestId: randomUUID() }), before = await capture(root);
     const task = await app.call('codingCreate', { intent: 'read', projectId: project.id, requirement: '解释 add 的代码，即使我提到修改也不实际改动', planModelId: model.id, executeModelId: model.id, requestId: randomUUID() }); await eventually(() => !app.coding.active, 20000);
     let detail = await app.call('codingGet', { conversationId: task.conversationId }); assert.equal(detail.task.state, 'completed', detail.task.message); assert.equal(detail.plans.length, 0); assert.equal(detail.task.intent, 'read'); assert.match(detail.messages.at(-1)!.content, /差值/); const session = detail.runs[0].sessionPath;
-    await app.shutdown(); store.close(); store = new Store(path); app = new Application(store, credentials, piFactory(dir.path), () => {});
+    await app.shutdown(); store.close(); store = new Store(path); app = new Application(store, credentials, piFactory(dir.path), () => {}, { dataDir: dir.path });
     const input = { taskId: task.id, text: '继续解释刚才的原因', requestId: randomUUID() }; const run = await app.call('codingRead', input); assert.equal((await app.call('codingRead', input)).id, run.id); await eventually(() => !app.coding.active, 20000);
     detail = await app.call('codingGet', { conversationId: task.conversationId }); assert.equal(detail.messages.length, 4); assert.match(detail.messages.at(-1)!.content, /上次/); assert.equal(detail.runs[1].sessionPath, session); assert.equal(detail.plans.length, 0); assert.equal((await capture(root)).fingerprint, before.fingerprint);
-    for (const req of api.requests) assert.deepEqual(req.tools.map((t: any) => t.function.name).sort(), ['find_files', 'git_status', 'list_files', 'read_file', 'search_files']);
+    for (const req of api.requests) assert.deepEqual(req.tools.map((t: any) => t.function.name).sort(), ['find_files', 'git_status', 'list_files', 'read_file', 'read_tool_output', 'search_files']);
     await app.call('codingPlan', { taskId: task.id, feedback: '现在帮我生成修改计划', requestId: randomUUID() }); await eventually(() => !app.coding.active, 20000);
     detail = await app.call('codingGet', { conversationId: task.conversationId }); assert.equal(detail.task.intent, 'code'); assert.equal(detail.task.state, 'awaiting_review'); assert.equal(detail.plans.length, 1); assert.equal((await capture(root)).fingerprint, before.fingerprint);
     await app.call('codingRead', { taskId: task.id, text: '先解释这个修改为何有效', requestId: randomUUID() }); await eventually(() => !app.coding.active, 20000); assert.equal(app.coding.db.task(task.id).state, 'awaiting_review');
@@ -132,4 +137,62 @@ test('project search uses one git query and long files stay windowed', async () 
     assert.match(page.text, /^401\|line-401/);
     assert.equal(page.truncated, true);
   } finally { dir.cleanup(); }
+});
+
+test('long execution passes 200 calls and retains old verification failures beyond UI log window', { timeout: 90000 }, async () => {
+  const dir = temp(), root = join(dir.path, 'repo'); mkdirSync(root); fixtureProject(root);
+  const api = await codingEndpoint(true), store = new Store(join(dir.path, 'app.sqlite')), app = new Application(store, new MemoryCredentials(), piFactory(dir.path), () => {}, { dataDir: dir.path });
+  try {
+    const model = await app.call('modelSave', { name: 'fixture', modelId: 'fixture', baseUrl: api.url, apiKey: 'secret', contextWindow: 200000, maxTokens: 4096 });
+    const project = await app.call('projectAdd', { path: root, requestId: randomUUID() });
+    const task = await app.call('codingCreate', { projectId: project.id, requirement: '修复 add', planModelId: model.id, executeModelId: model.id, requestId: randomUUID() });
+    await eventually(() => !app.coding.active, 20000);
+    const plan = app.coding.db.plans(task.id)[0];
+    const run = await app.call('codingApprove', { taskId: task.id, planId: plan.id, hash: plan.hash, requestId: randomUUID() }); assert.ok(run);
+    await eventually(() => !app.coding.active, 60000);
+    assert.equal(app.coding.db.task(task.id).state, 'completed', app.coding.db.task(task.id).message);
+    assert.equal(app.coding.db.plans(task.id).length, 1);
+    assert.equal(app.coding.db.runs(task.id).length, 2);
+    const rows = store.db.prepare('SELECT data FROM tool_calls WHERE runId=?').all(run.id) as { data: string }[];
+    assert.equal(rows.length, 204);
+    const recorded = rows.map(row => JSON.parse(row.data));
+    const verify = recorded.find(tool => tool.verification);
+    assert.equal(verify.exitCode, 0);
+    assert.match(verify.output, /PASS add/);
+    const statuses = recorded.filter(tool => tool.name === 'git_status');
+    assert.ok(statuses.length >= 200);
+    assert.match(statuses.at(-1).output, /branch/);
+    assert.equal(app.coding.db.tools(task.id).length, 150);
+    const check = app.coding.db.verificationTools(run.id)[0]; assert.ok(check);
+    assert.equal((await app.call('codingGet', { conversationId: task.conversationId })).verification, 'passed');
+    app.coding.db.putTool({ ...check, exitCode: 1 });
+    assert.equal((await app.call('codingGet', { conversationId: task.conversationId })).verification, 'failed');
+    app.coding.db.putTool({ ...check, id: randomUUID(), exitCode: 0 });
+    assert.equal((await app.call('codingGet', { conversationId: task.conversationId })).verification, 'passed');
+  } finally { await app.shutdown(); store.close(); await api.close(); dir.cleanup(); }
+});
+
+test('a cloud plan request continues the existing project conversation', { timeout: 60000 }, async () => {
+  const dir = temp(), root = join(dir.path, 'project'); mkdirSync(root); fixtureProject(root);
+  const api = await codingEndpoint(), store = new Store(join(dir.path, 'app.sqlite')), app = new Application(store, new MemoryCredentials(), piFactory(dir.path), () => {}, { dataDir: dir.path });
+  try {
+    const model = await app.call('modelSave', { name: 'fixture', modelId: 'fixture', baseUrl: api.url, apiKey: 'k', contextWindow: 32000, maxTokens: 4096 });
+    const project = await app.call('projectAdd', { path: root, requestId: randomUUID() });
+    const conversation = await app.call('conversationCreate', { modelConfigId: model.id });
+    const phoneMessage = randomUUID(), requestId = randomUUID();
+    store.db.prepare('INSERT INTO shared_state VALUES(?,?,?)').run('run', requestId, JSON.stringify({ messageId: phoneMessage, reported: true }));
+    const task = await app.call('codingCreate', { intent: 'code', shared: true, conversationId: conversation.id, projectId: project.id, requirement: '修复 add', planModelId: model.id, executeModelId: model.id, requestId });
+    assert.equal(task.conversationId, conversation.id);
+    assert.equal(store.conversations().length, 1);
+    assert.ok(store.messages(conversation.id).some(message => message.id === phoneMessage));
+    await eventually(() => !app.coding.active, 20000);
+    const cloudProjectId = randomUUID(), cloudTaskId = randomUUID(), commandId = randomUUID(), reviseMessage = randomUUID();
+    app.cloud.db.putProject({ projectId: project.id, cloudProjectId, name: project.name, enabled: true, remoteAvailable: true });
+    await (app.cloud as any).perform({ command_id: commandId, command_type: 'plan_request', task_id: cloudTaskId, run_id: randomUUID(), payload: { project_id: cloudProjectId, requirement: '保持改动最小', conversation_id: conversation.id, message_id: reviseMessage }, expires_at: new Date(Date.now() + 60_000).toISOString(), created_at: new Date().toISOString() });
+    assert.equal(store.conversations().length, 1);
+    assert.equal(app.coding.db.byConversation(conversation.id).id, task.id);
+    assert.equal(app.cloud.db.taskByCloud(cloudTaskId)?.taskId, task.id);
+    assert.ok(store.messages(conversation.id).some(message => message.id === reviseMessage && message.content === '保持改动最小'));
+    await eventually(() => !app.coding.active, 20000);
+  } finally { await app.shutdown(); store.close(); await api.close(); dir.cleanup(); }
 });

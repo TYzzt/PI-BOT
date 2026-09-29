@@ -304,20 +304,34 @@ class TagentRepository(
         }
     }
 
-    suspend fun sendQuestion(conversationId: String, text: String): String {
+    suspend fun sendQuestion(conversationId: String, text: String, mode: String = "read"): String {
         val active = dao.activeChatRun(conversationId)
         val shared = dao.conversationShared(conversationId) != false
         when (val gate = decideQuestion(online(), active?.state, shared, text)) {
             is QuestionDecision.Blocked -> throw ActionException(questionBlockMessage(gate.reason))
             QuestionDecision.Send -> Unit
         }
-        val id = "chat:$conversationId"
-        when (val decision = prepareSend(id, "chat", conversationId, text)) {
+        val plan = mode == "plan"
+        val id = if (plan) "plan:$conversationId" else "chat:$conversationId"
+        when (val decision = prepareSend(id, if (plan) "plan" else "chat", conversationId, text)) {
             is SendDecision.AlreadyConfirmed -> return decision.resultId
             is SendDecision.Conflict -> throw ActionException(decision.message)
             is SendDecision.Blocked -> throw ActionException(reviewBlockMessage(decision.reason))
             is SendDecision.Send -> {
                 try {
+                    if (plan) {
+                        val accepted = withContext(Dispatchers.IO) {
+                            api.sendPlan(requireUrl(), requireToken(), conversationId, decision.body, decision.key)
+                        }
+                        val conversation = withContext(Dispatchers.IO) {
+                            api.conversation(requireUrl(), requireToken(), conversationId)
+                        }
+                        dao.upsertConversations(listOf(conversation.toEntity()))
+                        refreshTask(accepted.taskId)
+                        confirm(id, accepted.taskId)
+                        runCatching { refreshConversation(conversationId) }
+                        return accepted.taskId
+                    }
                     val run = withContext(Dispatchers.IO) {
                         api.sendMessage(requireUrl(), requireToken(), conversationId, decision.body, decision.key)
                     }
@@ -328,7 +342,7 @@ class TagentRepository(
                     return run.id
                 } catch (error: Exception) {
                     fail(id, error)
-                    throw asAction(error, "网络中断，问题未提交")
+                    throw asAction(error, if (plan) "网络中断，计划未提交" else "网络中断，问题未提交")
                 }
             }
         }

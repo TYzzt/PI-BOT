@@ -18,10 +18,13 @@ test('shared models, history, remote Ask/Read, streaming cancellation and restar
   const model=await app.call('modelSave',{name:'shared fixture',baseUrl:api.url,modelId:'fixture',apiKey:'shared-key',contextWindow:32000,maxTokens:4096});
   const old=await app.call('conversationCreate',{modelConfigId:model.id});
   await app.call('messageSend',{conversationId:old.id,text:'记住蓝鲸',requestId:randomUUID()});await eventually(async()=>!(await app.call('snapshot',{})).activeRun);
+  const offlineRoot=join(dir.path,'offline-repo');mkdirSync(offlineRoot);fixtureProject(offlineRoot);
+  const offlineProject=await app.call('projectAdd',{path:offlineRoot,requestId:randomUUID()});
+  assert.equal(app.cloud.db.project(offlineProject.id),null);
   const paired=await app.call('cloudPair',{serverUrl:url!,label:'Shared test Mac',password:password!});
   await eventually(async()=> (await user('GET','/configs/models')).some((m:any)=>m.id===model.id&&m.applied_version===1),20000);
-  assert.equal((await user('GET','/conversations')).length,0);
-  await app.call('sharedConversation',{ids:[old.id],shared:true});
+  await eventually(()=>!!app.cloud.db.project(offlineProject.id),20000);
+  // History created before pairing is automatically published.
   await eventually(async()=> (await user('GET','/conversations')).some((c:any)=>c.id===old.id),20000);
   await eventually(async()=> (await user('GET',`/conversations/${old.id}/messages`)).messages.length===2,20000);
   const send={text:'我之前说的是什么？',request_id:randomUUID()};
@@ -54,16 +57,16 @@ test('shared models, history, remote Ask/Read, streaming cancellation and restar
   history=await user('GET',`/conversations/${old.id}/messages`);assert.equal(history.messages.length,beforeOffline+4);assert.equal(history.messages[beforeOffline].content,'本机离线的一轮问题');
   const codeModel=await app.call('modelSave',{name:'reader',baseUrl:codeApi.url,modelId:'fixture',apiKey:'code-key',contextWindow:32000,maxTokens:4096});
   await eventually(async()=> (await user('GET','/configs/models')).some((m:any)=>m.id===codeModel.id),20000);
-  const root=join(dir.path,'repo');mkdirSync(root);fixtureProject(root);const project=await app.call('projectAdd',{path:root,requestId:randomUUID()});await app.call('cloudProjectShare',{projectId:project.id,enabled:true});
+  const root=join(dir.path,'repo');mkdirSync(root);fixtureProject(root);const project=await app.call('projectAdd',{path:root,requestId:randomUUID()});await eventually(()=>!!app.cloud.db.project(project.id),20000);
   const cloudProject=app.cloud.db.project(project.id)!.cloudProjectId,cid=randomUUID();
   await user('PUT',`/conversations/${cid}`,{device_id:paired.deviceId,title:'read code',kind:'read_code',model_config_id:codeModel.id,project_id:cloudProject,expected_version:0,request_id:randomUUID()});
   const read=await user('POST',`/conversations/${cid}/messages`,{text:'解释 add 的行为',request_id:randomUUID()});await eventually(async()=> (await user('GET',`/chat-runs/${read.id}`)).state==='completed',30000);
   const detail=await app.call('codingGet',{conversationId:cid});assert.equal(detail.plans.length,0);assert.ok(detail.tools.every(t=>['read_file','list_files','search_files','find_files','git_status'].includes(t.name)));
-  // Unsharing preserves existing history; deletion is durable and cannot resurrect on restart.
-  await app.call('sharedConversation',{ids:[old.id],shared:false});await eventually(async()=>!(await user('GET',`/conversations/${old.id}`)).shared,20000);
+  // Legacy opt-out no longer disables automatic sync; deletion remains durable.
+  await app.call('sharedConversation',{ids:[old.id],shared:false});assert.equal(!!store.conversation(old.id).shared,true);
   const kept=(await user('GET',`/conversations/${old.id}/messages`)).messages.length;
-  await app.call('messageSend',{conversationId:old.id,text:'仅本机的新问题',requestId:randomUUID()});await eventually(async()=>!(await app.call('snapshot',{})).activeRun);
-  await new Promise(r=>setTimeout(r,1500));assert.equal((await user('GET',`/conversations/${old.id}/messages`)).messages.length,kept);
+  await app.call('messageSend',{conversationId:old.id,text:'自动同步的新问题',requestId:randomUUID()});await eventually(async()=>!(await app.call('snapshot',{})).activeRun);
+  await eventually(async()=>(await user('GET',`/conversations/${old.id}/messages`)).messages.length===kept+2,20000);
   await app.call('conversationDelete',{id:old.id});assert.equal((await user('GET',`/conversations/${old.id}`)).deleted,true);
   const readerConfig=(await user('GET','/configs/models')).find((m:any)=>m.id===codeModel.id);
   await user('POST',`/configs/models/${codeModel.id}/delete`,{expected_version:readerConfig.version,request_id:randomUUID(),replacement_id:model.id});
@@ -74,6 +77,15 @@ test('shared models, history, remote Ask/Read, streaming cancellation and restar
   await app.call('modelDelete',{id:model.id,replacementId:replacement.id});
   await eventually(async()=> (await user('GET','/configs/models')).some((m:any)=>m.id===model.id&&m.deleted&&m.apply_state==='applied'),20000);
   assert.equal(store.conversation(cid).modelConfigId,replacement.id);
+  const projectCount=(await user('GET','/projects')).length;
+  await app.call('cloudUnpair',{});assert.equal(app.cloud.status().paired,false);assert.equal(deviceKeys.values.size,0);
+  const offlineChat=await app.call('conversationCreate',{modelConfigId:replacement.id});
+  await app.call('messageSend',{conversationId:offlineChat.id,text:'重新配对后自动同步',requestId:randomUUID()});await eventually(async()=>!(await app.call('snapshot',{})).activeRun);
+  const reconnected=await app.call('cloudPair',{serverUrl:url!,label:'Shared test Mac',password:password!});
+  assert.equal(reconnected.deviceId,paired.deviceId);
+  await eventually(async()=>(await user('GET','/conversations')).some((c:any)=>c.id===offlineChat.id),20000);
+  await eventually(async()=>(await user('GET',`/conversations/${offlineChat.id}/messages`)).messages.length===2,20000);
+  assert.equal((await user('GET','/projects')).length,projectCount);
   assert.ok(!JSON.stringify(await user('GET','/configs/models')).includes('updated-shared-key'));assert.ok(!JSON.stringify(store.db.prepare('SELECT data FROM shared_state').all()).includes('updated-shared-key'));
  } finally {await app.shutdown();store.close();await api.close();await codeApi.close();dir.cleanup();}
 });

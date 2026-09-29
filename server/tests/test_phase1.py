@@ -202,3 +202,46 @@ def test_openapi_contract() -> None:
     ]
     committed = Path("openapi.json").read_text(encoding="utf-8")
     assert committed == json.dumps(spec, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+
+
+def test_project_registration_retry_is_idempotent_and_device_scoped(client: TestClient) -> None:
+    import uuid
+    token = login(client)
+    key, public_key = new_device_key()
+    device = pair(client, token, key, public_key)
+    payload = {"display_name": "auto-sync", "request_id": str(uuid.uuid4())}
+    body = json_bytes(payload)
+
+    def create(device_id, private_key, content):
+        return client.post("/projects", content=content, headers=signed_headers(private_key, device_id, "POST", "/projects", content))
+
+    first = create(device, key, body)
+    retry = create(device, key, body)
+    assert first.status_code == retry.status_code == 200
+    assert first.json()["project_id"] == retry.json()["project_id"]
+    assert len(client.get("/projects", headers=bearer(token)).json()) == 1
+    other_key, other_public = new_device_key()
+    other_device = pair(client, token, other_key, other_public, "Other Mac")
+    other = create(other_device, other_key, body)
+    assert other.status_code == 200
+    assert other.json()["project_id"] != first.json()["project_id"]
+    legacy = json_bytes({"display_name": "legacy"})
+    assert create(device, key, legacy).json()["project_id"] != create(device, key, legacy).json()["project_id"]
+
+
+def test_authenticated_repair_preserves_device_and_rotates_key(client: TestClient) -> None:
+    token = login(client)
+    key, public_key = new_device_key()
+    device_id = pair(client, token, key, public_key)
+    new_key, new_public_key = new_device_key()
+    code = client.post('/devices/pairing-codes', headers=bearer(token)).json()['pairing_code']
+    payload = {'pairing_code': code, 'previous_device_id': device_id, 'public_key': new_public_key, 'label': 'Reconnected', 'capabilities': ['plan', 'shared_v1']}
+    assert client.post('/devices/pair', json=payload).status_code == 401
+    response = client.post('/devices/pair', json=payload, headers=bearer(token))
+    assert response.status_code == 200, response.text
+    assert response.json()['device_id'] == device_id
+    assert len(client.get('/devices', headers=bearer(token)).json()) == 1
+    path = f'/devices/{device_id}/heartbeat'
+    assert client.post(path, content=b'{}', headers=signed_headers(key, device_id, 'POST', path, b'{}')).status_code == 401
+    assert client.post(path, content=b'{}', headers=signed_headers(new_key, device_id, 'POST', path, b'{}')).status_code == 200
+    assert client.post('/devices/pair', json=payload, headers=bearer(token)).status_code == 400

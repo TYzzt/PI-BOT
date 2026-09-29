@@ -13,22 +13,22 @@ export function useCloudModels(enabled: boolean) {
   return { models, error, reload: load };
 }
 
-export function CloudChatPage({ connected, initialId, localModels, onError }: { connected: boolean; initialId: string | null; localModels: ModelConfig[]; onError: (s: string) => void }) {
-  const [list, setList] = useState<CloudChatConversation[]>([]), [selected, setSelected] = useState<string | null>(initialId), [detail, setDetail] = useState<CloudChatDetail | null>(null);
+export function CloudChatPage({ connected, initialId, localModels, onError, createRequest = 0, onSelect, onCreated }: { connected: boolean; initialId: string | null; localModels: ModelConfig[]; onError: (s: string) => void; createRequest?: number; onSelect?: (id: string) => void; onCreated?: (c: CloudChatConversation) => void }) {
+  const [selected, setSelected] = useState<string | null>(initialId), [detail, setDetail] = useState<CloudChatDetail | null>(null);
   const [draft, setDraft] = useState(''), [busy, setBusy] = useState(false), [offline, setOffline] = useState(''), [creating, setCreating] = useState(false);
   const { models, error: modelError, reload } = useCloudModels(connected);
   const selectedRef = useRef(selected), request = useRef<{ text: string; id: string } | null>(null), bottom = useRef<HTMLDivElement>(null);
   selectedRef.current = selected;
-  useEffect(() => { if (initialId) setSelected(initialId); }, [initialId]);
-  const loadList = async () => { try { setList(await window.agent.call('cloudChatList', {})); setOffline(''); } catch (e) { setOffline(errorText(e)); } };
+  useEffect(() => { setSelected(initialId); }, [initialId]);
+  useEffect(() => { if (createRequest && !initialId) { setCreating(true); void reload(); } }, [createRequest]);
   const loadDetail = async (id: string) => { try { const d = await window.agent.call('cloudChatGet', { id }); if (selectedRef.current === id) setDetail(d); setOffline(''); } catch (e) { setOffline(errorText(e)); } };
-  useEffect(() => { if (!connected) return; void loadList(); const t = setInterval(() => void loadList(), 5000); return () => clearInterval(t); }, [connected]);
+
   // The server is authoritative; poll once a second while a conversation is open.
   useEffect(() => { setDetail(null); setDraft(''); request.current = null; if (!connected || !selected) return; void loadDetail(selected); const t = setInterval(() => void loadDetail(selected), 1000); return () => clearInterval(t); }, [connected, selected]);
   useEffect(() => { bottom.current?.scrollIntoView({ block: 'end' }); }, [detail?.messages.map(m => m.content.length).join()]);
   async function perform(fn: () => Promise<void>) { setBusy(true); onError(''); try { await fn(); } catch (e) { onError(errorText(e)); } finally { setBusy(false); } }
   async function create(modelId: string) {
-    await perform(async () => { const c = await window.agent.call('cloudChatCreate', { id: crypto.randomUUID(), modelId, title: '云端问答' }); setCreating(false); await loadList(); setSelected(c.id); });
+    await perform(async () => { const c = await window.agent.call('cloudChatCreate', { id: crypto.randomUUID(), modelId, title: '云端问答' }); setCreating(false); setSelected(c.id); onSelect?.(c.id); onCreated?.(c); });
   }
   async function send() {
     if (!selected || !draft.trim()) return;
@@ -37,11 +37,6 @@ export function CloudChatPage({ connected, initialId, localModels, onError }: { 
   }
   const run = detail?.run, active = run && !terminal(run.state), model = models.find(m => m.id === detail?.conversation.modelId);
   return <div className="cloud-chat">
-    <aside className="cloud-chat-list" aria-label="云端会话">
-      <button className="new-chat" disabled={!connected || busy} onClick={() => { void reload(); setCreating(true); }}><span>＋</span> 新建云端会话</button>
-      {list.map(c => <button key={c.id} className={selected === c.id ? 'conversation selected' : 'conversation'} onClick={() => setSelected(c.id)}><span className="chat-symbol">☁</span><span>{c.title}</span></button>)}
-      {!list.length && !offline && <p className="sidebar-hint">云端问答由服务器上的 DeepAgents 执行，Mac 关机时手机也能继续提问。</p>}
-    </aside>
     <section className="cloud-chat-main">
       <header className="chat-header"><div><h1>{detail?.conversation.title ?? '云端问答'}</h1><span className="subtitle">{model ? `${model.name} · ${model.modelId}` : '服务器执行 · 不访问这台 Mac'}</span></div><div className="header-actions"><span className="mode-badge">CLOUD · 云端</span></div></header>
       {offline && <div className="sync-note" role="alert">{offline}</div>}
@@ -58,27 +53,8 @@ export function CloudChatPage({ connected, initialId, localModels, onError }: { 
           <div className="composer-toolbar"><span>云端执行 · 无本机权限</span>{active ? <button className="stop" disabled={busy || run!.cancelRequested} onClick={() => void perform(async () => { await window.agent.call('cloudChatCancel', { runId: run!.id }); await loadDetail(selected!); })}>■ 停止生成</button> : <button className="primary send" disabled={!selected || !draft.trim() || busy || !connected} onClick={send}>发送 ↑</button>}</div></div></footer>
     </section>
     {creating && <div className="modal-backdrop"><section className="modal" role="dialog" aria-label="新建云端会话"><h2>新建云端会话</h2>
-      {modelError ? <p role="alert">{modelError}</p> : !models.length ? <p>还没有云端模型。在「模型设置」的模型卡片上点击“复制到云端”{localModels.length ? '' : '（需要先添加本机模型）'}。</p> : <><p>选择云端使用的模型：</p>{models.map(m => <button key={m.id} className="model-choice" disabled={busy} onClick={() => void create(m.id)}>{m.name}<small>{m.modelId}{m.isDefault ? ' · 默认' : ''}</small></button>)}</>}
+      {modelError ? <p role="alert">{modelError}</p> : !models.length ? <p>还没有可用模型。在「设置」里添加后，本机和云端都会使用它{localModels.length ? '（刚添加的模型会在同步完成后出现）' : ''}。</p> : <><p>选择云端使用的模型：</p>{models.map(m => <button key={m.id} className="model-choice" disabled={busy} onClick={() => void create(m.id)}>{m.name}<small>{m.modelId}{m.isDefault ? ' · 默认' : ''}</small></button>)}</>}
       <div className="modal-actions"><button onClick={() => setCreating(false)}>取消</button></div></section></div>}
   </div>;
 }
 
-export function HandoffDialog({ conversationId, localModelId, onClose, onDone, onError }: { conversationId: string; localModelId: string; onClose: () => void; onDone: (id: string) => void; onError: (s: string) => void }) {
-  const { models, error, reload } = useCloudModels(true);
-  const [busy, setBusy] = useState(false), requestId = useRef(crypto.randomUUID()), targetId = useRef(crypto.randomUUID());
-  const copied = models.find(m => m.sourceModelId === localModelId);
-  const [choice, setChoice] = useState('');
-  useEffect(() => { if (!choice && models.length) setChoice((copied ?? models.find(m => m.isDefault) ?? models[0]).id); }, [models]);
-  async function perform(fn: () => Promise<void>) { setBusy(true); onError(''); try { await fn(); } catch (e) { onError(errorText(e)); } finally { setBusy(false); } }
-  return <div className="modal-backdrop"><section className="modal" role="dialog" aria-label="转到云端继续"><h2>转到云端继续</h2>
-    <p>新建一个云端会话，只带上这段会话已共享的聊天记录（最近 40 条、最多 6 万字）。原会话保持不变；云端不能读取项目文件或执行命令。</p>
-    {error ? <p role="alert">{error}</p> : !models.length ? <><p>还没有云端模型。</p><button disabled={busy} onClick={() => void perform(async () => { await window.agent.call('cloudModelFromLocal', { modelId: localModelId, requestId: crypto.randomUUID() }); await reload(); })}>把当前模型复制到云端</button></>
-      : <label>云端模型<select aria-label="云端模型" value={choice} onChange={e => setChoice(e.target.value)}>{models.map(m => <option key={m.id} value={m.id}>{m.name} · {m.modelId}</option>)}</select></label>}
-    <div className="modal-actions"><button onClick={onClose}>取消</button><button className="primary" disabled={busy || !choice} onClick={() => void perform(async () => { const c = await window.agent.call('cloudChatHandoff', { id: targetId.current, conversationId, modelId: choice, requestId: requestId.current }); onDone(c.id); })}>转到云端</button></div>
-  </section></div>;
-}
-
-export function CopyToCloud({ modelId, disabled, onError }: { modelId: string; disabled: boolean; onError: (s: string) => void }) {
-  const [state, setState] = useState<'idle' | 'working' | 'done'>('idle');
-  return <button disabled={disabled || state === 'working'} title="在服务器上复制一份云端模型，密钥不经过本机传输" onClick={() => { setState('working'); onError(''); void window.agent.call('cloudModelFromLocal', { modelId, requestId: crypto.randomUUID() }).then(() => setState('done'), e => { setState('idle'); onError(errorText(e)); }); }}>{state === 'done' ? '已复制到云端' : state === 'working' ? '复制中…' : '复制到云端'}</button>;
-}

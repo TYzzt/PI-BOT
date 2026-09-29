@@ -2,7 +2,6 @@ package dev.tagent.android.ui
 
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Settings
@@ -51,7 +50,7 @@ private fun MainScaffold(repository: TagentRepository) {
     val nav = rememberNavController()
     val entry by nav.currentBackStackEntryAsState()
     val route = entry?.destination?.route
-    val tabs = route == "projects" || route == "tasks" || route == "chats" || route == "configs"
+    val tabs = route == "projects" || route == "chats" || route == "configs"
     Scaffold(
         bottomBar = {
             if (tabs) {
@@ -61,12 +60,6 @@ private fun MainScaffold(repository: TagentRepository) {
                         onClick = { nav.navigate("projects") { popUpTo(nav.graph.findStartDestination().id) { saveState = true }; launchSingleTop = true; restoreState = true } },
                         label = { Text("项目") },
                         icon = { Icon(Icons.Filled.Menu, contentDescription = null) },
-                    )
-                    NavigationBarItem(
-                        selected = route == "tasks",
-                        onClick = { nav.navigate("tasks") { popUpTo(nav.graph.findStartDestination().id) { saveState = true }; launchSingleTop = true; restoreState = true } },
-                        label = { Text("任务") },
-                        icon = { Icon(Icons.AutoMirrored.Filled.List, contentDescription = null) },
                     )
                     NavigationBarItem(
                         selected = route == "chats",
@@ -85,21 +78,17 @@ private fun MainScaffold(repository: TagentRepository) {
         },
     ) { padding ->
         NavHost(nav, startDestination = "projects", modifier = Modifier.padding(padding)) {
-            composable("projects") { ProjectListScreen(repository, onOpen = { nav.navigate("new/$it") }, onLogout = { repository.logout() }) }
-            composable("tasks") { TaskListScreen(repository, onOpen = { nav.navigate("task/$it") }) }
+            composable("projects") { ProjectListScreen(repository, onOpen = { nav.navigate("project/$it") }, onLogout = { repository.logout() }) }
+            composable("project/{projectId}") { entry ->
+                ProjectChatsScreen(repository, entry.arguments?.getString("projectId").orEmpty(), onOpen = { nav.navigate("chat/$it") }, onBack = { nav.popBackStack() })
+            }
             composable("chats") { ChatListScreen(repository, onOpen = { nav.navigate("chat/$it") }) }
             composable("configs") { ConfigListScreen(repository, onOpen = { kind, id -> nav.navigate("config/$kind/$id") }) }
             composable("config/{kind}/{id}") { entry ->
                 ConfigEditScreen(repository, entry.arguments?.getString("kind").orEmpty(), entry.arguments?.getString("id").orEmpty(), onBack = { nav.popBackStack() })
             }
             composable("chat/{conversationId}") { entry ->
-                ChatScreen(repository, entry.arguments?.getString("conversationId").orEmpty(), onBack = { nav.popBackStack() }, onOpen = { nav.navigate("chat/$it") })
-            }
-            composable("new/{projectId}") { entry ->
-                NewTaskScreen(repository, entry.arguments?.getString("projectId").orEmpty(), onCreated = { nav.navigate("task/$it") { popUpTo("projects") } }, onBack = { nav.popBackStack() })
-            }
-            composable("task/{taskId}") { entry ->
-                TaskDetailScreen(repository, entry.arguments?.getString("taskId").orEmpty(), onBack = { nav.popBackStack() })
+                ChatScreen(repository, entry.arguments?.getString("conversationId").orEmpty(), onBack = { nav.popBackStack() })
             }
         }
     }

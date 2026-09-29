@@ -1,6 +1,7 @@
 package dev.tagent.android.data.api
 
 import dev.tagent.android.domain.ServerUrl
+import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -213,7 +214,20 @@ private data class ReviseBody(val feedback: String, @SerialName("idempotency_key
 private class EmptyBody
 
 @Serializable
-private data class SendMessageBody(val text: String, @SerialName("request_id") val requestId: String)
+data class PlanSendPublic(
+    val mode: String,
+    @SerialName("conversation_id") val conversationId: String,
+    @SerialName("message_id") val messageId: String,
+    @SerialName("task_id") val taskId: String,
+    val action: String,
+)
+
+@Serializable
+private data class SendMessageBody(
+    val text: String,
+    @SerialName("request_id") val requestId: String,
+    @EncodeDefault(EncodeDefault.Mode.NEVER) val mode: String? = null,
+)
 
 @Serializable
 data class HandoffPublic(
@@ -423,11 +437,17 @@ class TagentApi(private val http: OkHttpClient, private val json: Json = API_JSO
 
     fun conversations(url: ServerUrl, token: String): List<ConversationPublic> = get("${url.base}/conversations", token)
 
+    fun conversation(url: ServerUrl, token: String, conversationId: String): ConversationPublic =
+        get("${url.base}/conversations/$conversationId", token)
+
     fun messages(url: ServerUrl, token: String, conversationId: String, after: Int): MessagePage =
         get("${url.base}/conversations/$conversationId/messages?after=$after&limit=200", token)
 
     fun sendMessage(url: ServerUrl, token: String, conversationId: String, text: String, requestId: String): ChatRunPublic =
         post("${url.base}/conversations/$conversationId/messages", token, SendMessageBody(text, requestId))
+
+    fun sendPlan(url: ServerUrl, token: String, conversationId: String, text: String, requestId: String): PlanSendPublic =
+        post("${url.base}/conversations/$conversationId/messages", token, SendMessageBody(text, requestId, "plan"))
 
     fun chatRun(url: ServerUrl, token: String, runId: String): ChatRunPublic = get("${url.base}/chat-runs/$runId", token)
 

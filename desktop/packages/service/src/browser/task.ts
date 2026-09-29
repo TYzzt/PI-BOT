@@ -7,24 +7,41 @@ export interface BrowserTaskInput { goal: string; inputs?: string[]; maxSteps?: 
 export interface BrowserTaskStep { step: number; action: string; detail: string; probability: number | null; done: number; stuck: number; result: string; }
 export interface BrowserTaskResult { outcome: 'done' | 'blocked' | 'max_steps' | 'timeout'; model: string; steps: BrowserTaskStep[]; snapshot: string; }
 
-const MAX_OPTIONS = 250;
+const MAX_OPTIONS = 255;
 const CLICKABLE = new Set(['button', 'link', 'checkbox', 'radio', 'tab', 'menuitem', 'option', 'switch', 'clickable', 'summary']);
 
 // Every option Jev may pick is enumerated here; anything else is refused before touching the page.
+// Choice accepts at most 255 options. Keys are ids for our code; the description is what the model reads.
 export function actionCriteria(snapshot: PageSnapshot, inputs: string[]) {
   const criteria: Record<string, string> = {
-    done: '目标已经达成，停止操作', blocked: '无法继续（需要登录、验证码、人工确认，或目标无法在此页面完成）',
-    scroll_down: '向下滚动页面查看更多内容', scroll_up: '向上滚动页面', wait: '等待页面加载或变化',
+    done: 'The goal is already accomplished. Stop.',
+    blocked: 'Cannot continue: sign-in, captcha, human confirmation, or the goal cannot be finished on this page.',
+    scroll_down: 'Scroll down to reveal more of the page.', scroll_up: 'Scroll up.', wait: 'Wait for the page to load or change.',
   };
   const add = (key: string, text: string) => { if (Object.keys(criteria).length < MAX_OPTIONS) criteria[key] = text; };
   for (const el of snapshot.elements) {
     if (el.disabled) continue;
     const label = describe(el, snapshot.id);
-    if (el.role === 'textbox' && el.inputType !== 'password') inputs.forEach((text, i) => add(`type_${el.n}_${i}`, `在 ${label} 中输入：${JSON.stringify(text.slice(0, 200))}`));
-    else if (el.role === 'combobox' && el.options.length) el.options.forEach((option, k) => add(`select_${el.n}_${k}`, `在 ${label} 中选择「${option}」`));
-    else if (CLICKABLE.has(el.role)) add(`click_${el.n}`, `点击 ${label}`);
+    if (el.role === 'textbox' && el.inputType !== 'password') inputs.forEach((text, i) => add(`type_${el.n}_${i}`, `Type ${JSON.stringify(text.slice(0, 200))} into ${label}.`));
+    else if (el.role === 'combobox' && el.options.length) el.options.forEach((option, k) => add(`select_${el.n}_${k}`, `Choose ${JSON.stringify(option)} in ${label}.`));
+    else if (CLICKABLE.has(el.role)) add(`click_${el.n}`, `Click ${label}.`);
   }
   return criteria;
+}
+
+// Questions name state fields in backticks and keep the goal out of the instruction text.
+export function decisionQuestions(criteria: Record<string, string>): Record<string, JevQuestion> {
+  return {
+    action: { type: 'choice', instructions: 'Which single next action best advances `goal`, given `page`, `elements`, and `history`?', criteria },
+    done: {
+      type: 'noul', instructions: 'Has `goal` already been accomplished on this page, given `page`, `elements`, and `history`?',
+      criteria: { true: 'The page already shows that the goal is complete.', false: 'The goal still needs another action.' },
+    },
+    stuck: {
+      type: 'noul', instructions: 'Is progress toward `goal` blocked, given `page`, `elements`, and `history`?',
+      criteria: { true: 'A person must intervene, or no listed action can move the goal forward.', false: 'A listed action can still move the goal forward.' },
+    },
+  };
 }
 
 export async function runBrowserTask(session: BrowserSession, jev: JevClient, input: BrowserTaskInput): Promise<BrowserTaskResult> {
@@ -38,11 +55,7 @@ export async function runBrowserTask(session: BrowserSession, jev: JevClient, in
     if (session.signal.aborted) throw new Error('运行已停止');
     snapshot = await session.snapshotData();
     const criteria = actionCriteria(snapshot, inputs);
-    const questions: Record<string, JevQuestion> = {
-      action: { type: 'choice', instructions: `为了完成目标「${input.goal}」，下一步应该执行哪个操作？`, criteria },
-      done: { type: 'noul', instructions: `目标「${input.goal}」是否已经在当前页面达成？` },
-      stuck: { type: 'noul', instructions: `完成目标「${input.goal}」的过程是否已卡住或无法继续（需要登录、验证码、人工确认，或多次操作都没有进展）？` },
-    };
+    const questions = decisionQuestions(criteria);
     const state = {
       goal: input.goal, page: { title: snapshot.title, url: snapshot.url, text: snapshot.text.slice(0, 3000) },
       elements: snapshot.elements.map(e => describe(e, snapshot!.id)), history: steps.slice(-6).map(s => `${s.step}. ${s.detail} → ${s.result}`),

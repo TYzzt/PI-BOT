@@ -163,9 +163,9 @@ test('cloud link: pairing, sharing, plans, approvals, events, cancel, offline re
     const files = [dbPath, dbPath + '-wal'].filter(existsSync).map(p => readFileSync(p).toString('latin1')).join('');
     for (const text of [tables, files, JSON.stringify([...deviceKeys.values.values(), ...modelKeys.values.values()])]) { assert.ok(!text.includes(password!)); assert.doesNotMatch(text, /eyJ[\w-]+\.eyJ[\w-]+\./); }
 
-    // Unpair forgets the link locally; tasks stay as local tasks.
+    // Unpair removes credentials, retaining mappings for a later authenticated re-pair.
     const unpaired = await app.call('cloudUnpair', {});
-    assert.equal(unpaired.paired, false); assert.equal(deviceKeys.values.size, 0); assert.equal(app.cloud.db.tasks().length, 0);
+    assert.equal(unpaired.paired, false); assert.equal(deviceKeys.values.size, 0); assert.ok(app.cloud.db.tasks().length > 0);
     assert.ok(app.coding.db.task(linkA.taskId));
   } finally { await app.shutdown(); store.close(); await models.close(); await net.down(); dir.cleanup(); }
 });

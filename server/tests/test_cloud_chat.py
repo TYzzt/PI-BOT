@@ -93,11 +93,14 @@ def test_cloud_answer_without_mac_and_checkpoint_context(cloud, fake_openai):
     conversation = cloud.conversation()
     [listed] = [c for c in cloud.client.get("/conversations", headers=bearer(cloud.token)).json() if c["id"] == conversation]
     assert listed["target"] == "cloud" and listed["device_id"] is None and listed["handoff"] is None
+    assert listed["updated_at"] > 0
     worker = cloud.worker()
     first = cloud.send(conversation, "第一问：北京在哪里")
     assert first["state"] == "queued" and first["device_id"] is None
     assert worker.run_once()
     assert cloud.run(first["id"])["state"] == "completed"
+    refreshed = next(c for c in cloud.client.get("/conversations", headers=bearer(cloud.token)).json() if c["id"] == conversation)
+    assert refreshed["updated_at"] > listed["updated_at"]
     page = cloud.messages(conversation)
     assert [(m["role"], m["sequence"], m["status"]) for m in page["messages"]] == [("user", 1, "completed"), ("assistant", 2, "completed")]
     assert page["messages"][1]["content"] == "收到：第一问：北京在哪里。之前问过：无"
@@ -346,6 +349,27 @@ def test_keys_never_leak_and_model_errors_are_fixed_text(cloud, fake_openai, cap
         assert TAVILY_KEY not in json.dumps(fake_openai.requests)
     finally:
         settings.tavily_api_key = None
+
+
+def test_saving_a_mac_model_mirrors_it_for_cloud(cloud, fake_openai):
+    c, t = cloud.client, cloud.token
+    mac = setup_mac(c, t)
+    device_call(c, mac, "POST", "/device/shared/enable")
+    mac_model = str(uuid.uuid4())
+    body = {"device_id": mac.device_id, "expected_version": 0, "request_id": str(uuid.uuid4()), "api_key": "mirror-key-do-not-leak",
+            "config": {"name": "两边可用", "base_url": fake_openai.url, "model_id": "fake-model", "context_window": 32000, "max_tokens": 1024, "is_default": True}}
+    assert device_call(c, mac, "PUT", f"/device/configs/models/{mac_model}", body).status_code == 200
+    listed = [m for m in c.get("/cloud/models", headers=bearer(t)).json() if m.get("source_model_id") == mac_model and not m["deleted"]]
+    assert len(listed) == 1 and listed[0]["config"]["name"] == "两边可用" and listed[0]["has_key"]
+    assert "mirror-key-do-not-leak" not in json.dumps(listed)
+    body = {**body, "expected_version": 1, "request_id": str(uuid.uuid4()), "api_key": "mirror-key-replaced", "config": {**body["config"], "name": "改名后"}}
+    assert device_call(c, mac, "PUT", f"/device/configs/models/{mac_model}", body).status_code == 200
+    again = [m for m in c.get("/cloud/models", headers=bearer(t)).json() if m.get("source_model_id") == mac_model and not m["deleted"]]
+    assert len(again) == 1 and again[0]["id"] == listed[0]["id"] and again[0]["config"]["name"] == "改名后"
+    removed = device_call(c, mac, "POST", f"/device/configs/models/{mac_model}/delete", {"expected_version": 2, "request_id": str(uuid.uuid4())})
+    assert removed.status_code == 200, removed.text
+    gone = [m for m in c.get("/cloud/models", headers=bearer(t)).json() if m["id"] == listed[0]["id"]]
+    assert gone[0]["deleted"] and "mirror-key" not in json.dumps(gone)
 
 
 def test_cloud_model_lifecycle(cloud, fake_openai):

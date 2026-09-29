@@ -116,6 +116,8 @@ data class ConversationListItem(
     val handoffCount: Int,
     val deviceId: String,
     val projectId: String?,
+    val taskId: String?,
+    val taskStatus: String?,
     val shared: Boolean,
     val deviceLabel: String?,
     val presence: String?,
@@ -270,11 +272,13 @@ interface TagentDao {
     @Query(
         """
         SELECT conversations.id, conversations.title, conversations.kind, conversations.target, conversations.handoffCount,
-               conversations.deviceId, conversations.projectId, conversations.shared, devices.label AS deviceLabel,
+               conversations.deviceId, conversations.projectId, conversations.taskId AS taskId, tasks.status AS taskStatus,
+               conversations.shared, devices.label AS deviceLabel,
                devices.presence AS presence, projects.displayName AS projectName
         FROM conversations
         LEFT JOIN devices ON conversations.deviceId = devices.deviceId
         LEFT JOIN projects ON conversations.projectId = projects.projectId
+        LEFT JOIN tasks ON conversations.taskId = tasks.taskId
         WHERE conversations.deleted = 0
         ORDER BY CASE WHEN conversations.target = 'cloud' THEN 0 ELSE 1 END, conversations.title
         """,
@@ -284,11 +288,13 @@ interface TagentDao {
     @Query(
         """
         SELECT conversations.id, conversations.title, conversations.kind, conversations.target, conversations.handoffCount,
-               conversations.deviceId, conversations.projectId, conversations.shared, devices.label AS deviceLabel,
+               conversations.deviceId, conversations.projectId, conversations.taskId AS taskId, tasks.status AS taskStatus,
+               conversations.shared, devices.label AS deviceLabel,
                devices.presence AS presence, projects.displayName AS projectName
         FROM conversations
         LEFT JOIN devices ON conversations.deviceId = devices.deviceId
         LEFT JOIN projects ON conversations.projectId = projects.projectId
+        LEFT JOIN tasks ON conversations.taskId = tasks.taskId
         WHERE conversations.id = :conversationId
         """,
     )

@@ -35,7 +35,7 @@ test('device signature follows the server canonical message', () => {
   assert.equal(Buffer.from(identity.publicKey, 'base64').length, 32);
 });
 
-test('v2 database migrates to v4 without touching existing data', () => {
+test('v2 database migrates to v5 without touching existing data', () => {
   const dir = temp(), path = join(dir.path, 'v2.sqlite');
   try {
     let store = new Store(path);
@@ -43,10 +43,10 @@ test('v2 database migrates to v4 without touching existing data', () => {
     const conversation = store.createConversation(store.models()[0].id); store.start(conversation.id, '旧问题', randomUUID());
     store.db.exec('DROP TRIGGER shared_message_insert; DROP TRIGGER shared_message_update; DROP TABLE shared_state; DROP TABLE shared_dirty; ALTER TABLE conversations DROP COLUMN shared; DROP TABLE cloud_link; DROP TABLE cloud_projects; DROP TABLE cloud_tasks; DROP TABLE cloud_commands; DROP TABLE cloud_outbox; PRAGMA user_version=2;'); store.close();
     store = new Store(path);
-    assert.equal((store.db.prepare('PRAGMA user_version').get() as any).user_version, 4);
+    assert.equal((store.db.prepare('PRAGMA user_version').get() as any).user_version, 5);
     assert.equal(store.models()[0].name, 'kept'); assert.equal(store.messages(conversation.id)[0].content, '旧问题');
     assert.equal((store.db.prepare('SELECT count(*) AS n FROM cloud_outbox').get() as any).n, 0);
-    store.db.exec('PRAGMA user_version=5'); store.close();
+    store.db.exec('PRAGMA user_version=6'); store.close();
     assert.throws(() => new Store(path), /数据库版本较新/);
   } finally { dir.cleanup(); }
 });
@@ -56,7 +56,7 @@ test('an unpaired service never touches the network for cloud features and keeps
   const models = await codingEndpoint(), store = new Store(join(dir.path, 'app.sqlite')), deviceKeys = new MemoryCredentials();
   const original = globalThis.fetch, calls: string[] = [];
   globalThis.fetch = (async (input: any, init?: any) => { calls.push(String(input)); return original(input, init); }) as typeof fetch;
-  const app = new Application(store, new MemoryCredentials(), piFactory(dir.path), () => {}, { credentials: deviceKeys });
+  const app = new Application(store, new MemoryCredentials(), piFactory(dir.path), () => {}, { dataDir: dir.path, credentials: deviceKeys });
   try {
     const model = await app.call('modelSave', { name: 'fixture', modelId: 'fixture', baseUrl: models.url, apiKey: 'k', contextWindow: 32000, maxTokens: 4096 });
     const project = await app.call('projectAdd', { path: root, requestId: randomUUID() });
@@ -101,4 +101,26 @@ test('outbox keeps order, retries network failures and isolates rejected events'
     const status = app.cloud.status(); assert.equal(status.failed, 1); assert.equal(status.failures.at(-1)!.message, '事件无效');
     await app.call('cloudRetry', {}); await eventually(() => app.cloud.status().failed === 1 && app.cloud.status().pending === 0, 10000);
   } finally { await app.shutdown(); store.close(); server.closeAllConnections(); server.close(); dir.cleanup(); }
+});
+
+test('automatic project registration isolates failures and retries with the same identity', async () => {
+  const dir = temp(), store = new Store(join(dir.path, 'app.sqlite'));
+  const app = new Application(store, new MemoryCredentials(), piFactory(dir.path), () => {}, { credentials: new MemoryCredentials() });
+  const first = { id: randomUUID(), name: 'first', path: '/first', removed: false, createdAt: 1 }, second = { ...first, id: randomUUID(), name: 'second', path: '/second' };
+  app.coding.db.putProject(first); app.coding.db.putProject(second);
+  app.cloud.db.putLink({ account: 'fixture', serverUrl: 'http://localhost', deviceId: randomUUID(), publicKey: '', label: 'fixture', pairedAt: 1, producerSeq: 0, lastSyncAt: null });
+  const requests: string[] = [], remote = new Map<string, string>(); let dropped = false;
+  app.cloud.request = (async (_method: string, _path: string, body: any) => {
+    requests.push(body.request_id);
+    if (!remote.has(body.request_id)) remote.set(body.request_id, randomUUID());
+    if (body.request_id === first.id && !dropped) { dropped = true; throw new Error('response lost after commit'); }
+    return { project_id: remote.get(body.request_id) };
+  }) as typeof app.cloud.request;
+  try {
+    await assert.rejects((app.cloud as any).reconcileProjects(), /response lost/);
+    assert.equal(app.cloud.db.project(first.id), null); assert.ok(app.cloud.db.project(second.id));
+    await (app.cloud as any).reconcileProjects();
+    assert.deepEqual(requests, [first.id, second.id, first.id]);
+    assert.equal(app.cloud.db.project(first.id)?.cloudProjectId, remote.get(first.id)); assert.equal(remote.size, 2);
+  } finally { await app.shutdown(); store.close(); dir.cleanup(); }
 });

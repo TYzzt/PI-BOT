@@ -4,30 +4,68 @@ import type { JevStatus } from '../../../protocol/src/index.js';
 
 export const JEV_DEFAULT_URL = 'https://api.typesafe.ai';
 export const JEV_DEFAULT_MODEL = 'jev-latest';
-export const JEV_KEY = 'jev-key';
+// Keychain helper only accepts a UUID account under dev.t-agnet.*.
+export const JEV_KEY = '6f0e2b1a-9c34-4d5e-8f70-1a2b3c4d5e6f';
 export interface JevSettings { baseUrl: string; model: string; }
-export type JevQuestion = { type: 'choice'; instructions: string; criteria: Record<string, string> } | { type: 'noul'; instructions: string };
+export type JevQuestion = { type: 'choice'; instructions: string; criteria: Record<string, string> } | { type: 'noul'; instructions: string; criteria?: { true: string; false: string } };
 export type JevAnswer = { type: 'choice'; choice: string; confidence?: number; probabilities?: Record<string, number> } | { type: 'noul'; noul: number };
 export interface JevResponse { model: string; answers: Record<string, JevAnswer>; }
+
+const clip = (value: string) => value.replace(/\s+/g, ' ').trim().slice(0, 180);
+function detailFrom(body: unknown): string {
+  if (!body || typeof body !== 'object') return '';
+  const record = body as Record<string, unknown>;
+  const text = (value: unknown) => typeof value === 'string' ? clip(value) : '';
+  const direct = text(record.message) || text(record.detail) || text(record.error);
+  if (direct) return direct;
+  const nested = record.error;
+  return nested && typeof nested === 'object' ? text((nested as Record<string, unknown>).message) : '';
+}
+async function errorDetail(response: Response): Promise<string> {
+  const text = await response.text().catch(() => '');
+  if (!text) return '';
+  try { return detailFrom(JSON.parse(text)) || clip(text); } catch { return clip(text); }
+}
+function pause(ms: number, signal?: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) { reject(new Error('运行已停止')); return; }
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener('abort', () => { clearTimeout(timer); reject(new Error('运行已停止')); }, { once: true });
+  });
+}
 
 // Request/response shape of TypeSafe's POST /v1/systemone. Keep every field name in this file.
 export class JevClient {
   constructor(private settings: JevSettings, private key: string, private fetcher: typeof fetch = fetch) {}
   async ask(state: unknown, questions: Record<string, JevQuestion>, signal?: AbortSignal): Promise<JevResponse> {
     const timeout = AbortSignal.timeout(20000);
-    let response: Response;
-    try {
-      response = await this.fetcher(`${this.settings.baseUrl.replace(/\/+$/, '')}/v1/systemone`, {
-        method: 'POST', headers: { authorization: `Bearer ${this.key}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ model: this.settings.model, state, questions }), signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
-      });
-    } catch (error) {
-      if (signal?.aborted) throw new Error('运行已停止');
-      throw new Error(timeout.aborted ? 'Jev 请求超时' : 'Jev 无法连接，请检查网络和 Base URL');
+    const url = `${this.settings.baseUrl.replace(/\/+$/, '')}/v1/systemone`;
+    const init = { method: 'POST', headers: { authorization: `Bearer ${this.key}`, accept: 'application/json', 'content-type': 'application/json' }, body: JSON.stringify({ state, model: this.settings.model, questions }) };
+    let response!: Response;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        response = await this.fetcher(url, { ...init, signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
+      } catch (error) {
+        if (signal?.aborted || (error instanceof Error && error.message === '运行已停止')) throw new Error('运行已停止');
+        throw new Error(timeout.aborted ? 'Jev 请求超时' : 'Jev 无法连接，请检查网络和 Base URL');
+      }
+      if ((response.status === 429 || response.status === 529) && attempt < 2) {
+        const retryHeader = response.headers.get('retry-after');
+        const retryAfter = retryHeader === null ? Number.NaN : Number(retryHeader);
+        const delay = Number.isFinite(retryAfter) && retryAfter >= 0 ? Math.min(retryAfter * 1000, 2000) : 400 * 2 ** attempt;
+        await response.body?.cancel().catch(() => {});
+        await pause(delay, signal);
+        continue;
+      }
+      break;
     }
     if (response.status === 401 || response.status === 403) throw new Error('Jev key 无效或无权限');
-    if (response.status === 429) throw new Error('Jev 请求过于频繁或余额不足');
-    if (!response.ok) throw new Error(`Jev 请求失败（HTTP ${response.status}）`);
+    if (!response.ok) {
+      const detail = await errorDetail(response);
+      if (response.status === 429) throw new Error(detail ? `Jev 请求过于频繁：${detail}` : 'Jev 请求过于频繁，请稍后再试');
+      if (response.status === 529) throw new Error(detail ? `Jev 服务繁忙：${detail}` : 'Jev 服务繁忙，请稍后再试');
+      throw new Error(detail ? `Jev 请求失败（HTTP ${response.status}）：${detail}` : `Jev 请求失败（HTTP ${response.status}）`);
+    }
     let body: any;
     try { body = await response.json(); } catch { throw new Error('Jev 返回无效 JSON'); }
     if (!body || typeof body.answers !== 'object' || body.answers === null) throw new Error('Jev 返回缺少 answers');

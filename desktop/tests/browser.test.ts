@@ -147,7 +147,7 @@ test('Pi execute run: approved plan opens the test page, types and clicks, then 
   });
   await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
   const store = new Store(join(dir.path, 'app.sqlite'));
-  const app = new Application(store, new MemoryCredentials(), piFactory(dir.path), () => {}, { browser: { profileDir: join(dir.path, 'chrome'), executable: chrome!, headless: true, args: ['--no-sandbox'] } });
+  const app = new Application(store, new MemoryCredentials(), piFactory(dir.path), () => {}, { dataDir: dir.path, browser: { profileDir: join(dir.path, 'chrome'), executable: chrome!, headless: true, args: ['--no-sandbox'] } });
   try {
     const model = await app.call('modelSave', { name: 'f', modelId: 'f', baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`, apiKey: 'k', contextWindow: 32000, maxTokens: 4096 });
     const project = await app.call('projectAdd', { path: root, requestId: randomUUID() });

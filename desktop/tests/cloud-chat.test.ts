@@ -27,7 +27,7 @@ test('cloud chat maps server documents and pages messages', async () => {
     [`GET /device/cloud/chat-runs/${runId}`]: () => ({ id: runId, conversation_id: conversation.id, state: 'running', cancel_requested: false, error: null }),
   });
   const detail = await new CloudChat(h).dispatch('cloudChatGet', { id: conversation.id });
-  assert.deepEqual(detail.conversation, { id: conversation.id, version: 1, title: '云端', modelId: conversation.model_config_id, handoff: { fromConversationId: conversation.handoff.from_conversation_id, messageCount: 2 } });
+  assert.deepEqual(detail.conversation, { id: conversation.id, updatedAt: 0, version: 1, title: '云端', modelId: conversation.model_config_id, handoff: { fromConversationId: conversation.handoff.from_conversation_id, messageCount: 2 } });
   assert.deepEqual(detail.messages.map(m => [m.sequence, m.role, m.status]), [[1, 'user', 'completed'], [2, 'assistant', 'completed'], [3, 'user', 'completed'], [4, 'assistant', 'running']]);
   assert.deepEqual(detail.run, { id: runId, conversationId: conversation.id, state: 'running', cancelRequested: false, error: null });
 
@@ -66,7 +66,7 @@ test('cloud chat sends the documented request bodies', async () => {
 });
 
 test('cloud chat explains unpaired, offline and not-yet-synced states', async () => {
-  await assert.rejects(new CloudChat(host({}, false)).dispatch('cloudChatList', {}), /先在「模型设置」中配对云端/);
+  await assert.rejects(new CloudChat(host({}, false)).dispatch('cloudChatList', {}), /先在「设置」中配对云端/);
   const offline = { paired: () => true, request: async () => { throw new CloudNetworkError('无法连接云端服务器'); } };
   await assert.rejects(new CloudChat(offline).dispatch('cloudChatList', {}), /云端离线/);
   await assert.rejects(new CloudChat(host({})).dispatch('cloudModelFromLocal', { modelId: randomUUID(), requestId: randomUUID() }), /还没有同步到云端/);

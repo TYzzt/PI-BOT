@@ -18,7 +18,9 @@ export class CloudStore {
   private get db() { return this.store.db; }
   link(): CloudLink | null { const r = this.db.prepare('SELECT data FROM cloud_link WHERE id=1').get() as { data: string } | undefined; return r ? JSON.parse(r.data) : null; }
   putLink(link: CloudLink) { this.db.prepare('INSERT INTO cloud_link VALUES(1,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(JSON.stringify(link)); }
-  clear() { this.store.transaction(() => this.db.exec('DELETE FROM cloud_link; DELETE FROM cloud_projects; DELETE FROM cloud_tasks; DELETE FROM cloud_commands; DELETE FROM cloud_outbox;')); }
+  detached(): CloudLink | null { const r = this.db.prepare("SELECT value FROM app_meta WHERE key='cloud_detached'").get() as { value: string } | undefined; return r ? JSON.parse(r.value) : null; }
+  detach() { const link = this.link(); if (!link) return; this.store.transaction(() => { this.db.prepare("INSERT INTO app_meta VALUES('cloud_detached',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(link)); this.db.exec('DELETE FROM cloud_link;'); }); }
+  clear() { this.store.transaction(() => this.db.exec("DELETE FROM cloud_link; DELETE FROM cloud_projects; DELETE FROM cloud_tasks; DELETE FROM cloud_commands; DELETE FROM cloud_outbox; DELETE FROM app_meta WHERE key='cloud_detached';")); }
   projects(): CloudProjectLink[] { return (this.db.prepare('SELECT data FROM cloud_projects ORDER BY rowid').all() as { data: string }[]).map(r => JSON.parse(r.data)); }
   project(projectId: string) { return this.projects().find(p => p.projectId === projectId) ?? null; }
   projectByCloud(cloudProjectId: string) { return this.projects().find(p => p.cloudProjectId === cloudProjectId) ?? null; }
@@ -26,7 +28,7 @@ export class CloudStore {
   tasks(): CloudTaskLink[] { return (this.db.prepare('SELECT data FROM cloud_tasks ORDER BY rowid').all() as { data: string }[]).map(r => JSON.parse(r.data)); }
   task(taskId: string): CloudTaskLink | null { const r = this.db.prepare('SELECT data FROM cloud_tasks WHERE taskId=?').get(taskId) as { data: string } | undefined; return r ? JSON.parse(r.data) : null; }
   taskByCloud(cloudTaskId: string): CloudTaskLink | null { const r = this.db.prepare('SELECT data FROM cloud_tasks WHERE cloudTaskId=?').get(cloudTaskId) as { data: string } | undefined; return r ? JSON.parse(r.data) : null; }
-  putTask(t: CloudTaskLink) { this.db.prepare('INSERT INTO cloud_tasks VALUES(?,?,?) ON CONFLICT(taskId) DO UPDATE SET data=excluded.data').run(t.taskId, t.cloudTaskId, JSON.stringify(t)); }
+  putTask(t: CloudTaskLink) { this.db.prepare('INSERT INTO cloud_tasks VALUES(?,?,?) ON CONFLICT(taskId) DO UPDATE SET cloudTaskId=excluded.cloudTaskId, data=excluded.data').run(t.taskId, t.cloudTaskId, JSON.stringify(t)); }
   command(commandId: string): { status: CommandStatus; command: CloudCommand } | null { const r = this.db.prepare('SELECT status,data FROM cloud_commands WHERE commandId=?').get(commandId) as { status: CommandStatus; data: string } | undefined; return r ? { status: r.status, command: JSON.parse(r.data) } : null; }
   commands(status: CommandStatus): CloudCommand[] { return (this.db.prepare('SELECT data FROM cloud_commands WHERE status=? ORDER BY seq').all(status) as { data: string }[]).map(r => JSON.parse(r.data)); }
   addCommand(c: CloudCommand) { return Number(this.db.prepare('INSERT INTO cloud_commands(commandId,status,data) VALUES(?,?,?) ON CONFLICT(commandId) DO NOTHING').run(c.command_id, 'received', JSON.stringify(c)).changes) > 0; }

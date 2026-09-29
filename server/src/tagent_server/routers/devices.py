@@ -39,6 +39,8 @@ def create_pairing_code(
 
 @router.post("/pair", response_model=DevicePublic)
 def pair_device(payload: PairRequest, request: Request, session: Session = Depends(get_session)) -> DevicePublic:
+    if payload.previous_device_id is not None:
+        require_user(request, session)
     settings: Settings = request.app.state.settings
     now = utcnow()
     consumed = session.execute(
@@ -53,8 +55,18 @@ def pair_device(payload: PairRequest, request: Request, session: Session = Depen
     ).first()
     if consumed is None:
         raise HTTPException(status_code=400, detail="配对码无效")
-    device = Device(public_key=payload.public_key, label=payload.label, capabilities=payload.capabilities)
-    session.add(device)
+    # Restoring identity requires administrator authentication plus a fresh pairing code.
+    # Keep its identity so projects and synchronized documents retain ownership.
+    device = session.get(Device, payload.previous_device_id) if payload.previous_device_id else None
+    if device is not None:
+        device.public_key = payload.public_key
+        device.label = payload.label
+        device.capabilities = payload.capabilities
+        device.revoked_at = None
+        device.last_seen_at = None
+    else:
+        device = Device(public_key=payload.public_key, label=payload.label, capabilities=payload.capabilities)
+        session.add(device)
     try:
         session.flush()
     except IntegrityError as exc:

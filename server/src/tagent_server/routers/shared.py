@@ -8,9 +8,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from tagent_server.config import utcnow
 from tagent_server.deps import get_session, require_device, require_user
-from tagent_server.models import Device, User, Project, Task
+from tagent_server.models import Device, User, Project, Run, Task
+from tagent_server.schemas import ReviseRequest, TaskCreate
 from tagent_server.sync_models import SharedDocument as Doc, SharedRevision, SharedChange, SharedReceipt
-from tagent_server.tasks_service import write_lock, append_event
+from tagent_server.tasks_service import TERMINAL_TASK, create_task, revise_plan, write_lock, append_event
 from tagent_server.vault import Vault
 from tagent_server.shared_schemas import ModelPublic, ConversationPublic, ChatRunPublic, MessagePage, ChangePage, CredentialPublic, Ok
 
@@ -70,6 +71,15 @@ class Upload(Strict):
 class Send(Strict):
     request_id: uuid.UUID
     text: str = Field(min_length=1, max_length=30000)
+    mode: Literal['read', 'plan'] = 'read'
+class PlanSendPublic(BaseModel):
+    mode: Literal['plan'] = 'plan'
+    conversation_id: uuid.UUID
+    message_id: uuid.UUID
+    task_id: uuid.UUID
+    action: Literal['plan_request', 'plan_revise']
+BUSY_TASK = {'queued', 'waiting_for_device', 'planning', 'approved', 'running', 'waiting_for_local_action'}
+REVISE_TASK = {'awaiting_review', 'waiting_for_input', 'needs_replan', 'interrupted'}
 class Result(Strict):
     state: Literal['running', 'completed', 'failed', 'cancelled', 'interrupted']
     local_run_id: uuid.UUID | None = None
@@ -89,6 +99,10 @@ def target(s, id):
     return d
 
 def change(s, d):
+    if d.device_id is None and d.kind in ('conversation', 'chat_run', 'message'):
+        conversation = d if d.kind == 'conversation' else s.get(Doc, uuid.UUID(d.data['conversation_id']))
+        if conversation is not None:
+            conversation.data = {**conversation.data, 'updated_at': int(utcnow().timestamp() * 1000)}
     s.add(SharedChange(device_id=d.device_id,kind=d.kind,entity_id=d.id,version=d.version))
     append_event(s,type=f'{d.kind}.changed',task_id=None,now=utcnow(),payload={'id':str(d.id),'version':d.version,'device_id':str(d.device_id) if d.device_id else None})
 
@@ -131,6 +145,8 @@ def put_model(s, req, id, p, device=None):
     if d:d.version=version;d.data=data
     else:d=Doc(id=id,kind='model',device_id=p.device_id,version=version,data=data);s.add(d);s.flush()
     s.add(SharedRevision(document_id=id,version=version,data=data));change(s,d)
+    from tagent_server.routers.cloud import mirror_mac_model
+    mirror_mac_model(s, req, d)
     return save_receipt(s,key,digest,public(d))
 
 @router.get('/configs/models', response_model=list[ModelPublic])
@@ -156,6 +172,8 @@ def delete_model(s,id,p,device=None):
     s.add(SharedRevision(document_id=id,version=d.version,data=d.data));change(s,d)
     for c in references:
         if c.data['model_config_id']==str(id) and p.replacement_id:c.data={**c.data,'model_config_id':str(p.replacement_id)};c.version+=1;change(s,c)
+    from tagent_server.routers.cloud import retire_mac_mirror
+    retire_mac_mirror(s, id)
     return save_receipt(s,key,digest,public(d))
 @router.post('/configs/models/{id}/delete', response_model=ModelPublic)
 def model_delete(id:uuid.UUID,p:DeleteModel,user:User=Depends(require_user),s:Session=Depends(get_session)):return delete_model(s,id,p)
@@ -195,6 +213,8 @@ def put_conversation(s,id,p,device=None):
     if p.deleted and pending:raise HTTPException(409,'请先停止运行')
     share_version=(d.data.get('share_version',1)+(d.data['shared']!=p.shared)) if d else 1
     data=p.model_dump(mode='json',exclude={'expected_version','request_id','device_id'});data['share_version']=share_version
+    # A phone plan sets task_id before the Mac has linked it. Don't let a null upload clear that link.
+    if d and not data.get('task_id') and d.data.get('task_id'): data['task_id']=d.data['task_id']
     if d:d.version+=1;d.data=data
     else:d=Doc(id=id,kind='conversation',device_id=p.device_id,version=1,data=data);s.add(d);s.flush()
     if p.deleted:
@@ -231,8 +251,49 @@ def upload(id:uuid.UUID,p:Upload,device:Device=Depends(require_device),s:Session
         else:d=Doc(id=m.id,kind='message',device_id=device.device_id,version=m.revision,data=data);s.add(d);s.flush()
         change(s,d)
     return {'ok':True}
-@router.post('/conversations/{id}/messages', response_model=ChatRunPublic)
-def send(id:uuid.UUID,p:Send,user:User=Depends(require_user),s:Session=Depends(get_session)):
+def linked_task(s, c):
+    raw=c.data.get('task_id')
+    if not raw: return None
+    task=s.get(Task, uuid.UUID(raw))
+    return task
+
+def plan_message_id(conversation_id: uuid.UUID, request_id: uuid.UUID) -> uuid.UUID:
+    return uuid.uuid5(uuid.NAMESPACE_URL, f'{conversation_id}:{request_id}')
+
+def start_plan(s, request: Request, conversation_id: uuid.UUID, c: Doc, p: Send):
+    if c.device_id is None or c.data.get('kind')!='read_code' or not c.data.get('project_id'):
+        raise HTTPException(409,'只有项目会话可以请求计划')
+    task=linked_task(s, c)
+    if task and task.status in BUSY_TASK:
+        raise HTTPException(409,'该会话已有未结束的规划或执行')
+    if task and task.cancel_requested_at and task.status not in TERMINAL_TASK:
+        raise HTTPException(409,'任务正在取消')
+    settings=request.app.state.settings
+    now=utcnow()
+    mid=plan_message_id(conversation_id, p.request_id)
+    project_id=uuid.UUID(c.data['project_id'])
+    if task and task.status in REVISE_TASK:
+        if not task.latest_plan_id: raise HTTPException(409,'计划尚未发布')
+        action='plan_revise'
+        task=revise_plan(s, settings, task.latest_plan_id, ReviseRequest(feedback=p.text, idempotency_key=str(p.request_id)), now, conversation_id=conversation_id, message_id=mid)
+    else:
+        action='plan_request'
+        task=create_task(s, settings, TaskCreate(project_id=project_id, requirement=p.text, idempotency_key=str(p.request_id)), now, conversation_id=conversation_id, message_id=mid)
+    run=s.scalars(select(Run).where(Run.task_id==task.task_id).order_by(Run.created_at.desc())).first()
+    if run is None: raise HTTPException(500,'规划运行未创建')
+    existing=s.get(Doc, mid)
+    if existing and (existing.kind!='message' or existing.data.get('conversation_id')!=str(conversation_id)):
+        raise HTTPException(409,'消息归属不匹配')
+    if not existing:
+        message=Doc(id=mid, kind='message', device_id=c.device_id, version=0, data={'conversation_id':str(conversation_id),'run_id':str(run.run_id),'role':'user','content':p.text,'status':'queued','sequence':0})
+        s.add(message); s.flush(); change(s, message)
+    c.version+=1
+    c.data={**c.data, 'task_id':str(task.task_id)}
+    change(s, c)
+    return {'mode':'plan','conversation_id':str(conversation_id),'message_id':str(mid),'task_id':str(task.task_id),'action':action}
+
+@router.post('/conversations/{id}/messages', response_model=ChatRunPublic | PlanSendPublic)
+def send(id:uuid.UUID,p:Send,request:Request,user:User=Depends(require_user),s:Session=Depends(get_session)):
     write_lock(s);c=load(s,id,'conversation')
     if c.device_id is not None:target(s,c.device_id)
     key=f'send:{id}:{p.request_id}';digest,old=receipt(s,key,p)
@@ -246,6 +307,10 @@ def send(id:uuid.UUID,p:Send,user:User=Depends(require_user),s:Session=Depends(g
         if not model or model.kind!='cloud_model' or model.data.get('deleted'):raise HTTPException(409,'云端模型不可用，请更换模型')
     for r in s.scalars(select(Doc).where(Doc.kind=='chat_run',owned(c.device_id))).all():
         if r.data['conversation_id']==str(id) and r.data['state'] not in TERMINAL:raise HTTPException(409,'该会话已有未结束请求')
+    current=linked_task(s, c)
+    if current and current.status in BUSY_TASK:raise HTTPException(409,'该会话已有未结束的规划或执行')
+    if p.mode=='plan':
+        return save_receipt(s,key,digest,start_plan(s, request, id, c, p))
     rid=uuid.uuid4();mid=uuid.uuid4()
     data={'conversation_id':str(id),'message_id':str(mid),'text':p.text,'state':'queued','share_version':c.data['share_version'],'acked':False,'cancel_requested':False,'local_run_id':None}
     message=Doc(id=mid,kind='message',device_id=c.device_id,version=0,data={'conversation_id':str(id),'run_id':str(rid),'role':'user','content':p.text,'status':'queued','sequence':0});s.add(message)

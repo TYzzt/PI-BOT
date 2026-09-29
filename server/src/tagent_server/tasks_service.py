@@ -214,7 +214,14 @@ def _set_run_state(run: Run, state: str, now: datetime) -> None:
         run.updated_at = now
 
 
-def create_task(session: Session, settings: Settings, payload: TaskCreate, now: datetime) -> Task:
+def create_task(
+    session: Session,
+    settings: Settings,
+    payload: TaskCreate,
+    now: datetime,
+    conversation_id: uuid.UUID | None = None,
+    message_id: uuid.UUID | None = None,
+) -> Task:
     write_lock(session)
     existing = session.scalars(select(Task).where(Task.idempotency_key == payload.idempotency_key)).first()
     if existing is not None:
@@ -239,12 +246,22 @@ def create_task(session: Session, settings: Settings, payload: TaskCreate, now: 
     session.add(task)
     session.flush()
     run = _new_run(session, task, "plan", now)
+    command_payload: dict = {
+        "task_id": str(task.task_id),
+        "run_id": str(run.run_id),
+        "project_id": str(project.project_id),
+        "requirement": task.requirement,
+    }
+    if conversation_id is not None:
+        command_payload["conversation_id"] = str(conversation_id)
+    if message_id is not None:
+        command_payload["message_id"] = str(message_id)
     _new_command(
         session,
         task,
         run,
         "plan_request",
-        {"task_id": str(task.task_id), "run_id": str(run.run_id), "project_id": str(project.project_id), "requirement": task.requirement},
+        command_payload,
         now + timedelta(seconds=settings.command_ttl_seconds),
         now,
     )
@@ -475,6 +492,8 @@ def revise_plan(
     payload: ReviseRequest,
     now: datetime,
     device_id: uuid.UUID | None = None,
+    conversation_id: uuid.UUID | None = None,
+    message_id: uuid.UUID | None = None,
 ) -> Task:
     write_lock(session)
     plan, task = _get_plan(session, plan_id)
@@ -500,19 +519,24 @@ def revise_plan(
             created_at=now,
         )
     )
+    revise_payload: dict = {
+        "task_id": str(task.task_id),
+        "run_id": str(run.run_id),
+        "project_id": str(task.project_id),
+        "base_plan_id": str(plan.plan_id),
+        "base_version": plan.version,
+        "feedback": payload.feedback,
+    }
+    if conversation_id is not None:
+        revise_payload["conversation_id"] = str(conversation_id)
+    if message_id is not None:
+        revise_payload["message_id"] = str(message_id)
     _new_command(
         session,
         task,
         run,
         "plan_revise",
-        {
-            "task_id": str(task.task_id),
-            "run_id": str(run.run_id),
-            "project_id": str(task.project_id),
-            "base_plan_id": str(plan.plan_id),
-            "base_version": plan.version,
-            "feedback": payload.feedback,
-        },
+        revise_payload,
         now + timedelta(seconds=settings.command_ttl_seconds),
         now,
     )

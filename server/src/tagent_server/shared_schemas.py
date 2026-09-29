@@ -28,6 +28,7 @@ class Handoff(BaseModel):
     from_conversation_id: uuid.UUID
     message_count: int
 class ConversationPublic(Identity):
+    updated_at: int = 0
     title: str
     kind: Literal['ask','read_code']
     target: Literal['mac','cloud'] = 'mac'

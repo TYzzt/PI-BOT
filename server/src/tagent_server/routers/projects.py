@@ -2,6 +2,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from tagent_server.config import utcnow
@@ -41,16 +42,28 @@ def create_project(
     device: Device = Depends(require_device),
     session: Session = Depends(get_session),
 ) -> ProjectPublic:
+    project_id = uuid.uuid5(device.device_id, str(payload.request_id)) if payload.request_id else uuid.uuid4()
+    existing = session.get(Project, project_id)
+    if existing is not None:
+        return project_out(existing, device)
     now = utcnow()
     project = Project(
+        project_id=project_id,
         device_id=device.device_id,
         display_name=payload.display_name,
         availability=payload.availability,
         created_at=now,
         updated_at=now,
     )
-    session.add(project)
-    session.flush()
+    try:
+        with session.begin_nested():
+            session.add(project)
+            session.flush()
+    except IntegrityError:
+        existing = session.get(Project, project_id)
+        if existing is None:
+            raise
+        return project_out(existing, device)
     return project_out(project, device)
 
 

@@ -2,6 +2,11 @@ package dev.tagent.android.domain
 
 val TERMINAL_CHAT = setOf("completed", "failed", "cancelled", "interrupted")
 
+/** A linked coding task is still planning or executing, so this conversation cannot take another run. */
+val PLAN_IN_PROGRESS = setOf("queued", "waiting_for_device", "planning", "approved", "running", "waiting_for_local_action")
+
+fun planInProgress(status: String?): Boolean = status != null && status in PLAN_IN_PROGRESS
+
 enum class QuestionBlock {
     Offline,
     Busy,

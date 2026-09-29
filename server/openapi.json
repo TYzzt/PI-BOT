@@ -831,6 +831,11 @@
             "title": "Title",
             "type": "string"
           },
+          "updated_at": {
+            "default": 0,
+            "title": "Updated At",
+            "type": "integer"
+          },
           "version": {
             "title": "Version",
             "type": "integer"
@@ -2320,6 +2325,19 @@
             "title": "Pairing Code",
             "type": "string"
           },
+          "previous_device_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "恢复原设备身份，需要管理员 Bearer 认证和新的单次配对码",
+            "title": "Previous Device Id"
+          },
           "public_key": {
             "maxLength": 128,
             "minLength": 1,
@@ -2651,6 +2669,47 @@
         "title": "PlanQuestion",
         "type": "object"
       },
+      "PlanSendPublic": {
+        "properties": {
+          "action": {
+            "enum": [
+              "plan_request",
+              "plan_revise"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "conversation_id": {
+            "format": "uuid",
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "message_id": {
+            "format": "uuid",
+            "title": "Message Id",
+            "type": "string"
+          },
+          "mode": {
+            "const": "plan",
+            "default": "plan",
+            "title": "Mode",
+            "type": "string"
+          },
+          "task_id": {
+            "format": "uuid",
+            "title": "Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "conversation_id",
+          "message_id",
+          "task_id",
+          "action"
+        ],
+        "title": "PlanSendPublic",
+        "type": "object"
+      },
       "PlanStep": {
         "additionalProperties": false,
         "properties": {
@@ -2739,6 +2798,18 @@
             "minLength": 1,
             "title": "Display Name",
             "type": "string"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
           }
         },
         "required": [
@@ -3144,6 +3215,15 @@
       "Send": {
         "additionalProperties": false,
         "properties": {
+          "mode": {
+            "default": "read",
+            "enum": [
+              "read",
+              "plan"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
           "request_id": {
             "format": "uuid",
             "title": "Request Id",
@@ -5196,7 +5276,15 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ChatRunPublic"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ChatRunPublic"
+                    },
+                    {
+                      "$ref": "#/components/schemas/PlanSendPublic"
+                    }
+                  ],
+                  "title": "Response Send Conversations  Id  Messages Post"
                 }
               }
             },

@@ -50,9 +50,9 @@ export function ConfigsPage({ connected, onError }: { connected: boolean; onErro
   }
   const disabled = !connected || busy || !data?.paired;
   return <div className="coding-page configs-page">
-    <div className="coding-heading"><div><div className="eyebrow">SHARED CONFIG</div><h1>Skills 与 MCP</h1><p>配置保存在云端，手机和 Mac 都能编辑。Mac 只检查依赖是否就绪，<strong>不会自动运行任何安装命令或脚本</strong>；缺少依赖时显示原因，由你手动安装后点击“重新检查”。</p></div>
+    <div className="coding-heading"><div><div className="eyebrow">PLUGINS</div><h1>插件</h1><p>配置保存在云端，手机和 Mac 都能编辑。Mac 只检查依赖是否就绪，<strong>不会自动运行任何安装命令或脚本</strong>；缺少依赖时显示原因，由你手动安装后点击“重新检查”。</p></div>
       <button disabled={disabled} onClick={() => void perform(() => window.agent.call('configRecheck', {}), '已重新检查本机依赖。')}>重新检查</button></div>
-    {data && !data.paired && <div className="task-notice">需要先在「模型设置」中配对云端。</div>}
+    {data && !data.paired && <div className="task-notice">需要先在「设置」中配对云端。</div>}
     {data?.error && <div className="task-notice" role="alert">{data.error}</div>}
     {notice && <p className="success" role="status">✓ {notice}</p>}
     <div className="coding-tabs"><button className={tab === 'skill' ? 'selected' : ''} onClick={() => { setTab('skill'); setSelected(null); setSkill(emptySkill()); }}>Skills {data?.skills.length ?? 0}</button><button className={tab === 'mcp' ? 'selected' : ''} onClick={() => { setTab('mcp'); setSelected(null); setMcp(emptyMcp()); }}>MCP {data?.mcpServers.length ?? 0}</button></div>

@@ -34,6 +34,7 @@ class PairingCodeResponse(BaseModel):
 
 
 class PairRequest(BaseModel):
+    previous_device_id: uuid.UUID | None = Field(default=None, description="恢复原设备身份，需要管理员 Bearer 认证和新的单次配对码")
     model_config = ConfigDict(extra="forbid")
     pairing_code: str = Field(min_length=1, max_length=256)
     public_key: str = Field(min_length=1, max_length=128)
@@ -74,6 +75,7 @@ class DevicePublic(BaseModel):
 
 
 class ProjectCreate(BaseModel):
+    request_id: uuid.UUID | None = None
     model_config = ConfigDict(extra="forbid")
     display_name: str = Field(min_length=1, max_length=120)
     availability: Availability = "available"

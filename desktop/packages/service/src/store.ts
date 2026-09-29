@@ -8,7 +8,7 @@ export class Store {
     this.db = new DatabaseSync(path);
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=3000;');
     const version = (this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
-    if (version > 4) throw new Error('数据库版本较新，不能使用旧版本应用打开');
+    if (version > 5) throw new Error('数据库版本较新，不能使用旧版本应用打开');
     if (version < 1) this.transaction(() => this.db.exec(`
       CREATE TABLE IF NOT EXISTS models(id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS conversations(id TEXT PRIMARY KEY, title TEXT NOT NULL, modelConfigId TEXT NOT NULL REFERENCES models(id), createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL, sessionPath TEXT);
@@ -51,6 +51,9 @@ export class Store {
       END;
       PRAGMA user_version=4;
     `));
+    if (version < 5) this.transaction(() => this.db.exec(`UPDATE conversations SET shared=1;
+      UPDATE shared_state SET data=json_remove(data,'$.pending','$.fingerprint') WHERE kind='conversation';
+      PRAGMA user_version=5;`));
     this.db.exec(`UPDATE messages SET status='interrupted' WHERE role='assistant' AND runId IN (SELECT id FROM runs WHERE state IN ('running','cancelling'));
       UPDATE runs SET state='interrupted', error='本地服务已重启，上次运行未完成；不会自动重发请求' WHERE state IN ('running','cancelling');`);
   }
@@ -72,7 +75,8 @@ export class Store {
   }
   conversations(): Conversation[] { return this.db.prepare('SELECT id,title,modelConfigId,createdAt,updatedAt,kind,projectId,shared FROM conversations ORDER BY updatedAt DESC').all() as unknown as Conversation[]; }
   conversation(id: string): Conversation { const c = this.conversations().find(c => c.id === id); if (!c) throw new Error('会话不存在'); return c; }
-  createConversation(modelConfigId: string, shared?: boolean, suppliedId?: string): Conversation { this.model(modelConfigId); const id = suppliedId ?? randomUUID(), now = Date.now(); this.db.prepare('INSERT INTO conversations(id,title,modelConfigId,createdAt,updatedAt,shared) VALUES(?,?,?,?,?,?)').run(id, '新会话', modelConfigId, now, now, Number(shared ?? !!this.db.prepare('SELECT 1 FROM cloud_link').get())); return this.conversation(id); }
+  // The legacy shared argument remains wire-compatible; every Mac conversation syncs.
+  createConversation(modelConfigId: string, _shared?: boolean, suppliedId?: string): Conversation { this.model(modelConfigId); const id = suppliedId ?? randomUUID(), now = Date.now(); this.db.prepare('INSERT INTO conversations(id,title,modelConfigId,createdAt,updatedAt,shared) VALUES(?,?,?,?,?,?)').run(id, '新会话', modelConfigId, now, now, 1); return this.conversation(id); }
   rename(id: string, title: string) { this.conversation(id); this.db.prepare('UPDATE conversations SET title=?,updatedAt=? WHERE id=?').run(title, Date.now(), id); }
   deleteConversation(id: string) { this.db.prepare('DELETE FROM conversations WHERE id=?').run(id); }
   sessionPath(id: string): string | null { return (this.db.prepare('SELECT sessionPath FROM conversations WHERE id=?').get(id) as { sessionPath: string | null }).sessionPath; }

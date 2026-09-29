@@ -23,10 +23,10 @@ export class Application {
   private testing = false;
   private serial: Promise<unknown> = Promise.resolve();
   readonly coding: CodingController; readonly cloud: CloudSync; readonly shared: SharedSync; readonly cloudChat: CloudChat; readonly configs: ConfigSync; readonly browser: BrowserService;
-  constructor(readonly store: Store, private credentials: Credentials, private factory: AgentFactory, private emit: (event: AppEvent) => void, cloud: { credentials?: Credentials; options?: CloudOptions; configs?: { dir?: string; intervalMs?: number; env?: ConfigHost['env'] }; browser?: { profileDir?: string; executable?: string; headless?: boolean; args?: string[]; lockTimeoutMs?: number; fetch?: typeof fetch } } = {}) {
+  constructor(readonly store: Store, private credentials: Credentials, private factory: AgentFactory, private emit: (event: AppEvent) => void, cloud: { dataDir?: string; credentials?: Credentials; options?: CloudOptions; configs?: { dir?: string; intervalMs?: number; env?: ConfigHost['env'] }; browser?: { profileDir?: string; executable?: string; headless?: boolean; args?: string[]; lockTimeoutMs?: number; fetch?: typeof fetch } } = {}) {
     const b = cloud.browser ?? {};
     this.browser = new BrowserService({ profileDir: b.profileDir ?? join(dataDir, 'chrome-profile'), executable: b.executable, headless: b.headless, args: b.args, lockTimeoutMs: b.lockTimeoutMs, jev: new JevConfig(store.db, credentials, b.fetch) });
-    this.coding = new CodingController(store, credentials, factory, emit, () => this.idle(), this.browser);
+    this.coding = new CodingController(store, credentials, factory, emit, () => this.idle(), this.browser, cloud.dataDir ?? dataDir);
     this.cloud = new CloudSync({ store, coding: this.coding, credentials: cloud.credentials ?? new MemoryCredentials(), serial: fn => this.enqueue(fn), busy: () => this.busy(), emit }, cloud.options);
     this.shared = new SharedSync({ store, keys: credentials, cloud: this.cloud, coding: this.coding, busy: () => this.busy(), serial: fn => this.enqueue(fn), call: (method, input) => this.dispatch(method as Method, input, true), emit });
     this.cloudChat = new CloudChat({ paired: () => !!this.cloud.db.link(), request: (method, path, body) => this.cloud.request(method, path, body) });
@@ -61,7 +61,14 @@ export class Application {
     if (method === 'sharedStatus') return this.shared.status();
     if (method === 'sharedConversation') { await this.shared.share(data.ids, data.shared); return null; }
     if (method === 'sharedResolve') { await this.shared.resolve(data.id, data.choice); return null; }
-    if (method === 'cloudUnpair') { const result = await this.cloud.dispatch(method, data); await this.shared.reset(); return result; }
+    if (method === 'cloudUnpair') return this.cloud.dispatch(method, data);
+    if (method === 'cloudPair') {
+      const previous = this.cloud.db.detached();
+      const result = await this.cloud.dispatch(method, data);
+      const current = this.cloud.db.link()!;
+      if (!previous || previous.serverUrl !== current.serverUrl || previous.deviceId !== current.deviceId) await this.shared.reset();
+      return result;
+    }
     if (Object.hasOwn(cloudSchemas, method)) return this.cloud.dispatch(method as Extract<Method, `cloud${string}`>, data);
     if (method === 'codingGet') { const detail = await this.coding.dispatch(method, data) as Api['codingGet']['output']; return { ...detail, cloud: this.cloud.taskInfo(detail.task.id) }; }
     if (Object.hasOwn(codingSchemas, method)) return this.coding.dispatch(method, data);

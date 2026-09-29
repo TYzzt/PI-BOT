@@ -81,6 +81,45 @@ def test_choice_questions_are_not_approvable(shared):
     assert approve(c,t,plan).status_code==409
 
 
+def test_plan_mode_stays_in_the_conversation(shared):
+    c, t, m, _ = shared
+    mid, _, _ = model(shared)
+    cid = str(uuid.uuid4())
+    body = {'device_id': m.device_id, 'title': '项目对话', 'kind': 'read_code', 'model_config_id': mid, 'project_id': m.project_id, 'expected_version': 0, 'request_id': str(uuid.uuid4())}
+    assert device_call(c, m, 'PUT', f'/device/conversations/{cid}', body).status_code == 200
+    sent = {'text': '把按钮改成蓝色', 'request_id': str(uuid.uuid4()), 'mode': 'plan'}
+    first = c.post(f'/conversations/{cid}/messages', headers=bearer(t), json=sent)
+    assert first.status_code == 200, first.text
+    payload = first.json()
+    assert payload['mode'] == 'plan' and payload['action'] == 'plan_request'
+    assert c.post(f'/conversations/{cid}/messages', headers=bearer(t), json=sent).json() == payload
+    assert c.get(f'/conversations/{cid}', headers=bearer(t)).json()['task_id'] == payload['task_id']
+    pending = c.get(f'/conversations/{cid}/messages', headers=bearer(t)).json()['pending_messages']
+    assert pending[0]['id'] == payload['message_id'] and pending[0]['content'] == '把按钮改成蓝色'
+    assert c.post(f'/conversations/{cid}/messages', headers=bearer(t), json={'text': '另一个', 'request_id': str(uuid.uuid4()), 'mode': 'plan'}).status_code == 409
+    assert c.post(f'/conversations/{cid}/messages', headers=bearer(t), json={'text': '只是问问', 'request_id': str(uuid.uuid4())}).status_code == 409
+    [command] = pull_and_ack(c, m)
+    assert command['command_type'] == 'plan_request'
+    assert command['payload']['conversation_id'] == cid and command['payload']['message_id'] == payload['message_id']
+    snap = device_call(c, m, 'GET', '/device/shared/snapshot').json()
+    assert not any(d['entity_kind'] == 'chat_run' and d.get('conversation_id') == cid for d in snap['documents'])
+    task = c.get(f"/tasks/{payload['task_id']}", headers=bearer(t)).json()
+    published = device_call(c, m, 'POST', f"/tasks/{task['task_id']}/plans", plan_payload(task, m, command['run_id'], 1))
+    assert published.status_code == 200, published.text
+    revise = c.post(f'/conversations/{cid}/messages', headers=bearer(t), json={'text': '范围再小一点', 'request_id': str(uuid.uuid4()), 'mode': 'plan'})
+    assert revise.status_code == 200, revise.text
+    assert revise.json()['action'] == 'plan_revise' and revise.json()['task_id'] == payload['task_id']
+    [again] = pull_and_ack(c, m)
+    assert again['command_type'] == 'plan_revise' and again['payload']['conversation_id'] == cid
+    kept = c.get(f'/conversations/{cid}', headers=bearer(t)).json()
+    echoed = device_call(c, m, 'PUT', f'/device/conversations/{cid}', {**body, 'expected_version': kept['version'], 'request_id': str(uuid.uuid4()), 'task_id': None})
+    assert echoed.status_code == 200, echoed.text
+    assert echoed.json()['task_id'] == payload['task_id']
+    ask = str(uuid.uuid4())
+    assert device_call(c, m, 'PUT', f'/device/conversations/{ask}', {'device_id': m.device_id, 'title': '问答', 'kind': 'ask', 'model_config_id': mid, 'expected_version': 0, 'request_id': str(uuid.uuid4())}).status_code == 200
+    assert c.post(f'/conversations/{ask}/messages', headers=bearer(t), json={'text': '改代码', 'request_id': str(uuid.uuid4()), 'mode': 'plan'}).status_code == 409
+
+
 def test_cancel_queued_question_updates_pending_message(shared):
     c,t,m,_=shared;mid,_,_=model(shared);cid,_,_=conversation(shared,mid)
     run=c.post(f'/conversations/{cid}/messages',headers=bearer(t),json={'text':'cancel before delivery','request_id':str(uuid.uuid4())}).json()

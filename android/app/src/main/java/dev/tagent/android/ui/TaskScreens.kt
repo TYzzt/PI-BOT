@@ -245,6 +245,57 @@ private fun TaskActionBar(model: TaskDetailViewModel, task: TaskEntity, plan: Pl
     }
 }
 
+/** Plan, confirm, and progress for the conversation that owns [taskId]. Revision text stays in the chat composer. */
+@Composable
+fun ConversationPlan(repository: TagentRepository, taskId: String) {
+    val model = viewModel(key = "plan-$taskId") { TaskDetailViewModel(repository, taskId) }
+    val task = model.task
+    val plan = model.plans.find { it.planId == model.selectedPlanId }
+    val body = plan?.bodyOrNull()
+    val questions = body?.questions?.filter { questionPrompt(it).isNotBlank() }.orEmpty()
+    Column(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        HorizontalDivider()
+        if (task == null) {
+            Text("正在读取计划")
+            return@Column
+        }
+        Text(taskStatusLabel(displayedTaskStatus(task.status, task.devicePresence)), style = MaterialTheme.typography.labelLarge)
+        cancelNote(task.status, task.cancelRequested)?.let { Text(it) }
+        deviceOfflineNote(task.devicePresence)?.let { Text(it) }
+        staleNote(model.meta?.lastSyncAt, System.currentTimeMillis(), model.meta?.refreshFailed == true)?.let { Text(it) }
+        if (model.plans.isNotEmpty()) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                model.plans.forEach { version ->
+                    FilterChip(
+                        selected = version.planId == model.selectedPlanId,
+                        onClick = { model.select(version.planId) },
+                        label = { Text("v${version.version}" + if (version.planId == task.latestPlanId) " 最新" else " 历史") },
+                    )
+                }
+            }
+        }
+        if (plan == null) {
+            Text("计划还没发布。Mac 在线后会出现在这段对话里。")
+        } else if (body == null) {
+            Text("正在读取计划正文")
+        } else {
+            PlanDocument(body)
+            if (questions.isNotEmpty()) QuestionList(questions, model.picks, model::setPick)
+        }
+        val eventPairs = model.events.map { it.type to it.payloadJson }
+        progressLines(eventPairs).forEach { line ->
+            Text(line.title, style = MaterialTheme.typography.titleSmall)
+            if (line.detail.isNotBlank()) Text(line.detail)
+        }
+        if (showsLocalOnly(eventPairs)) Text("代码详情在 Mac 查看，这里只有摘要。")
+        model.notice?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        if (plan != null && body != null) {
+            OutlinedButton(onClick = { model.reject(plan) }, enabled = !model.busy && !showsApproved(model.approve?.phase, task.status) && canRejectPlan(task.status), modifier = Modifier.fillMaxWidth()) { Text("拒绝") }
+        }
+        TaskActionBar(model, task, plan, questions)
+    }
+}
+
 @Composable
 private fun Section(title: String, lines: List<String>) {
     if (lines.isEmpty()) return

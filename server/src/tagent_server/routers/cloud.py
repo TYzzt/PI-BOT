@@ -72,20 +72,43 @@ def clear_default(s: Session, keep: uuid.UUID):
         if other.id != keep and not other.data.get('deleted') and other.data['config']['is_default']:
             revise(s, other, {**other.data, 'config': {**other.data['config'], 'is_default': False}})
 
+def mac_mirrors(s: Session, source_id: uuid.UUID) -> list[Doc]:
+    return [m for m in s.scalars(select(Doc).where(Doc.kind == 'cloud_model')).all() if m.data.get('source_model_id') == str(source_id)]
+
+def mirror_mac_model(s: Session, request: Request, source: Doc) -> Doc:
+    """Keep one cloud model for a Mac model. The key is re-sealed on the server and never returned."""
+    vault = Vault(request.app.state.settings.sync_key_file)
+    mirrors = mac_mirrors(s, source.id)
+    existing = next((m for m in mirrors if not m.data.get('deleted')), None) or (mirrors[0] if mirrors else None)
+    plain = vault.open(source.data['secret'], str(source.id))
+    others = [m for m in s.scalars(select(Doc).where(Doc.kind == 'cloud_model')).all() if not m.data.get('deleted') and (existing is None or m.id != existing.id)]
+    kept_default = False if existing is None or existing.data.get('deleted') else bool(existing.data['config'].get('is_default'))
+    config = {**source.data['config'], 'is_default': kept_default or not others}
+    if existing is None:
+        new_id = uuid.uuid4()
+        if config['is_default']: clear_default(s, new_id)
+        data = {'config': config, 'secret': vault.seal(plain, str(new_id), 1), 'has_key': True, 'deleted': False, 'source_model_id': str(source.id)}
+        d = Doc(id=new_id, kind='cloud_model', device_id=None, version=1, data=data); s.add(d); s.flush()
+        s.add(SharedRevision(document_id=new_id, version=1, data=data)); change(s, d)
+        return d
+    version = existing.version + 1
+    if config['is_default']: clear_default(s, existing.id)
+    revise(s, existing, {**existing.data, 'config': config, 'secret': vault.seal(plain, str(existing.id), version), 'has_key': True, 'deleted': False, 'source_model_id': str(source.id)})
+    return existing
+
+def retire_mac_mirror(s: Session, source_id: uuid.UUID):
+    for mirror in mac_mirrors(s, source_id):
+        if mirror.data.get('deleted'): continue
+        used = any(c.data.get('model_config_id') == str(mirror.id) and not c.data.get('deleted') for c in s.scalars(select(Doc).where(Doc.kind == 'conversation', Doc.device_id.is_(None))).all())
+        if used: continue
+        revise(s, mirror, {**mirror.data, 'deleted': True, 'secret': None})
+
 def copy_from_mac(s: Session, request: Request, p: FromMac, device: Device | None):
     write_lock(s); key = f'cloud-model-copy:{p.request_id}'; digest, old = receipt(s, key, p)
     if old is not None: return old
     source = s.get(Doc, p.model_id)
     if not source or source.kind != 'model' or source.data.get('deleted') or (device and source.device_id != device.device_id): raise HTTPException(404, '模型不存在')
-    vault = Vault(request.app.state.settings.sync_key_file)
-    id = uuid.uuid4()
-    # The key is re-sealed server-side; it never travels to or through a client.
-    secret = vault.seal(vault.open(source.data['secret'], str(source.id)), str(id), 1)
-    data = {'config': {**source.data['config'], 'is_default': False}, 'secret': secret, 'has_key': True, 'deleted': False, 'source_model_id': str(source.id)}
-    if not any(not m.data.get('deleted') for m in s.scalars(select(Doc).where(Doc.kind == 'cloud_model')).all()): data['config']['is_default'] = True
-    d = Doc(id=id, kind='cloud_model', device_id=None, version=1, data=data); s.add(d); s.flush()
-    s.add(SharedRevision(document_id=id, version=1, data=data)); change(s, d)
-    return save_receipt(s, key, digest, public(d))
+    return save_receipt(s, key, digest, public(mirror_mac_model(s, request, source)))
 
 def delete_cloud_model(s: Session, id: uuid.UUID, p: CloudModelDelete):
     write_lock(s); key = f'cloud-model-delete:{p.request_id}'; digest, old = receipt(s, key, p)

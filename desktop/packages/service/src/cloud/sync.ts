@@ -54,7 +54,7 @@ export class CloudSync implements CodingObserver {
       case 'cloudStatus': return this.status();
       case 'cloudPair': return this.pair(input);
       case 'cloudUnpair': return this.unpair();
-      case 'cloudProjectShare': return this.share(input.projectId, input.enabled);
+      case 'cloudProjectShare': return this.share(input.projectId, true);
       case 'cloudRetry': this.db.retry(); this.attempts = 0; this.socket?.reconnectNow(); this.kick(0); return this.status();
       case 'cloudApprove': return this.decide(input.taskId, 'approve', input.requestId, input.planId);
       case 'cloudReject': return this.decide(input.taskId, 'reject', input.requestId);
@@ -80,30 +80,35 @@ export class CloudSync implements CodingObserver {
     // The admin password and JWT exist only in this call frame; neither is stored, logged or returned.
     const login = await cloudFetch<{ access_token: string }>(serverUrl, 'POST', '/auth/login', { body: { password: input.password } }).catch(e => { throw pairingError(e, '管理员密码错误'); });
     const code = await cloudFetch<{ pairing_code: string }>(serverUrl, 'POST', '/devices/pairing-codes', { headers: { authorization: `Bearer ${login.access_token}` } }).catch(e => { throw pairingError(e, '无法生成配对码'); });
+    const previous = this.db.detached();
+    const resume = previous?.serverUrl === serverUrl ? previous : null;
     const identity = newIdentity();
-    const device = await cloudFetch<{ device_id: string }>(serverUrl, 'POST', '/devices/pair', { body: { pairing_code: code.pairing_code, public_key: identity.publicKey, label: input.label, capabilities: ['plan', 'execute', 'shared_v1'] } }).catch(e => { throw pairingError(e, '配对失败'); });
+    const device = await cloudFetch<{ device_id: string }>(serverUrl, 'POST', '/devices/pair', { headers: { authorization: `Bearer ${login.access_token}` }, body: { pairing_code: code.pairing_code, public_key: identity.publicKey, label: input.label, capabilities: ['plan', 'execute', 'shared_v1'], ...(resume ? { previous_device_id: resume.deviceId } : {}) } }).catch(e => { throw pairingError(e, '配对失败'); });
     const account = randomUUID();
     await this.host.credentials.set(account, identity.privateKey);
-    this.db.putLink({ account, serverUrl, deviceId: device.device_id, label: input.label, publicKey: identity.publicKey, pairedAt: Date.now(), producerSeq: 0, lastSyncAt: Date.now() });
+    if (resume?.deviceId !== device.device_id) this.db.clear();
+    this.db.putLink({ account, serverUrl, deviceId: device.device_id, label: input.label, publicKey: identity.publicKey, pairedAt: Date.now(), producerSeq: resume?.deviceId === device.device_id ? resume.producerSeq : 0, lastSyncAt: Date.now() });
     this.stopped = false; this.notice = null; await this.start(); this.changed(); return this.status();
   }
   private async unpair() {
     const link = this.db.link(); if (!link) return this.status();
     const active = this.host.coding.active; if (active && this.db.task(active.task.id)) throw new Error('请先停止正在运行的云端任务');
-    clearTimeout(this.timer); this.socket?.stop(); this.socket = null; this.sign = null; this.notice = null;
+    this.stopped = true; clearTimeout(this.timer); this.socket?.stop(); this.socket = null; this.sign = null; this.notice = null;
     try { await this.host.credentials.delete(link.account); } catch { /* A missing key must not block forgetting the link. */ }
-    this.db.clear(); this.changed(); return this.status();
+    this.db.detach(); this.changed(); return this.status();
   }
   private async share(projectId: string, enabled: boolean) {
     if (!this.db.link()) throw new Error('尚未配对云端');
+    const deviceId = this.db.link()!.deviceId;
     const project = this.host.coding.db.project(projectId); if (project.removed) throw new Error('项目已移除');
     const existing = this.db.project(projectId);
     if (!existing) {
       if (!enabled) return this.status();
-      const created = await this.request<{ project_id: string }>('POST', '/projects', { display_name: project.name.slice(0, 120) }).catch(e => { throw e instanceof CloudNetworkError ? new Error('开启同步需要连接云端') : e; });
+      const created = await this.request<{ project_id: string }>('POST', '/projects', { display_name: project.name.slice(0, 120), request_id: project.id }).catch(e => { throw e instanceof CloudNetworkError ? new Error('项目待同步，连接恢复后自动重试') : e; });
+      if (this.db.link()?.deviceId !== deviceId) return this.status();
       this.db.putProject({ projectId, cloudProjectId: created.project_id, name: project.name, enabled: true, remoteAvailable: true });
     } else this.db.putProject({ ...existing, enabled });
-    this.changed(); this.kick(0); return this.status();
+    this.changed(); return this.status();
   }
   private async decide(taskId: string, action: 'approve' | 'reject' | 'revise', requestId: string, planId?: string, feedback?: string) {
     const link = this.db.task(taskId); if (!link) throw new Error('不是云端任务');
@@ -133,7 +138,8 @@ export class CloudSync implements CodingObserver {
     try {
       do {
         this.again = false;
-        for (const step of [() => this.ackReceived(), () => this.processCommands(), () => this.reconcileProjects(), () => this.flushOutbox()]) {
+        for (const step of [() => this.reconcileProjects(), () => this.ackReceived(), () => this.processCommands(), () => this.flushOutbox()]) {
+          if (this.stopped || !this.sign) break;
           try { await step(); } catch (error) { retry = this.transient(error); }
         }
       } while (this.again && retry === null && !this.stopped);
@@ -141,7 +147,7 @@ export class CloudSync implements CodingObserver {
     if (this.stopped || !this.sign) return;
     this.changed();
     if (retry !== null) this.kick(retry);
-    else { this.attempts = 0; if (this.db.commands('acked').length) this.kick(this.options.busyPollMs ?? 1000); }
+    else { this.notice = null; this.attempts = 0; this.kick(this.options.busyPollMs ?? 1000); }
   }
   private transient(error: unknown) {
     const message = error instanceof CloudNetworkError ? '无法连接云端服务器，恢复后会自动补发' : error instanceof CloudHttpError && error.status === 401 ? '设备认证失败：设备可能已在云端撤销，或本机时间不准确' : error instanceof CloudHttpError && error.status >= 500 ? '云端暂时不可用，稍后自动重试' : error instanceof Error ? error.message : '同步失败';
@@ -191,7 +197,25 @@ export class CloudSync implements CodingObserver {
       if (!project) return this.report(cloudTaskId, cloudRunId, 'run.failed', { summary: '项目在本机不可用或未开启云端同步' });
       const models = this.host.store.models(), model = models.find(m => m.isDefault) ?? models[0];
       if (!model) return this.report(cloudTaskId, cloudRunId, 'run.failed', { summary: '本机尚未配置模型' });
-      const input = valid('codingCreate', { intent: 'code', projectId: project.id, requirement: payload.requirement, planModelId: model.id, executeModelId: model.id, requestId: command.command_id });
+      this.seedPlanMessage(command.command_id, payload.message_id);
+      const conversationId = typeof payload.conversation_id === 'string' ? payload.conversation_id : undefined;
+      let local: CodingTask | undefined;
+      if (conversationId) { try { local = coding.db.byConversation(conversationId); } catch { local = undefined; } }
+      if (local) {
+        const input = valid('codingPlan', { taskId: local.id, feedback: payload.requirement, requestId: command.command_id });
+        if (!input) return this.report(cloudTaskId, cloudRunId, 'run.failed', { summary: '云端需求超出本机限制' });
+        const recovered = this.receiptExists(command.command_id);
+        const run = await this.attempt(() => coding.dispatch('codingPlan', input, true) as Promise<Run>);
+        if (run instanceof Error) return this.report(cloudTaskId, cloudRunId, 'run.failed', { summary: '项目在本机不可用' });
+        const previous = this.db.task(local.id);
+        const link: CloudTaskLink = previous?.cloudTaskId === cloudTaskId
+          ? { ...previous, cloudProjectId: payload.project_id }
+          : { taskId: local.id, cloudTaskId, cloudProjectId: payload.project_id, runs: {}, active: null, plans: {}, terminal: {} };
+        this.db.putTask(link);
+        if (recovered || !run?.id) return this.report(cloudTaskId, cloudRunId, 'run.interrupted', { summary: SUMMARY['run.interrupted'] });
+        return this.bind(local.id, run.id, cloudRunId);
+      }
+      const input = valid('codingCreate', { intent: 'code', shared: true, ...(conversationId ? { conversationId } : {}), projectId: project.id, requirement: payload.requirement, planModelId: model.id, executeModelId: model.id, requestId: command.command_id });
       if (!input) return this.report(cloudTaskId, cloudRunId, 'run.failed', { summary: '云端需求超出本机限制' });
       const recovered = this.receiptExists(command.command_id);
       const task = await this.attempt(() => coding.dispatch('codingCreate', input, true) as Promise<CodingTask>);
@@ -203,6 +227,7 @@ export class CloudSync implements CodingObserver {
     }
     if (!existing) return this.report(cloudTaskId, cloudRunId, 'run.failed', { summary: '本机没有该任务的记录' });
     if (command.command_type === 'plan_revise') {
+      this.seedPlanMessage(command.command_id, payload.message_id);
       const input = valid('codingPlan', { taskId: existing.taskId, feedback: payload.feedback, requestId: command.command_id });
       if (!input) return this.report(cloudTaskId, cloudRunId, 'run.failed', { summary: '修改意见超出本机限制' });
       const recovered = this.receiptExists(command.command_id);
@@ -222,6 +247,11 @@ export class CloudSync implements CodingObserver {
       if (!run) return replan('工作区或模型配置在规划后发生变化，请修改计划');
       return this.bind(existing.taskId, run.id, cloudRunId);
     }
+  }
+  /** Lets the local user message reuse the phone's message id, without reporting a chat run. */
+  private seedPlanMessage(requestId: string, messageId: unknown) {
+    if (typeof messageId !== 'string') return;
+    this.host.store.db.prepare('INSERT INTO shared_state VALUES(?,?,?) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data').run('run', requestId, JSON.stringify({ messageId, reported: true }));
   }
   private bind(taskId: string, localRunId: string, cloudRunId: string) {
     const link = this.db.task(taskId)!; link.runs[localRunId] = cloudRunId; link.active = { localRunId, cloudRunId }; this.db.putTask(link);
@@ -252,12 +282,20 @@ export class CloudSync implements CodingObserver {
     this.kick(0);
   }
   private async reconcileProjects() {
+    let failure: unknown;
+    for (const project of this.host.coding.db.projects().filter(p => !p.removed)) {
+      try { if (!this.db.project(project.id)?.enabled) await this.share(project.id, true); }
+      catch (error) { failure ??= error; }
+    }
     for (const shared of this.db.projects()) {
       const local = this.host.coding.db.projects().find(p => p.id === shared.projectId), desired = shared.enabled && !!local && !local.removed;
       if (desired === shared.remoteAvailable) continue;
-      await this.request('PATCH', `/projects/${shared.cloudProjectId}`, { availability: desired ? 'available' : 'unavailable' });
-      this.db.putProject({ ...this.db.project(shared.projectId)!, remoteAvailable: desired });
+      try {
+        await this.request('PATCH', `/projects/${shared.cloudProjectId}`, { availability: desired ? 'available' : 'unavailable' });
+        if (this.db.link()) this.db.putProject({ ...shared, remoteAvailable: desired });
+      } catch (error) { failure ??= error; }
     }
+    if (failure) throw failure;
   }
   private async flushOutbox() {
     let single = false;

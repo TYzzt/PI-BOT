@@ -19,8 +19,8 @@ export class SharedSync {
   private all(kind:string):any[]{return (this.db.prepare('SELECT id,data FROM shared_state WHERE kind=?').all(kind) as any[]).map(r=>({id:r.id,...JSON.parse(r.data)}));}
   status():SharedStatus{return {deviceLabel:this.h.cloud.db.link()?.label,connected:this.h.cloud.connected,runs:this.all('remote').filter(r=>r.kind==='chat_run'&&r.document).map(r=>({id:r.id,conversationId:r.document.conversation_id,state:r.document.state,cancelRequested:r.document.cancel_requested})),models:this.all('model').map(m=>({id:m.id,version:m.conflict?.version??this.get('remote',m.id)?.document?.version??m.version??0,applied:m.applied??0,error:m.error,conflict:!!m.conflict})),conversations:this.h.store.conversations().map(c=>({id:c.id,shared:!!c.shared,version:this.get('conversation',c.id)?.version??0,error:this.get('conversation',c.id)?.error,syncedAt:this.get('conversation',c.id)?.syncedAt})),error:this.error};}
   applying(){return this.all('model').some(m=>!!m.applying);}
-  async reset(){for(const m of this.all('model'))if(m.pending?.keyRef)await this.h.keys.delete(m.pending.keyRef);this.db.exec('DELETE FROM shared_state; UPDATE conversations SET shared=0;');}
-  async share(ids:string[],shared:boolean){for(const id of ids){this.h.store.conversation(id);this.db.prepare('UPDATE conversations SET shared=? WHERE id=?').run(Number(shared),id);}this.h.emit({type:'state.changed'});}
+  async reset(){for(const m of this.all('model'))if(m.pending?.keyRef)await this.h.keys.delete(m.pending.keyRef);this.db.exec('DELETE FROM shared_state; UPDATE conversations SET shared=1;');}
+  async share(ids:string[],_shared:boolean){for(const id of ids){this.h.store.conversation(id);this.db.prepare('UPDATE conversations SET shared=? WHERE id=?').run(1,id);}this.h.emit({type:'state.changed'});}
   async resolve(id:string,choice:'remote'|'local'){
     const m=this.get('model',id);if(!m?.conflict)throw new Error('没有待解决的配置冲突');
     if(choice==='remote'){if(this.h.busy())throw new Error('请等待当前运行结束');await this.applyModel(m.conflict);}
@@ -57,7 +57,10 @@ export class SharedSync {
       try{const r=await this.h.cloud.request<any>('POST',`/device/configs/models/${m.id}/delete`,m.deletePending);this.put('model',m.id,{...m,deletePending:null,remoteDeleted:true});if(!this.h.busy())await this.applyModel(r);}
       catch(e){if(e instanceof CloudHttpError&&e.status<500)this.put('model',m.id,{...m,deletePending:null,error:'删除未生效，请刷新配置后重试'});else throw e;}
     }
-    for(const m of this.h.store.models())await this.syncModel(m,remoteModels.find((r:any)=>r.id===m.id));
+    for(const m of this.h.store.models()){
+      try{await this.syncModel(m,remoteModels.find((r:any)=>r.id===m.id));}
+      catch{const state=this.get('model',m.id)??{};this.put('model',m.id,{...state,error:'模型配置待同步，请检查连接和 Keychain'});}
+    }
     for(const r of remoteModels)if(!this.h.store.models().some(m=>m.id===r.id)&&!this.h.busy()&&(!r.deleted||r.apply_state!=='applied'))await this.applyModel(r);
     for(const t of snapshot.tasks){const link=this.h.cloud.db.taskByCloud(t.id);if(link&&['rejected','cancelled'].includes(t.state)&&this.h.coding.active?.task.id!==link.taskId){const task=this.h.coding.db.task(link.taskId);if(task.state!==t.state){this.h.coding.db.putTask({...task,state:t.state,message:t.state==='rejected'?'计划已在云端拒绝':'任务已在云端取消'});this.h.emit({type:'state.changed'});}}}
     for(const r of snapshot.documents.filter((d:any)=>d.entity_kind==='conversation'&&!d.deleted&&d.shared)){
@@ -70,7 +73,7 @@ export class SharedSync {
       });this.h.emit({type:'state.changed'});
     }
     for(const c of this.h.store.conversations()){
-      try{await this.syncConversation(c,snapshot.documents.find((r:any)=>r.entity_kind==='conversation'&&r.id===c.id));}catch{const m=this.get('conversation',c.id)??{};this.put('conversation',c.id,{...m,error:'会话待同步：请确认项目与模型已共享'});}
+      try{await this.syncConversation(c,snapshot.documents.find((r:any)=>r.entity_kind==='conversation'&&r.id===c.id));}catch{const m=this.get('conversation',c.id)??{};this.put('conversation',c.id,{...m,error:'会话待同步，连接恢复后自动重试'});}
     }
     const pending=snapshot.documents.filter((r:any)=>r.entity_kind==='chat_run'&&!terminal(r.state));
     // Process cancellation even when another request owns the global model slot.
@@ -88,7 +91,7 @@ export class SharedSync {
       if(state.fingerprint&&state.fingerprint!==fingerprint){this.put('model',m.id,{...state,conflict:remote,error:'配置版本冲突：请选择云端版本或重新提交本地版本'});return;}
       if(!this.h.busy())await this.applyModel(remote);return;
     }
-    if(state.fingerprint===fingerprint){if(remote&&remote.apply_state!=='applied'&&state.applied===remote.version)await this.h.cloud.request('POST',`/device/configs/models/${m.id}/applied`,{version:remote.version,state:'applied'});return;}
+    if(state.fingerprint===fingerprint){if(state.error)this.put('model',m.id,{...state,error:undefined});if(remote&&remote.apply_state!=='applied'&&state.applied===remote.version)await this.h.cloud.request('POST',`/device/configs/models/${m.id}/applied`,{version:remote.version,state:'applied'});return;}
     const key=await this.h.keys.get(m.id);if(!key)throw new Error('Keychain 缺少模型密钥');
     const keyRef=randomUUID();await this.h.keys.set(keyRef,key);
     state={...state,pending:{keyRef,fingerprint,body:{device_id:this.h.cloud.db.link()!.deviceId,config:fields(m),expected_version:state.version??0,request_id:randomUUID()}}};this.put('model',m.id,state);
@@ -116,17 +119,22 @@ export class SharedSync {
       await this.h.cloud.request('POST',`/device/configs/models/${r.id}/applied`,{version:r.version,state:'applied'});this.h.emit({type:'state.changed'});
     }catch{this.put('model',r.id,{...(this.get('model',r.id)??{}),remoteDeleted:!!r.deleted,error:'模型应用失败，请检查 Keychain 或配置引用'});await this.h.cloud.request('POST',`/device/configs/models/${r.id}/applied`,{version:r.version,state:'failed',error:r.deleted?'referenced':'keychain_failed'});}
   }
-  private conversationBody(c:any,state:any){
+  private conversationBody(c:any,state:any,remote?:any){
     const task=c.kind==='coding'?this.h.coding.db.byConversation(c.id):null;
-    return {device_id:this.h.cloud.db.link()!.deviceId,title:c.title,kind:c.kind==='coding'?'read_code':'ask',project_id:c.projectId?this.h.cloud.db.project(c.projectId)?.cloudProjectId??null:null,model_config_id:c.modelConfigId,shared:!!c.shared,deleted:false,task_id:task?this.h.cloud.db.task(task.id)?.cloudTaskId??null:null,expected_version:state.version??0,request_id:randomUUID()};
+    const linked=task?this.h.cloud.db.task(task.id)?.cloudTaskId??null:null;
+    // Keep a phone-created plan link until this Mac has bound the local task.
+    return {device_id:this.h.cloud.db.link()!.deviceId,title:c.title,kind:c.kind==='coding'?'read_code':'ask',project_id:c.projectId?this.h.cloud.db.project(c.projectId)?.cloudProjectId??null:null,model_config_id:c.modelConfigId,shared:!!c.shared,deleted:false,task_id:linked??remote?.task_id??null,expected_version:state.version??0,request_id:randomUUID()};
   }
   private async syncConversation(c:any,remote:any){
     let state=this.get('conversation',c.id)??{version:0};if(state.deleted)return;
     if(remote?.deleted){if(this.h.busy())return;await this.h.call('conversationDelete',{id:c.id});this.put('conversation',c.id,{...state,deleted:true});return;}
-    if(remote&&remote.version>state.version&&!state.pending){this.db.prepare('UPDATE conversations SET title=?,shared=?,modelConfigId=? WHERE id=?').run(remote.title,Number(remote.shared),remote.model_config_id,c.id);c=this.h.store.conversation(c.id);state={...state,version:remote.version,shareVersion:remote.share_version};this.put('conversation',c.id,state);}
+    if(remote&&remote.version>state.version&&!state.pending){this.db.prepare('UPDATE conversations SET title=?,shared=?,modelConfigId=? WHERE id=?').run(remote.title,1,remote.model_config_id,c.id);c=this.h.store.conversation(c.id);state={...state,version:remote.version,shareVersion:remote.share_version};this.put('conversation',c.id,state);}
     if(!c.shared&&!state.version)return;
+    if(c.projectId&&!this.h.cloud.db.project(c.projectId)?.enabled)throw new Error('等待项目同步');
+    const modelState=this.get('model',c.modelConfigId);
+    if(!modelState?.version||modelState.pending||modelState.applying||modelState.conflict||modelState.error)throw new Error('等待模型同步');
     const messages=this.h.store.messages(c.id);if(!state.version&&messages.some(m=>m.status==='running'))return;
-    const body=this.conversationBody(c,state),fingerprint=hash({...body,expected_version:0,request_id:''});
+    const body=this.conversationBody(c,state,remote),fingerprint=hash({...body,expected_version:0,request_id:''});
     if(state.fingerprint!==fingerprint){
       if(!state.pending){state={...state,pending:{body,fingerprint}};this.put('conversation',c.id,state);}
       let r:any;

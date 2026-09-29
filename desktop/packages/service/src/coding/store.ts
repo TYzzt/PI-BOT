@@ -5,7 +5,7 @@ import { digest, type WorkspaceImage } from './workspace.js';
 export class CodingStore {
   constructor(readonly store: Store) {
     for (const task of this.tasks()) if (['reading', 'planning', 'executing'].includes(task.state)) {
-      this.putTask({ ...task, state: 'interrupted', activeRunId: null, message: task.intent === 'read' ? '阅读中断，已有回答已保留；可以继续提问。' : '服务重启，任务已中断；请针对当前工作区重新规划，不会自动重跑。' });
+      this.putTask({ ...task, state: 'interrupted', activeRunId: null, message: task.intent === 'agent' ? '服务重启，本轮已中断；已有回答和修改已保留，可以继续对话。' : task.intent === 'read' ? '阅读中断，已有回答已保留；可以继续提问。' : '服务重启，任务已中断；请针对当前工作区重新规划，不会自动重跑。' });
       this.event(task.id, { type: 'coding.changed', task_id: task.id, conversation_id: task.conversationId, project_id: task.projectId, run_id: task.activeRunId ?? undefined });
     }
     for (const tool of this.all<ToolCall>('SELECT data FROM tool_calls')) if (tool.state === 'running') this.putTool({ ...tool, state: 'interrupted', endedAt: Date.now() });
@@ -27,10 +27,15 @@ export class CodingStore {
   addPlan(plan: PlanVersion, baseline: WorkspaceImage) { this.store.db.prepare('INSERT INTO plans VALUES(?,?,?,?)').run(plan.id, plan.taskId, JSON.stringify(plan), JSON.stringify(baseline)); }
   runs(taskId: string): CodingRun[] { return this.all<Omit<CodingRun, 'run'> & { runId: string }>('SELECT data FROM coding_runs WHERE taskId=? ORDER BY rowid', taskId).map(r => ({ ...r, run: this.store.run(r.runId) })); }
   putRun(taskId: string, run: CodingRun, baseline?: WorkspaceImage) { this.store.db.prepare('INSERT INTO coding_runs VALUES(?,?,?,?) ON CONFLICT(runId) DO UPDATE SET data=excluded.data,baseline=COALESCE(excluded.baseline,coding_runs.baseline)').run(run.run.id, taskId, JSON.stringify({ runId: run.run.id, mode: run.mode, planId: run.planId, model: run.model, sessionPath: run.sessionPath }), baseline ? JSON.stringify(baseline) : null); }
+  hasExecutionTools(runId: string): boolean {
+    return !!this.store.db.prepare("SELECT 1 FROM tool_calls WHERE runId=? AND json_extract(data, '$.name') IN ('write_file','edit_file','run_command') LIMIT 1").get(runId);
+  }
+  clearBaseline(runId: string) { this.store.db.prepare('UPDATE coding_runs SET baseline=NULL WHERE runId=?').run(runId); }
   baseline(taskId: string): WorkspaceImage | null { const r = this.store.db.prepare('SELECT baseline FROM coding_runs WHERE taskId=? AND baseline IS NOT NULL ORDER BY rowid DESC LIMIT 1').get(taskId) as { baseline: string } | undefined; return r ? JSON.parse(r.baseline) : null; }
   approval(planId: string): string | null { return (this.store.db.prepare('SELECT runId FROM approvals WHERE planId=?').get(planId) as { runId: string } | undefined)?.runId ?? null; }
   approve(planId: string, runId: string, details: unknown) { this.store.db.prepare('INSERT INTO approvals VALUES(?,?,?)').run(planId, runId, JSON.stringify(details)); }
   tools(taskId: string) { return this.all<ToolCall>('SELECT data FROM tool_calls WHERE taskId=? ORDER BY rowid DESC LIMIT 150', taskId).reverse(); }
+  verificationTools(runId: string) { return this.all<ToolCall>('SELECT data FROM tool_calls WHERE runId=? ORDER BY rowid', runId).filter(tool => tool.verification); }
   logs(taskId: string, offset: number): ToolCall[] { return (this.store.db.prepare('SELECT data FROM tool_calls WHERE taskId=? ORDER BY rowid DESC LIMIT 25 OFFSET ?').all(taskId, offset) as { data: string }[]).map(r => JSON.parse(r.data)); }
   putTool(tool: ToolCall) { this.store.db.prepare('INSERT INTO tool_calls VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(tool.id, tool.taskId, tool.runId, JSON.stringify(tool)); }
   steps(taskId: string) { return this.all<StepStatus[]>('SELECT data FROM task_steps WHERE taskId=?', taskId)[0] ?? []; }

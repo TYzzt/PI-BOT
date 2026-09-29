@@ -13,6 +13,10 @@ export interface FileImage { hash: string; mode: number; size: number; text?: st
 export interface WorkspaceImage { head: string; index: string; files: Record<string, FileImage>; fingerprint: string; status: string; extras: string[]; }
 export interface TextMatch { path: string; line: number; text: string; }
 export interface FileWindow { path: string; startLine: number; totalLines: number; truncated: boolean; text: string; note?: string; }
+export interface FileVersion { ino: number; mtimeMs: number; size: number; hash: string }
+export function sameStat(version: { ino: number; mtimeMs: number; size: number }, stat: { ino: number; mtimeMs: number; size: number }) {
+  return version.ino === stat.ino && version.mtimeMs === stat.mtimeMs && version.size === stat.size;
+}
 async function gitRaw(root: string, args: string[]) {
   try {
     const result = await exec('/usr/bin/git', ['--no-optional-locks', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', '-c', 'core.quotePath=false', '-c', 'diff.external=', ...args], {
@@ -111,14 +115,30 @@ export function windowProjectText(path: string, text: string, startLine = 1, max
   const note = truncated ? `文件共 ${lines.length} 行，本次从第 ${start} 行返回 ${slice.length} 行。可指定 startLine 继续阅读。` : undefined;
   return { path, startLine: start, totalLines: lines.length, truncated, text: shown, note };
 }
+async function loadStable(absolute: string) {
+  const readOnce = async () => {
+    const before = await lstat(absolute);
+    if (!before.isFile()) throw new Error('只能读取文本文件');
+    if (before.size > 128 * 1024) throw new Error('单次文件读取上限 128 KiB');
+    const buf = await readFile(absolute);
+    const after = await lstat(absolute);
+    return { before, after, buf };
+  };
+  let loaded = await readOnce();
+  if (!sameStat(loaded.before, loaded.after)) {
+    loaded = await readOnce();
+    if (!sameStat(loaded.before, loaded.after)) throw new Error('文件在读取期间发生变化，请稍后重试');
+  }
+  if (loaded.buf.includes(0)) throw new Error('不支持读取二进制内容');
+  const hash = createHash('sha256').update(loaded.buf).digest('hex');
+  const version: FileVersion = { ino: loaded.after.ino, mtimeMs: loaded.after.mtimeMs, size: loaded.after.size, hash };
+  const image: FileImage = { hash, mode: loaded.after.mode, size: loaded.after.size, kind: 'file', text: loaded.buf.toString('utf8') };
+  return { text: image.text ?? '', version, image };
+}
 export async function readProjectText(root: string, input: string) {
   const absolute = await safePath(root, input);
-  const stat = await lstat(absolute);
-  if (!stat.isFile() && !stat.isSymbolicLink()) throw new Error('只能读取文本文件');
-  if (stat.size > 128 * 1024) throw new Error('单次文件读取上限 128 KiB');
-  const text = await readFile(absolute, 'utf8');
-  if (text.includes('\0')) throw new Error('不支持读取二进制内容');
-  return { path: relative(root, absolute), absolute, text };
+  const loaded = await loadStable(absolute);
+  return { path: relative(root, absolute), absolute, text: loaded.text, version: loaded.version, image: loaded.image };
 }
 function inside(root: string, path: string) { const rel = relative(root, path); return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith('../')); }
 export async function safePath(root: string, input: string, writable = false) {

@@ -6,6 +6,7 @@ import { Store } from '../packages/service/src/store.js';
 import { Application } from '../packages/service/src/application.js';
 import { piFactory } from '../packages/service/src/pi-adapter.js';
 import { JevClient, JEV_KEY } from '../packages/service/src/browser/jev.js';
+import { actionCriteria, decisionQuestions } from '../packages/service/src/browser/task.js';
 import { MemoryCredentials, temp } from './helpers.js';
 import { browserFixture, testChrome, testSite } from './browser-helpers.js';
 
@@ -41,6 +42,7 @@ test('Jev settings: key stays in credentials, status/test/delete through the ser
     await assert.rejects(async () => app.call('jevSave', { baseUrl: 'ftp://x', model: 'jev-latest', apiKey: 'k' }));
     const saved = await app.call('jevSave', { baseUrl: jev.url, model: 'jev-latest', apiKey: 'jev-secret' });
     assert.deepEqual(saved, { configured: true, baseUrl: jev.url, model: 'jev-latest', hasKey: true });
+    assert.match(JEV_KEY, /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
     assert.equal(keys.values.get(JEV_KEY), 'jev-secret');
     assert.ok(!JSON.stringify(store.db.prepare('SELECT * FROM shared_state').all()).includes('jev-secret'));
     assert.deepEqual(await app.call('jevTest', {}), { ok: true, model: 'jev-1.13.0' });
@@ -60,8 +62,33 @@ test('JevClient: HTTP errors and malformed answers are reported without response
     const client = new JevClient({ baseUrl: jev.url + '/', model: 'jev-latest' }, 'k');
     await assert.rejects(client.ask('s', { a: { type: 'noul', instructions: 'q' } }), /key 无效/);
     status = 500; await assert.rejects(client.ask('s', { a: { type: 'noul', instructions: 'q' } }), /HTTP 500/);
+    status = 422; await assert.rejects(client.ask('s', { a: { type: 'noul', instructions: 'q' } }), /HTTP 422.*x/);
     status = 200; await assert.rejects(client.ask('s', { pick: { type: 'choice', instructions: 'q', criteria: { a: 'a' } } }), /未返回问题 pick 的选择/);
     assert.equal(jev.requests.at(-1)!.path, '/v1/systemone');
+  } finally { await jev.close(); }
+});
+
+test('Jev decision request follows the System One question shape', () => {
+  const criteria = actionCriteria({ id: 1, title: 't', url: 'https://example.test', elements: [], text: '', captcha: false, truncated: false }, []);
+  const questions = decisionQuestions(criteria);
+  assert.equal(Object.keys(criteria).length <= 255, true);
+  assert.equal(questions.action.type, 'choice');
+  assert.match(questions.action.instructions, /`goal`/);
+  assert.equal(questions.action.instructions.includes('搜索'), false);
+  assert.equal(questions.done.type, 'noul');
+  assert.equal(questions.done.type === 'noul' && !!questions.done.criteria?.true && !!questions.done.criteria.false, true);
+  assert.equal(questions.stuck.type, 'noul');
+  assert.match(questions.stuck.instructions, /`history`/);
+});
+
+test('JevClient retries a rate limit and then reads the answer', async () => {
+  let calls = 0;
+  const jev = await fakeJev(() => (++calls === 1 ? { status: 429 } : { action: 'wait' }));
+  try {
+    const client = new JevClient({ baseUrl: jev.url, model: 'jev-latest' }, 'k');
+    const result = await client.ask('The page shows a button labelled "Submit".', { check: { type: 'noul', instructions: 'Is there a submit button?' } });
+    assert.equal(calls, 2);
+    assert.equal(result.answers.check.type, 'noul');
   } finally { await jev.close(); }
 });
 

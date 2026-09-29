@@ -6,7 +6,7 @@ export type CloudChatMethod = 'cloudChatList' | 'cloudChatGet' | 'cloudChatCreat
 export const cloudChatMethods: ReadonlySet<string> = new Set<CloudChatMethod>(['cloudChatList', 'cloudChatGet', 'cloudChatCreate', 'cloudChatSend', 'cloudChatCancel', 'cloudChatHandoff', 'cloudModelList', 'cloudModelFromLocal']);
 export interface CloudChatHost { paired(): boolean; request<T>(method: string, path: string, body?: unknown): Promise<T>; }
 
-export const toConversation = (d: any): CloudChatConversation => ({ id: d.id, version: d.version, title: d.title, modelId: d.model_config_id, handoff: d.handoff ? { fromConversationId: d.handoff.from_conversation_id, messageCount: d.handoff.message_count } : null });
+export const toConversation = (d: any): CloudChatConversation => ({ id: d.id, updatedAt: d.updated_at ?? 0, version: d.version, title: d.title, modelId: d.model_config_id, handoff: d.handoff ? { fromConversationId: d.handoff.from_conversation_id, messageCount: d.handoff.message_count } : null });
 export const toMessage = (d: any): CloudChatMessage => ({ id: d.id, runId: d.run_id, role: d.role, content: d.content, status: d.status, sequence: d.sequence });
 export const toRun = (d: any): CloudChatRun => ({ id: d.id, conversationId: d.conversation_id, state: d.state, cancelRequested: !!d.cancel_requested, error: d.error ?? null });
 export const toModel = (d: any): CloudModel => ({ id: d.id, version: d.version, name: d.config.name, modelId: d.config.model_id, isDefault: !!d.config.is_default, sourceModelId: d.source_model_id ?? null });
@@ -15,12 +15,12 @@ export class CloudChat {
   constructor(private host: CloudChatHost) {}
 
   async dispatch<M extends CloudChatMethod>(method: M, input: Api[M]['input']): Promise<Api[M]['output']> {
-    if (!this.host.paired()) throw new Error('云端问答需要先在「模型设置」中配对云端');
+    if (!this.host.paired()) throw new Error('云端问答需要先在「设置」中配对云端');
     try { return await this.handle(method, input as any) as Api[M]['output']; }
     catch (e) {
       if (e instanceof CloudNetworkError) throw new Error('云端离线：无法连接服务器，请检查网络后重试');
       if (e instanceof CloudHttpError && e.status === 404 && method === 'cloudModelFromLocal') throw new Error('该模型还没有同步到云端，请等待同步完成后再试');
-      if (e instanceof CloudHttpError && e.status === 404 && method === 'cloudChatHandoff') throw new Error('原会话还没有同步到云端，请先开启共享并等待同步');
+      if (e instanceof CloudHttpError && e.status === 404 && method === 'cloudChatHandoff') throw new Error('原会话还没有同步到云端，请等待自动同步完成');
       throw e;
     }
   }
