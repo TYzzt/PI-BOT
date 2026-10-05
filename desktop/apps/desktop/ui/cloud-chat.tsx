@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import type { CloudChatConversation, CloudChatDetail, CloudModel, ModelConfig } from '../../../packages/protocol/src/index.js';
 
 const statusLabel: Record<string, string> = { queued: '排队中', running: '正在回答', completed: '已完成', cancelled: '已停止', interrupted: '运行中断', failed: '请求失败' };
@@ -44,7 +45,7 @@ export function CloudChatPage({ connected, initialId, localModels, onError, crea
       <section className="messages" aria-label="云端聊天记录">
         {!detail?.messages.length ? <div className="welcome"><div className="welcome-mark">☁</div><h2>{selected ? '向云端助手提问' : '选择或新建一个云端会话'}</h2><p>可联网搜索（服务器配置 Tavily 后），不能读取 Mac 上的项目和文件。</p></div>
           : detail.messages.map(m => <article key={m.id} className={`message ${m.role}`}><div className="message-label">{m.role === 'user' ? '你' : '云端助手'}{<span>{m.role === 'assistant' ? statusLabel[m.status] ?? m.status : m.sequence === 0 ? statusLabel[run?.state ?? 'queued'] : ''}</span>}</div>
-            <div className="message-body">{m.content ? <Markdown skipHtml components={{ a: ({ href, children }) => <a href={href} onClick={e => { e.preventDefault(); if (href) void window.agent.openExternal(href).catch(err => onError(errorText(err))); }}>{children}</a>, img: () => <span>[图片未加载]</span> }}>{m.content}</Markdown> : <span className="muted">{m.status === 'running' ? '正在思考…' : '没有生成内容'}</span>}</div>
+            <div className="message-body">{m.content ? <Markdown remarkPlugins={[remarkGfm]} skipHtml components={{ a: ({ href, children }) => <a href={href} onClick={e => { e.preventDefault(); if (href) void window.agent.openExternal(href).catch(err => onError(errorText(err))); }}>{children}</a>, img: () => <span>[图片未加载]</span> }}>{m.content}</Markdown> : <span className="muted">{m.status === 'running' ? '正在思考…' : '没有生成内容'}</span>}</div>
             {m.role === 'assistant' && run?.id === m.runId && run.error && <div className="message-error">{run.error}</div>}</article>)}
         <div ref={bottom}/>
       </section>

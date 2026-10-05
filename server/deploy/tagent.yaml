@@ -1,0 +1,307 @@
+# T-AGNET server。集群约定与 n-88 上其他服务一致：
+# ClusterIP + Traefik IngressRoute，入口 https://aicloud-app.lenovo.com.cn/tagent
+# 镜像由 GitHub Actions 在 server/ 变更时推到
+# registry.cn-beijing.aliyuncs.com/luhx/t-agent-server:latest
+# 应用前先改 Secret 里的口令和 JWT（至少 32 位），并创建私有仓库拉取密钥 liuhx-aliyun-registry。
+apiVersion: v1
+kind: Secret
+metadata:
+  name: tagent
+  namespace: n-88
+type: Opaque
+stringData:
+  POSTGRES_USER: tagent
+  POSTGRES_PASSWORD: change-me-db
+  POSTGRES_DB: tagent
+  T_AGNET_DATABASE_URL: postgresql+psycopg://tagent:change-me-db@tagent-postgres:5432/tagent
+  T_AGNET_ADMIN_PASSWORD: change-me-please
+  T_AGNET_JWT_SECRET: change-me-to-a-long-random-string
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tagent-postgres
+  namespace: n-88
+spec:
+  ports:
+  - name: postgres
+    port: 5432
+    protocol: TCP
+    targetPort: 5432
+  selector:
+    app: tagent-postgres
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tagent-postgres
+  namespace: n-88
+  labels:
+    app: tagent-postgres
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: tagent-postgres
+  template:
+    metadata:
+      labels:
+        app: tagent-postgres
+    spec:
+      containers:
+      - name: postgres
+        image: swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/postgres:16-alpine
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 5432
+          protocol: TCP
+        envFrom:
+        - secretRef:
+            name: tagent
+        readinessProbe:
+          exec:
+            command: ["pg_isready", "-U", "tagent", "-d", "tagent"]
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 6
+        resources:
+          limits:
+            cpu: "2"
+            memory: 4Gi
+          requests:
+            cpu: "500m"
+            memory: 1Gi
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+      volumes:
+      - name: data
+        hostPath:
+          path: /data/tagent-pg
+          type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tagent
+  namespace: n-88
+spec:
+  ports:
+  - name: http
+    port: 8000
+    protocol: TCP
+    targetPort: 8000
+  selector:
+    app: tagent
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tagent
+  namespace: n-88
+  labels:
+    app: tagent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tagent
+  template:
+    metadata:
+      labels:
+        app: tagent
+    spec:
+      imagePullSecrets:
+      - name: liuhx-aliyun-registry
+      initContainers:
+      - name: wait-postgres
+        image: registry.cn-beijing.aliyuncs.com/luhx/t-agent-server:latest
+        imagePullPolicy: Always
+        command:
+        - python3
+        - -c
+        - |
+          import socket, time
+          for _ in range(60):
+              try:
+                  socket.create_connection(("tagent-postgres", 5432), 2).close()
+                  raise SystemExit(0)
+              except OSError:
+                  time.sleep(2)
+          raise SystemExit("postgres not ready")
+        resources:
+          limits:
+            cpu: "500m"
+            memory: 512Mi
+          requests:
+            cpu: "100m"
+            memory: 128Mi
+      containers:
+      - name: tagent
+        image: registry.cn-beijing.aliyuncs.com/luhx/t-agent-server:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8000
+          protocol: TCP
+        envFrom:
+        - secretRef:
+            name: tagent
+        # 启用模型密钥同步时取消注释，并创建 Secret tagent-vault（键 vault.json）。
+        # env:
+        # - name: T_AGNET_SYNC_KEY_FILE
+        #   value: /run/secrets/sync-vault.json
+        # - name: T_AGNET_TAVILY_API_KEY
+        #   valueFrom:
+        #     secretKeyRef:
+        #       name: tagent
+        #       key: T_AGNET_TAVILY_API_KEY
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /health
+            port: 8000
+            scheme: HTTP
+          initialDelaySeconds: 20
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 3
+        livenessProbe:
+          failureThreshold: 6
+          httpGet:
+            path: /health
+            port: 8000
+            scheme: HTTP
+          initialDelaySeconds: 40
+          periodSeconds: 20
+          timeoutSeconds: 3
+        resources:
+          limits:
+            cpu: "2"
+            memory: 2Gi
+          requests:
+            cpu: "500m"
+            memory: 512Mi
+        # volumeMounts:
+        # - name: vault
+        #   mountPath: /run/secrets
+        #   readOnly: true
+      # volumes:
+      # - name: vault
+      #   secret:
+      #     secretName: tagent-vault
+      #     items:
+      #     - key: vault.json
+      #       path: sync-vault.json
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tagent-worker
+  namespace: n-88
+  labels:
+    app: tagent-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tagent-worker
+  template:
+    metadata:
+      labels:
+        app: tagent-worker
+    spec:
+      imagePullSecrets:
+      - name: liuhx-aliyun-registry
+      initContainers:
+      - name: wait-api
+        image: registry.cn-beijing.aliyuncs.com/luhx/t-agent-server:latest
+        imagePullPolicy: Always
+        command:
+        - python3
+        - -c
+        - |
+          import time, urllib.request
+          for _ in range(90):
+              try:
+                  urllib.request.urlopen("http://tagent:8000/health", timeout=2)
+                  raise SystemExit(0)
+              except Exception:
+                  time.sleep(2)
+          raise SystemExit("api not ready")
+        resources:
+          limits:
+            cpu: "500m"
+            memory: 512Mi
+          requests:
+            cpu: "100m"
+            memory: 128Mi
+      containers:
+      - name: tagent-worker
+        image: registry.cn-beijing.aliyuncs.com/luhx/t-agent-server:latest
+        imagePullPolicy: Always
+        command: ["uv", "run", "--no-dev", "python", "-m", "tagent_server.worker"]
+        envFrom:
+        - secretRef:
+            name: tagent
+        # env:
+        # - name: T_AGNET_SYNC_KEY_FILE
+        #   value: /run/secrets/sync-vault.json
+        # - name: T_AGNET_TAVILY_API_KEY
+        #   valueFrom:
+        #     secretKeyRef:
+        #       name: tagent
+        #       key: T_AGNET_TAVILY_API_KEY
+        resources:
+          limits:
+            cpu: "2"
+            memory: 4Gi
+          requests:
+            cpu: "500m"
+            memory: 1Gi
+        # volumeMounts:
+        # - name: vault
+        #   mountPath: /run/secrets
+        #   readOnly: true
+      # volumes:
+      # - name: vault
+      #   secret:
+      #     secretName: tagent-vault
+      #     items:
+      #     - key: vault.json
+      #       path: sync-vault.json
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: tagent-strip-prefix
+  namespace: n-88
+spec:
+  stripPrefix:
+    prefixes:
+    - /tagent
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  annotations:
+    kubernetes.io/ingress.class: traefik-internet
+  name: tagent-https
+  namespace: n-88
+spec:
+  entryPoints:
+  - https
+  routes:
+  - kind: Rule
+    match: Host(`aicloud-app.lenovo.com.cn`) && PathPrefix(`/tagent`)
+    middlewares:
+    - name: tagent-strip-prefix
+    services:
+    - kind: Service
+      name: tagent
+      namespace: n-88
+      port: 8000
