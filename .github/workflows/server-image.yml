@@ -1,5 +1,5 @@
 # 仅 server/ 变更时构建并推到阿里云个人版镜像仓库。
-# 仓库：registry.cn-beijing.aliyuncs.com/luhx/t-agent-server
+# 仓库：registry.cn-beijing.aliyuncs.com/liuhx/t-agent-server
 # 在 GitHub 仓库 Settings → Secrets 中配置：
 #   ALIYUN_REGISTRY_USER      控制台登录用户名
 #   ALIYUN_REGISTRY_PASSWORD  访问凭证里的固定密码（不是登录密码）
@@ -36,5 +36,5 @@ jobs:
           provenance: false
           sbom: false
           tags: |
-            registry.cn-beijing.aliyuncs.com/luhx/t-agent-server:latest
-            registry.cn-beijing.aliyuncs.com/luhx/t-agent-server:${{ github.sha }}
+            registry.cn-beijing.aliyuncs.com/liuhx/t-agent-server:latest
+            registry.cn-beijing.aliyuncs.com/liuhx/t-agent-server:${{ github.sha }}
