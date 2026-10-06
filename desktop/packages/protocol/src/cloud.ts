@@ -31,7 +31,13 @@ export interface CloudApi {
   cloudModelFromLocal: { input: { modelId: string; requestId: string }; output: CloudModel };
 }
 const id = z.string().uuid();
-export const cloudServerUrl = z.string().url().refine(v => { const u = new URL(v); return (u.protocol === 'https:' || (u.protocol === 'http:' && ['localhost','127.0.0.1','[::1]'].includes(u.hostname))) && !u.username && !u.password && !u.search && !u.hash && ['', '/'].includes(u.pathname); }, '服务器地址需使用 HTTP(S)，只填写协议、主机和端口');
+export const cloudServerUrl = z.string().url().refine(v => {
+  const u = new URL(v);
+  const local = ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname);
+  const okProtocol = u.protocol === 'https:' || (u.protocol === 'http:' && local);
+  const segments = u.pathname.split('/').filter(Boolean);
+  return okProtocol && !u.username && !u.password && !u.search && !u.hash && segments.every(part => part !== '.' && part !== '..');
+}, '服务器地址需使用 HTTP(S)，可在主机后填写路径，不要带查询参数');
 export const cloudSchemas = {
   sharedStatus: z.object({}).strict(),
   sharedConversation: z.object({ ids: z.array(id).min(1).max(500), shared: z.boolean() }).strict(),

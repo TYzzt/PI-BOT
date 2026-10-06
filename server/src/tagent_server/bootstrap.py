@@ -6,15 +6,20 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from tagent_server.models import User
-from tagent_server.security import hash_password
+from tagent_server.security import hash_password, verify_password
 
 logger = logging.getLogger(__name__)
 
 
 def bootstrap_admin(session: Session, password: str) -> None:
-    existing = session.scalar(select(User.user_id))
+    existing = session.scalar(select(User))
     if existing is not None:
-        logger.info("admin user exists")
+        if verify_password(existing.password_hash, password):
+            logger.info("admin user exists")
+            return
+        existing.password_hash = hash_password(password)
+        session.commit()
+        logger.info("admin password updated")
         return
     session.add(User(user_id=uuid.uuid4(), password_hash=hash_password(password), singleton=True))
     try:

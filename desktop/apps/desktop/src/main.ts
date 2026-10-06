@@ -1,4 +1,6 @@
 import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron';
+import { execFileSync } from 'node:child_process';
+import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { dataDir } from '../../../packages/service/src/paths.js';
@@ -12,12 +14,22 @@ let window: BrowserWindow | null = null;
 const page = pathToFileURL(join(__dirname, '../ui-dist/index.html')).href;
 const client = new ServiceClient(event => window?.webContents.send('agent:event', event));
 function validSender(event: Electron.IpcMainInvokeEvent) { if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame || event.senderFrame.url !== page) throw new Error('不受信任的 IPC 来源'); }
+const CLOUD_SERVER_URL = 'https://aicloud-app.lenovo.com.cn/tagent';
+function computerName() {
+  try {
+    const name = execFileSync('scutil', ['--get', 'ComputerName'], { encoding: 'utf8', timeout: 2000 }).trim();
+    if (name) return name.slice(0, 80);
+  } catch { /* 取不到电脑名称时用主机名。 */ }
+  return (hostname().replace(/\.local$/, '') || 'Mac').slice(0, 80);
+}
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.setName('T-AGNET');
   app.on('second-instance', () => { window?.show(); window?.focus(); });
   app.whenReady().then(() => {
     ipcMain.handle('agent:chooseProjectDirectory', async event => { validSender(event); const result = await dialog.showOpenDialog(window!, { title: '选择 Git 项目目录', properties: ['openDirectory'] }); return result.canceled ? null : result.filePaths[0] ?? null; });
+    ipcMain.handle('agent:computerName', event => { validSender(event); return computerName(); });
+    ipcMain.handle('agent:cloudServerUrl', event => { validSender(event); return process.env.T_AGNET_SHARED_URL || CLOUD_SERVER_URL; });
     ipcMain.handle('agent:call', async (event, method: Method, input: unknown) => { validSender(event); return client.call(method, parseInput(method, input)); });
     ipcMain.handle('agent:openExternal', async (event, url: string) => { validSender(event); const parsed = new URL(url); if (!['https:', 'http:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error('不支持此链接'); await shell.openExternal(parsed.href); });
     const createWindow = () => {

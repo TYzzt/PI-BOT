@@ -31,7 +31,7 @@ export class CloudSocket {
   stop() { this.stopped = true; clearTimeout(this.retry); clearInterval(this.ping); const socket = this.socket; this.socket = null; this.connected = false; socket?.removeAllListeners(); socket?.on('error', () => {}); socket?.terminate(); }
   reconnectNow() { if (this.stopped || this.connected) return; clearTimeout(this.retry); this.open(); }
   private open() {
-    const url = new URL('/ws/device', this.serverUrl); url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    const url = new URL(`${this.serverUrl.replace(/\/$/, '')}/ws/device`); url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
     const socket = new WebSocket(url, { headers: this.sign('GET', '/ws/device', Buffer.alloc(0)), handshakeTimeout: TIMEOUT_MS, maxPayload: 1_000_000, followRedirects: false });
     this.socket = socket; let authFailed = false;
     socket.on('open', () => {

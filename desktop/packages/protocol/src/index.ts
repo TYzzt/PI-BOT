@@ -52,4 +52,4 @@ export function parseInput<M extends Method>(method: M, input: unknown): Api[M][
   if (!result.success) throw new Error(result.error.issues.map(i => i.message).join('；'));
   return result.data as Api[M]['input'];
 }
-export interface DesktopBridge { chooseProjectDirectory(): Promise<string | null>; call<M extends Method>(method: M, input: Api[M]['input']): Promise<Api[M]['output']>; subscribe(listener: (event: AppEvent) => void): () => void; openExternal(url: string): Promise<void>; }
+export interface DesktopBridge { chooseProjectDirectory(): Promise<string | null>; computerName(): Promise<string>; cloudServerUrl(): Promise<string>; call<M extends Method>(method: M, input: Api[M]['input']): Promise<Api[M]['output']>; subscribe(listener: (event: AppEvent) => void): () => void; openExternal(url: string): Promise<void>; }

@@ -76,7 +76,8 @@ export class CloudSync implements CodingObserver {
 
   private async pair(input: { serverUrl: string; label: string; password: string }) {
     if (this.db.link()) throw new Error('已配对云端，请先解除配对');
-    const serverUrl = new URL(input.serverUrl).origin;
+    const parsed = new URL(input.serverUrl);
+    const serverUrl = parsed.origin + parsed.pathname.replace(/\/+$/, '');
     // The admin password and JWT exist only in this call frame; neither is stored, logged or returned.
     const login = await cloudFetch<{ access_token: string }>(serverUrl, 'POST', '/auth/login', { body: { password: input.password } }).catch(e => { throw pairingError(e, '管理员密码错误'); });
     const code = await cloudFetch<{ pairing_code: string }>(serverUrl, 'POST', '/devices/pairing-codes', { headers: { authorization: `Bearer ${login.access_token}` } }).catch(e => { throw pairingError(e, '无法生成配对码'); });

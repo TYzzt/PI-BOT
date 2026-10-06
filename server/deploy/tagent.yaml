@@ -14,7 +14,7 @@ stringData:
   POSTGRES_PASSWORD: change-me-db
   POSTGRES_DB: tagent
   T_AGNET_DATABASE_URL: postgresql+psycopg://tagent:change-me-db@tagent-postgres:5432/tagent
-  T_AGNET_ADMIN_PASSWORD: change-me-please
+  T_AGNET_ADMIN_PASSWORD: "Liuhx@69213535"
   T_AGNET_JWT_SECRET: change-me-to-a-long-random-string
 ---
 apiVersion: v1
@@ -51,6 +51,7 @@ spec:
       labels:
         app: tagent-postgres
     spec:
+      nodeName: heto4-ai06
       containers:
       - name: postgres
         image: swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/postgres:16-alpine
@@ -81,7 +82,7 @@ spec:
       volumes:
       - name: data
         hostPath:
-          path: /data/tagent-pg
+          path: /data/pgsql
           type: DirectoryOrCreate
 ---
 apiVersion: v1
@@ -116,6 +117,7 @@ spec:
       labels:
         app: tagent
     spec:
+      nodeName: heto4-ai06
       imagePullSecrets:
       - name: liuhx-aliyun-registry
       initContainers:
@@ -215,6 +217,7 @@ spec:
       labels:
         app: tagent-worker
     spec:
+      nodeName: heto4-ai06
       imagePullSecrets:
       - name: liuhx-aliyun-registry
       initContainers:

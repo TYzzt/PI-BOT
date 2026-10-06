@@ -5,7 +5,7 @@ import remarkGfm from 'remark-gfm';
 import type { DesktopBridge, Snapshot, ConversationDetail, ModelConfig, ModelInput, Project, CloudChatConversation } from '../../../packages/protocol/src/index.js';
 import './style.css';
 import { ProjectChatStart, Programming } from './coding.js';
-import { CloudPanel, SharedPanel, useCloudStatus } from './cloud.js';
+import { CloudLogin, CloudPanel, SharedPanel, useCloudStatus } from './cloud.js';
 import { CloudChatPage } from './cloud-chat.js';
 import { ConfigsPage } from './configs.js';
 import { BrowserPanel } from './browser.js';
@@ -91,6 +91,10 @@ function App() {
   }
   const blocked = !!snapshot.activeRun || snapshot.testing;
   const currentModel = snapshot.models.find(m => m.id === detail?.conversation.modelConfigId);
+  if (connected && !cloud.status?.paired) {
+    if (!cloud.status) return <div className="login-screen"><p className="muted">正在确认云端状态…</p></div>;
+    return <CloudLogin connected={connected} error={error} onError={setError}/>;
+  }
   return <div className="layout">
     <Sidebar projects={projects} conversations={snapshot.conversations} cloudConversations={cloudConversations}
       page={page} selected={page === 'chat' && selected ? { source: 'local', id: selected } : page === 'cloud' && cloudTarget ? { source: 'cloud', id: cloudTarget } : null}

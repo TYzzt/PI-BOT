@@ -69,7 +69,7 @@ test('an unpaired service never touches the network for cloud features and keeps
     assert.deepEqual(await app.call('cloudStatus', {}), { paired: false, serverUrl: null, deviceId: null, label: null, connected: false, lastSyncAt: null, pending: 0, queued: 0, failed: 0, failures: [], projects: [] });
     await assert.rejects(app.call('cloudProjectShare', { projectId: project.id, enabled: true }), /尚未配对/);
     await assert.rejects(app.call('cloudApprove', { taskId: task.id, planId: detail.plans[0].id, requestId: randomUUID() }), /不是云端任务/);
-    await assert.rejects(async () => app.call('cloudPair', { serverUrl: 'https://example.com/prefix', label: 'Mac', password: 'x' }), /只填写协议、主机和端口/);
+    await assert.rejects(async () => app.call('cloudPair', { serverUrl: 'https://example.com/tagent?x=1', label: 'Mac', password: 'x' }), /不要带查询参数/);
     assert.equal((store.db.prepare('SELECT count(*) AS n FROM cloud_outbox').get() as any).n, 0);
     assert.deepEqual(calls.filter(url => !url.startsWith(models.url)), []); assert.equal(deviceKeys.values.size, 0);
   } finally { globalThis.fetch = original; await app.shutdown(); store.close(); await models.close(); dir.cleanup(); }
