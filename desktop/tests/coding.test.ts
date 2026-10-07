@@ -28,10 +28,17 @@ test('Pi coding: read-only plan, revision, approval, tools, dirty baseline and r
     await assert.rejects(app.call('codingApprove', { taskId: task.id, planId: first.id, hash: first.hash, requestId: randomUUID() }), /不可批准/);
     const plan = detail.plans.at(-1)!; const approve = { taskId: task.id, planId: plan.id, hash: plan.hash, requestId: randomUUID() };
     const run = await app.call('codingApprove', approve); assert.ok(run); assert.equal((await app.call('codingApprove', approve))?.id, run.id);
+    const executionStartedAt = app.coding.db.runs(task.id).find(r => r.run.id === run.id)!.startedAt;
+    assert.ok(executionStartedAt); assert.equal(app.coding.db.runs(task.id).find(r => r.run.id === run.id)!.endedAt, null);
     assert.equal((await wait(task.id)).state, 'completed', app.coding.db.task(task.id).message);
     assert.equal((await app.call('codingApprove', { ...approve, requestId: randomUUID() }))?.id, run.id);
     assert.match(readFileSync(join(root, 'main.mjs'), 'utf8'), /a \+ b/); assert.equal(readFileSync(join(root, 'notes.txt'), 'utf8'), 'user uncommitted notes\n');
     detail = await app.call('codingGet', { conversationId: task.conversationId }); assert.equal(detail.verification, 'passed'); assert.equal(detail.steps[0].state, 'completed'); assert.ok(detail.runs.every(r => r.sessionPath)); assert.equal(new Set(detail.runs.map(r => r.sessionPath)).size, detail.runs.length);
+    const execution = detail.runs.find(r => r.run.id === run.id)!;
+    assert.equal(execution.startedAt, executionStartedAt, 'Session updates preserve the original start time');
+    assert.ok(execution.endedAt! >= execution.startedAt!);
+    app.coding.db.finishRun(run.id);
+    assert.equal(app.coding.db.runs(task.id).find(r => r.run.id === run.id)!.endedAt, execution.endedAt, 'Repeated finalization cannot extend execution time');
     const changes = await app.call('codingChanges', { taskId: task.id, view: 'baseline', path: 'main.mjs' }); assert.deepEqual(changes.files.map(f => f.path), ['main.mjs']); assert.match(changes.diff, /\+.*a \+ b/);
     const events = await app.call('codingEvents', { taskId: task.id, after: 0 }); assert.ok(events.length); assert.ok(events.every((e, i) => !i || e.seq! > events[i - 1].seq!));
     for (const req of api.requests.filter(r => r.tools?.some((t: any) => t.function.name === 'update_plan'))) assert.ok(!req.tools.some((t: any) => ['run_command', 'write_file', 'edit_file', 'bash'].includes(t.function.name)));

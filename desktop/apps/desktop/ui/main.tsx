@@ -1,3 +1,4 @@
+import { createRefreshScheduler } from './refresh.js';
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import Markdown from 'react-markdown';
@@ -38,13 +39,14 @@ function App() {
   const refresh = async () => { const [s, p] = await Promise.all([window.agent.call('snapshot', {}), window.agent.call('projectList', {})]); setSnapshot(s); setProjects(p); setConnected(true); if (selectedRef.current) { if (s.conversations.some(c => c.id === selectedRef.current)) await fetchDetail(selectedRef.current); else { selectedRef.current = null; setSelected(null); setDetail(null); } } };
   useEffect(() => {
     let alive = true;
-    const load = () => { void refresh().catch(() => { if (alive) setConnected(false); }); };
-    load(); const poll = setInterval(load, 2000);
+    const scheduler = createRefreshScheduler(refresh, () => { if (alive) setConnected(false); });
+    const load = () => scheduler.request();
+    scheduler.request(true); const poll = setInterval(() => scheduler.request(true), 2000);
     const off = window.agent.subscribe(event => {
       if (event.type === 'service.status') { setConnected(!!event.connected); if (event.connected) load(); return; }
       if (event.type === 'message.delta' && event.message_id) { deltas.current.set(event.message_id, event.content ?? ''); if (event.conversation_id === selectedRef.current) setDetail(d => d ? { ...d, messages: d.messages.map(m => m.id === event.message_id ? { ...m, content: event.content ?? '' } : m) } : d); }
       else { if (event.type === 'message.finalized' && event.message_id) deltas.current.delete(event.message_id); load(); }
-    }); return () => { alive = false; clearInterval(poll); off(); };
+    }); return () => { alive = false; scheduler.stop(); clearInterval(poll); off(); };
   }, []);
   useEffect(() => { if (!selected || preserveDraftFor.current !== selected) { setDraft(''); requestRef.current = null; } preserveDraftFor.current = null; setDetail(null); if (selected) void fetchDetail(selected).catch(e => setError(errorText(e))); }, [selected]);
   useEffect(() => { bottom.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }); }, [detail?.messages.map(m => m.content).join('')]);

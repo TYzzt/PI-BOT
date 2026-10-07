@@ -9,6 +9,7 @@ export class CodingStore {
       this.event(task.id, { type: 'coding.changed', task_id: task.id, conversation_id: task.conversationId, project_id: task.projectId, run_id: task.activeRunId ?? undefined });
     }
     for (const tool of this.all<ToolCall>('SELECT data FROM tool_calls')) if (tool.state === 'running') this.putTool({ ...tool, state: 'interrupted', endedAt: Date.now() });
+    for (const task of this.tasks()) for (const run of this.runs(task.id)) if (run.startedAt !== undefined && run.endedAt == null && !['running', 'cancelling'].includes(run.run.state)) this.finishRun(run.run.id);
     for (const task of this.tasks()) { const steps = this.steps(task.id); if (steps.some(s => s.state === 'running')) this.putSteps(task.id, steps.map(s => s.state === 'running' ? { ...s, state: 'failed', note: '执行中断' } : s)); }
   }
   private all<T>(sql: string, ...params: string[]): T[] { return (this.store.db.prepare(sql).all(...params) as { data: string }[]).map(r => JSON.parse(r.data)); }
@@ -26,7 +27,11 @@ export class CodingStore {
   planBaseline(id: string): WorkspaceImage { const r = this.store.db.prepare('SELECT baseline FROM plans WHERE id=?').get(id) as { baseline: string }; return JSON.parse(r.baseline); }
   addPlan(plan: PlanVersion, baseline: WorkspaceImage) { this.store.db.prepare('INSERT INTO plans VALUES(?,?,?,?)').run(plan.id, plan.taskId, JSON.stringify(plan), JSON.stringify(baseline)); }
   runs(taskId: string): CodingRun[] { return this.all<Omit<CodingRun, 'run'> & { runId: string }>('SELECT data FROM coding_runs WHERE taskId=? ORDER BY rowid', taskId).map(r => ({ ...r, run: this.store.run(r.runId) })); }
-  putRun(taskId: string, run: CodingRun, baseline?: WorkspaceImage) { this.store.db.prepare('INSERT INTO coding_runs VALUES(?,?,?,?) ON CONFLICT(runId) DO UPDATE SET data=excluded.data,baseline=COALESCE(excluded.baseline,coding_runs.baseline)').run(run.run.id, taskId, JSON.stringify({ runId: run.run.id, mode: run.mode, planId: run.planId, model: run.model, sessionPath: run.sessionPath }), baseline ? JSON.stringify(baseline) : null); }
+  putRun(taskId: string, run: CodingRun, baseline?: WorkspaceImage) {
+    const previous = this.all<{ startedAt?: number; endedAt?: number | null }>('SELECT data FROM coding_runs WHERE runId=?', run.run.id)[0];
+    this.store.db.prepare('INSERT INTO coding_runs VALUES(?,?,?,?) ON CONFLICT(runId) DO UPDATE SET data=excluded.data,baseline=COALESCE(excluded.baseline,coding_runs.baseline)').run(run.run.id, taskId, JSON.stringify({ runId: run.run.id, mode: run.mode, planId: run.planId, model: run.model, sessionPath: run.sessionPath, startedAt: previous?.startedAt ?? run.startedAt ?? Date.now(), endedAt: previous?.endedAt ?? run.endedAt ?? null }), baseline ? JSON.stringify(baseline) : null);
+  }
+  finishRun(runId: string) { this.store.db.prepare("UPDATE coding_runs SET data=json_set(data,'$.endedAt',?) WHERE runId=? AND json_extract(data,'$.endedAt') IS NULL").run(Date.now(), runId); }
   hasExecutionTools(runId: string): boolean {
     return !!this.store.db.prepare("SELECT 1 FROM tool_calls WHERE runId=? AND json_extract(data, '$.name') IN ('write_file','edit_file','run_command') LIMIT 1").get(runId);
   }

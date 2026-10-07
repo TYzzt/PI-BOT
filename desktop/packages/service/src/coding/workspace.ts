@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { realpath, lstat, readFile, readlink } from 'node:fs/promises';
 import { resolve, relative, isAbsolute, dirname, join } from 'node:path';
-import { createTwoFilesPatch } from 'diff';
+import { structuredPatch, formatPatch, type StructuredPatch } from 'diff';
 import type { Changes } from '../../../protocol/src/index.js';
 const exec = promisify(execFile);
 const gitFailure = 'Git 查询失败：请确认项目目录可用且 Git 索引未损坏';
@@ -200,14 +200,22 @@ export async function capture(root: string, extras: string[] = []): Promise<Work
 export function changedPaths(a: WorkspaceImage, b: WorkspaceImage) {
   return [...new Set([...Object.keys(a.files), ...Object.keys(b.files)])].filter(p => a.files[p]?.hash !== b.files[p]?.hash || a.files[p]?.mode !== b.files[p]?.mode).sort();
 }
-export function baselineChanges(before: WorkspaceImage, after: WorkspaceImage, selected?: string): Changes {
-  const files = changedPaths(before, after).map(path => ({ path, kind: !before.files[path] ? 'added' as const : !after.files[path] ? 'deleted' as const : 'modified' as const, preview: (!before.files[path] || before.files[path].text !== undefined) && (!after.files[path] || after.files[path].text !== undefined) }));
-  let diff = ''; const item = files.find(f => f.path === selected);
-  if (item) {
-    if (!item.preview) diff = '二进制、过大文件或快照文本预算已用尽；未完整预览。';
-    else diff = createTwoFilesPatch(`before/${item.path}`, `after/${item.path}`, before.files[item.path]?.text ?? '', after.files[item.path]?.text ?? '', '', '', { context: 3 }).slice(0, 250000);
+export async function baselineChanges(before: WorkspaceImage, after: WorkspaceImage, selected?: string): Promise<Changes> {
+  let diff = '';
+  const files: Changes['files'] = [];
+  for (const path of changedPaths(before, after)) {
+    const kind = !before.files[path] ? 'added' as const : !after.files[path] ? 'deleted' as const : 'modified' as const;
+    const preview = (!before.files[path] || before.files[path].text !== undefined) && (!after.files[path] || after.files[path].text !== undefined);
+    if (!preview) { if (path === selected) diff = '二进制、过大文件或快照文本预算已用尽；未完整预览。'; files.push({ path, kind, preview }); continue; }
+    // Yield between diff iterations so review refreshes cannot block execution or IPC.
+    const patch = await new Promise<StructuredPatch | undefined>(resolve => structuredPatch(`before/${path}`, `after/${path}`, before.files[path]?.text ?? '', after.files[path]?.text ?? '', '', '', { context: 3, timeout: 200, maxEditLength: 4000, callback: resolve }));
+    if (!patch) { if (path === selected) diff = '差异过于复杂，当前仅提供文件元信息。'; files.push({ path, kind, preview: false }); continue; }
+    let additions = 0, deletions = 0;
+    for (const hunk of patch.hunks) for (const line of hunk.lines) { if (line.startsWith('+')) additions++; else if (line.startsWith('-')) deletions++; }
+    if (path === selected) diff = formatPatch(patch).slice(0, 250000);
+    files.push({ path, kind, preview, additions, deletions });
   }
-  return { files, diff, warning: '相对执行前基线的当前差异；可能包含执行期间的外部编辑，不能全部归因于智能体。大文件仅保留指纹，预览最多 250000 字符。' };
+  return { files, diff, warning: '相对执行前基线的当前差异；可能包含执行期间的外部编辑，不能全部归因于智能体。大文件及复杂差异仅提供元信息，预览最多 250000 字符。' };
 }
 export async function workspaceChanges(root: string, selected?: string): Promise<Changes> {
   await projectStatus(root);
@@ -230,7 +238,7 @@ export async function workspaceChanges(root: string, selected?: string): Promise
     if (size <= Math.min(budget, 128 * 1024)) { const body = await git(root, ['cat-file', 'blob', entry.oid]); if (!body.includes('\0')) { text = body; budget -= size; } }
     base.files[name] = { hash: text !== undefined ? createHash('sha256').update(text).digest('hex') : `git:${entry.oid}`, text, size, mode: parseInt(entry.mode, 8), kind: entry.mode === '120000' ? 'symlink' : 'file' };
   }
-  const changes = baselineChanges(base, current, selected);
+  const changes = await baselineChanges(base, current, selected);
   changes.warning = '整个工作区相对 HEAD 的差异，包含你原有的修改；暂存区和未暂存状态见项目页。' + (head === 'unborn' ? '当前尚无首个 commit。' : '');
   return changes;
 }

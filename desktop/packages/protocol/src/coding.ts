@@ -38,14 +38,15 @@ export function formatQuestionAnswers(questions: PlanQuestion[], picks: Record<s
   }).join('\n');
 }
 export interface PlanVersion { id: string; taskId: string; version: number; hash: string; body: PlanBody; fingerprint: string; configHash: string; createdAt: number; }
-export interface CodingTask { shared?: boolean; intent?: 'read' | 'code' | 'agent'; readReturnState?: TaskState; id: string; conversationId: string; projectId: string; requirement: string; planModelId: string; executeModelId: string; state: TaskState; latestPlanId: string | null; activeRunId: string | null; message: string; createdAt: number; }
-export interface CodingRun { run: Run; mode: 'read' | 'plan' | 'execute' | 'agent'; planId: string | null; model: ModelConfig; sessionPath: string | null; }
+export interface PendingInput { id: string; runId: string; mode: 'plan' | 'execute' | 'agent'; questions: PlanQuestion[] }
+export interface CodingTask { shared?: boolean; intent?: 'read' | 'code' | 'agent'; readReturnState?: TaskState; pendingInput?: PendingInput; id: string; conversationId: string; projectId: string; requirement: string; planModelId: string; executeModelId: string; state: TaskState; latestPlanId: string | null; activeRunId: string | null; message: string; createdAt: number; }
+export interface CodingRun { run: Run; mode: 'read' | 'plan' | 'execute' | 'agent'; planId: string | null; model: ModelConfig; sessionPath: string | null; startedAt?: number; endedAt?: number | null; }
 export interface ToolOutputRef { callId: string; omittedChars: number; headChars: number; tailChars: number }
 export interface ToolStats { queueMs: number; execMs: number; duplicateHits?: number }
 export interface ToolCall { id: string; taskId: string; runId: string; name: string; input: string; output: string; state: 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted'; startedAt: number; endedAt: number | null; exitCode: number | null; verification: boolean; truncated: boolean; cwd: string; path: string; outputRef?: ToolOutputRef; stats?: ToolStats; }
 export interface StepStatus { stepId: string; state: 'pending' | 'running' | 'completed' | 'failed'; note: string; }
 export interface CodingDetail { messages: Message[]; summary: string; task: CodingTask; project: Project; plans: PlanVersion[]; runs: CodingRun[]; steps: StepStatus[]; tools: ToolCall[]; lastSeq: number; verification: 'passed' | 'failed' | 'not_run' | 'cancelled'; cloud?: CloudTaskInfo; }
-export interface FileChange { path: string; kind: 'added' | 'modified' | 'deleted'; preview: boolean; }
+export interface FileChange { path: string; kind: 'added' | 'modified' | 'deleted'; preview: boolean; additions?: number; deletions?: number; }
 export interface Changes { files: FileChange[]; diff: string; warning: string; }
 export interface CodingApi {
   projectList: { input: Record<string, never>; output: Project[] };

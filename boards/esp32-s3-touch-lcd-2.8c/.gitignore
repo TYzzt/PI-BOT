@@ -1,0 +1,8 @@
+downloads/
+tools/
+backups/
+vendor/
+build/
+*.log
+__pycache__/
+*.pyc

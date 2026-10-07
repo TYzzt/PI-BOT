@@ -4,7 +4,7 @@ import { writeFile, mkdir, readdir, lstat, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { planBodySchema, type PlanBody, type StepStatus, type ToolCall } from '../../../protocol/src/index.js';
+import { planBodySchema, type PlanBody, type PlanQuestion, type StepStatus, type ToolCall } from '../../../protocol/src/index.js';
 import { safePath, fileImage, projectStatus, searchProject, findProjectFiles, readProjectText, windowProjectText, sameStat, digest, type FileImage } from './workspace.js';
 import { command, commandPath } from './command.js';
 import type { CodingStore } from './store.js';
@@ -22,7 +22,8 @@ const planSchema = Type.Object({ goal: Type.String(), scope: strings(), nonGoals
 export interface ToolContext {
   taskId: string; runId: string; root: string; mode: 'read' | 'plan' | 'execute' | 'agent'; store: CodingStore; key: string;
   cancelled: () => boolean; signal: AbortSignal; notify: (toolId?: string) => void; onTool?: (tool: ToolCall) => void; onStep?: (step: StepStatus) => void;
-  plan?: PlanBody; pause?: 'needs_replan' | 'waiting_for_local_action'; pauseReason?: string;
+  plan?: PlanBody; pause?: 'needs_replan' | 'waiting_for_local_action' | 'awaiting_input'; pauseReason?: string;
+  onQuestions?: (questions: PlanQuestion[]) => void;
   readImages: Map<string, FileImage>; calls: number;
   browser?: BrowserSession; jev?: boolean;
   dataDir?: string; queue?: RunQueue; reads?: ReadCache; duplicates?: DuplicateTracker; verifications?: VerificationMemory; outputs?: ToolOutputStore; performance?: PerformanceLog;
@@ -157,6 +158,15 @@ export function codingTools(ctx: ToolContext): ToolDefinition[] {
     tool('request_replan', '范围扩大或需要额外外部动作时调用，立即封闭执行工具并生成待重新审阅的计划版本。', Type.Object({ reason: Type.String(), plan: planSchema }), async p => { ctx.plan = planBodySchema.parse(JSON.parse(redact(JSON.stringify(p.plan)))); ctx.pause = 'needs_replan'; ctx.pauseReason = p.reason.slice(0, 2000); return '已暂停，等待重新规划及用户批准'; }),
     tool('request_local_action', '需要用户在本机进行登录或其他交互时暂停，不能索取密码。', Type.Object({ reason: Type.String() }), async p => { ctx.pause = 'waiting_for_local_action'; ctx.pauseReason = p.reason.slice(0, 2000); return ctx.mode === 'agent' ? '已暂停，用户处理后可继续对话' : '已暂停，用户处理后需要重新规划'; }),
   );
+  if (ctx.mode !== 'read' && ctx.onQuestions) tools.push(tool('request_user_input', '发现会影响方案或执行的疑问时立即提问并暂停，不要等到最终回复或完整计划。每次 1 到 3 个问题，优先提供 2 到 5 个选项；首项可标注推荐，但不代表用户已选择。回答后再继续。', Type.Object({ questions: Type.Array(Type.Union([Type.String(), planQuestion]), { minItems: 1, maxItems: 3 }) }), async p => {
+    const questions = planBodySchema.shape.questions.parse(JSON.parse(redact(JSON.stringify(p.questions))));
+    if (questions.length < 1 || questions.length > 3) throw new Error('每次需要 1 到 3 个问题');
+    const ids = questions.filter(q => typeof q !== 'string').map(q => q.id);
+    if (new Set(ids).size !== ids.length) throw new Error('问题 id 必须唯一');
+    ctx.pause = 'awaiting_input'; ctx.pauseReason = '需要你补充信息，回答后继续';
+    ctx.onQuestions!(questions);
+    return '问题已展示，已暂停全部工具。不要继续分析或执行，也不要重复问题内容。';
+  }));
   if ((ctx.mode === 'execute' || ctx.mode === 'agent') && ctx.browser) tools.push(...browserTools(ctx.browser));
   return ctx.mode === 'agent' ? tools.filter(t => t.name !== 'update_step') : tools;
   function browserTools(browser: BrowserSession) {
