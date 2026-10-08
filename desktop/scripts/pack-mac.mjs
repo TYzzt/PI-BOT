@@ -32,8 +32,24 @@ writeFileSync(resolve(runtime, 'package.json'), JSON.stringify({
 }, null, 2));
 run('npm', ['install', '--omit=dev', '--no-package-lock', '--ignore-scripts'], runtime);
 run(resolve(root, 'node_modules/.bin/electron-forge'), ['package', '--platform', 'darwin'], resolve(root, 'apps/desktop'));
-
 const app = resolve(root, 'apps/desktop/out/T-AGNET-darwin-arm64/T-AGNET.app');
+const { sign } = require('@electron/osx-sign');
+const jit = [
+  'com.apple.security.cs.allow-jit',
+  'com.apple.security.cs.allow-unsigned-executable-memory',
+  'com.apple.security.cs.disable-library-validation',
+];
+await sign({
+  app,
+  identity: '-',
+  platform: 'darwin',
+  identityValidation: false,
+  preAutoEntitlements: false,
+  preEmbedProvisioningProfile: false,
+  binaries: [resolve(app, 'Contents/Resources/runtime/bin/node'), resolve(app, 'Contents/Resources/runtime/keychain')],
+  optionsForFile: () => ({ entitlements: jit, hardenedRuntime: true, timestamp: 'none' }),
+});
+
 const stage = resolve(root, 'apps/desktop/out/dmg-stage');
 const dmg = resolve(root, 'apps/desktop/out/make/T-AGNET-arm64.dmg');
 rmSync(stage, { recursive: true, force: true });
