@@ -1,6 +1,7 @@
 node_modules/
 **/dist/
 **/out/
+apps/desktop/runtime/
 work/
 test-results/
 playwright-report/

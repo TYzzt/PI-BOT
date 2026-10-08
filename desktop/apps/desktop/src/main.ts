@@ -1,5 +1,5 @@
 import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
@@ -11,6 +11,7 @@ import { parseInput, type Method } from '../../../packages/protocol/src/index.js
 mkdirSync(join(dataDir, 'electron'), { recursive: true, mode: 0o700 });
 app.setPath('userData', join(dataDir, 'electron'));
 let window: BrowserWindow | null = null;
+let serviceProcess: ChildProcess | undefined;
 const page = pathToFileURL(join(__dirname, '../ui-dist/index.html')).href;
 const client = new ServiceClient(event => window?.webContents.send('agent:event', event));
 function validSender(event: Electron.IpcMainInvokeEvent) { if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame || event.senderFrame.url !== page) throw new Error('不受信任的 IPC 来源'); }
@@ -21,6 +22,16 @@ function computerName() {
     if (name) return name.slice(0, 80);
   } catch { /* 取不到电脑名称时用主机名。 */ }
   return (hostname().replace(/\.local$/, '') || 'Mac').slice(0, 80);
+}
+function startBundledService() {
+  if (!app.isPackaged) return;
+  const root = join(process.resourcesPath, 'runtime');
+  serviceProcess = spawn(join(root, 'bin', 'node'), [join(root, 'server.mjs')], {
+    cwd: root,
+    env: { ...process.env, T_AGNET_KEYCHAIN_HELPER: join(root, 'keychain') },
+    stdio: 'ignore',
+  });
+  serviceProcess.on('error', () => {});
 }
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
@@ -40,9 +51,9 @@ else {
       window.on('closed', () => { window = null; });
       void window.loadURL(page);
     };
-    createWindow(); client.start();
+    startBundledService(); createWindow(); client.start();
     app.on('activate', () => { if (!window) createWindow(); });
   }).catch(() => { dialog.showErrorBox('启动失败', '无法启动桌面应用，请查看开发终端'); app.quit(); });
-  app.on('before-quit', () => client.stop());
+  app.on('before-quit', () => { client.stop(); serviceProcess?.kill('SIGTERM'); });
   app.on('window-all-closed', () => { /* macOS keeps UI process alive until Cmd+Q */ });
 }
