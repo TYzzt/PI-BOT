@@ -1,0 +1,16 @@
+**/node_modules
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/.env
+**/.env.*
+**/dist
+**/out
+**/runtime
+**/work
+**/test-results
+**/ui-dist
+.git
+android
+boards
+**/*.sqlite*

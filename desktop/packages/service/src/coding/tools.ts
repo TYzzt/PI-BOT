@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { planBodySchema, type PlanBody, type PlanQuestion, type StepStatus, type ToolCall } from '../../../protocol/src/index.js';
-import { safePath, fileImage, projectStatus, searchProject, findProjectFiles, readProjectText, windowProjectText, sameStat, digest, type FileImage } from './workspace.js';
+import { capture, safePath, fileImage, projectStatus, searchProject, findProjectFiles, readProjectText, windowProjectText, sameStat, digest, type FileImage } from './workspace.js';
 import { command, commandPath } from './command.js';
 import type { CodingStore } from './store.js';
 import { BrowserPause, KEYS, type BrowserSession } from '../browser/index.js';
@@ -141,6 +141,8 @@ export function codingTools(ctx: ToolContext): ToolDefinition[] {
     tool('edit_file', '以唯一精确文本匹配修改文件，匹配不存在或不唯一时拒绝。', Type.Object({ path: Type.String(), oldText: Type.String(), newText: Type.String() }), async p => { const path = await safePath(ctx.root, p.path, true); const text = (await loadFile(p.path)).text; if (!p.oldText || text.split(p.oldText).length !== 2) throw new Error('原文本不存在或不唯一，请重新读取文件'); const changed = text.replace(p.oldText, p.newText); if (changed.length > 256000) throw new Error('结果文件过大'); if (ctx.signal.aborted) throw new Error('运行已停止'); await safePath(ctx.root, p.path, true); await writeFile(path, changed, 'utf8'); await invalidate(path); return '文件已编辑'; }),
     tool('run_command', '在项目目录执行非交互 zsh 命令，stdin 关闭。timeoutSeconds 默认 120，上限 600。执行测试或检查时 verification=true；直接运行验证命令，不追加 echo 或用 || true 掩盖失败。禁止提交、推送、重置、清理和后台常驻。需要交互时暂停任务。', Type.Object({ command: Type.String(), timeoutSeconds: Type.Optional(Type.Number({ minimum: 1, maximum: 600 })), verification: Type.Boolean() }), async (p, signal, append, record) => {
       if (!p.command || p.command.length > 12000) throw new Error('命令长度无效');
+      const extras = [...ctx.readImages.keys()].sort();
+      const beforeCheck = p.verification ? await capture(ctx.root, extras) : undefined;
       const result = await command(p.command, ctx.root, (p.timeoutSeconds ?? 120) * 1000, signal, (stream, text, truncated) => { record.truncated ||= !!truncated; append(`[${stream}] ${text}`); });
       const head = redact(result.outputHead), tail = redact(result.outputTail), retained = redact(result.retained);
       const saved = outputs.save(ctx.taskId, record.id, retained);
@@ -148,6 +150,12 @@ export function codingTools(ctx: ToolContext): ToolDefinition[] {
       record.output = displayOutput(head, tail, result.omittedChars);
       record.truncated = result.omittedChars > 0 || record.truncated;
       record.exitCode = result.code; record.state = result.cancelled ? 'cancelled' : result.code === 0 && !result.timedOut && !result.interaction ? 'completed' : 'failed';
+      if (beforeCheck && !result.cancelled && !result.interaction) {
+        const afterCheck = await capture(ctx.root, extras).catch(() => undefined);
+        record.verificationExtras = extras;
+        record.verificationChanged = !afterCheck || beforeCheck.fingerprint !== afterCheck.fingerprint;
+        if (!record.verificationChanged) record.verificationFingerprint = beforeCheck.fingerprint;
+      }
       if (result.interaction) { ctx.pause = 'waiting_for_local_action'; ctx.pauseReason = ctx.mode === 'agent' ? '命令需要本机交互，请在外部终端处理后继续对话' : '命令需要本机交互，请在外部终端处理后重新规划'; }
       reads.invalidateAll(); duplicates.bump();
       const hint = p.verification ? verifications.hint(p.command) : null;

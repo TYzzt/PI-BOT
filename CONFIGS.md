@@ -1,14 +1,10 @@
 # 共享 Skills 与 MCP 配置
 
-Skills 包和 MCP 服务配置保存在云端，Mac 和手机都可以查看、编辑。Mac 拉取后只做静态依赖检查，把"可用 / 不可用及原因"回报给云端，其他端随即显示。**同步来的任何内容都不会被执行**：安装提示只是文字，包内脚本作为不可执行的文本文件保存，MCP 命令不会启动。
+Skills 包和 MCP 配置在云端版本化同步，Mac 与云端使用同一个 `packages/agent` 加载器，但在各自宿主执行。每次运行加载当前启用且适用的配置：Skills 注册到 Pi，MCP 通过 stdio 或 Streamable HTTP 连接并发现工具。依赖缺失会报告原因，不自动运行安装提示。
 
-对应整体架构的验收项 A11：修改共享 skill/MCP 配置，其他端显示新版本；Mac 缺依赖时明确失败且不自动运行安装脚本。
+Mac 从本地缓存加载配置，离线仍能运行；本地模型和 MCP secret 只在本机解析。云端由隔离 Runner 执行，Worker 转交配置，Runner 从单独挂载的 JSON secret 文件解析引用。该文件为 `{ "引用名": "secret值" }`，使用 `docker-compose.mcp.yml` 和 `T_AGNET_MCP_SECRET_FILE` 挂载；不使用数据库 vault 文件。secret 不通过配置同步上传。
 
-## 当前范围
-
-- 已实现：服务端存储和版本管理；Mac 端查看、编辑、依赖检查、本机 secret；Android 端查看和编辑；各设备的检查结果全端可见。
-- 未实现：把 Skills 加载进 Pi、连接或启动 MCP 服务（MCP 工具清单因此暂不显示）、云端 DeepAgents Worker 加载。运行环境选"仅云端"的条目在 Mac 上显示为"不在本机运行"，界面注明"云端暂未加载"。
-- 不需要新的数据库迁移（服务端复用 `shared_documents`，`device_id` 为空）；Android Room 从 3 升到 4，新增 `config_docs` 缓存表。
+Read/Plan 会话不启用 MCP；普通 Ask 和允许执行的项目会话可以调用 MCP 工具。技能脚本本身不会自动执行，模型调用当前宿主的命令工具时才执行。
 
 ## 数据模型
 
@@ -28,7 +24,7 @@ Skill：
 | `requires.mcp` | 依赖的 MCP 名称 |
 | `install_hint` | 安装说明，只展示 |
 
-MCP：`transport`（`stdio` 需要 `command`，`http` 需要 `url`）、`args`、`timeout_ms`、`env`、`runtime`、`enabled`、`disabled_tools`。`env` 每项二选一：明文 `value` 或 `secret_ref`。名称含 KEY / TOKEN / SECRET / PASSWORD / CREDENTIAL 的变量不允许写明文值。secret 的值只保存在各台 Mac 的 Keychain（账户名 `mcp-secret:<名称>`），从不上传。
+MCP：`transport`（`stdio` 需要 `command`，`http` 需要 `url`）、`args`、`timeout_ms`、`env`、`runtime`、`enabled`、`disabled_tools`。`env` 每项二选一：明文 `value` 或 `secret_ref`。名称含 KEY / TOKEN / SECRET / PASSWORD / CREDENTIAL 的变量不允许写明文值。Mac secret 保存在本机凭据存储（账户名 `mcp-secret:<名称>`），云端 secret 在 Runner 独立文件中配置，从不随共享文档上传。
 
 `content_hash` 由服务端对配置的规范化 JSON 计算 sha256。
 
@@ -41,7 +37,7 @@ MCP：`transport`（`stdio` 需要 `command`，`http` 需要 `url`）、`args`�
 
 ## Mac 依赖检查
 
-`desktop/packages/service/src/cloud/configs.ts` 每 5 秒拉取一次 `GET /device/configs/bundle`，内容变化或点击"重新检查"时重新评估。检查只读文件系统，文件里没有引用 `child_process`，测试也会拦截所有子进程调用：
+`desktop/packages/service/src/cloud/configs.ts` 每 5 秒拉取一次 `GET /device/configs/bundle`，内容变化或点击"重新检查"时重新评估。同步检查不执行命令；真正运行 Agent 时连接 MCP，并更新运行状态：
 
 | 原因码 | 条件 |
 |---|---|
@@ -54,7 +50,7 @@ MCP：`transport`（`stdio` 需要 `command`，`http` 需要 `url`）、`args`�
 | `invalid_config` | 命令是相对路径、URL 无效等 |
 | `write_failed` | 技能目录写入失败 |
 
-可用的 Skill 写入 `~/Library/Application Support/T-AGNET/skills/<id>/<hash>/`，文件权限 0644。新版本可用后删除旧目录；不可用时旧目录保留。服务端删除后，本地目录也会删除。
+可用的 Skill 写入 `~/Library/Application Support/T-AGNET/skills/<id>/<hash>/`，运行时技能文件权限 0600，按版本 hash 保存。不可用的新版本会被跳过并报告原因；运行时不自动回退旧配置。
 
 缺依赖时，界面列出原因和安装提示，并注明"不会自动执行"。用户手动安装后点击"重新检查"。
 
@@ -77,9 +73,9 @@ MCP：`transport`（`stdio` 需要 `command`，`http` 需要 `url`）、`args`�
 自动化：
 
 ```sh
-cd server && uv run pytest tests/test_configs.py
-cd desktop && node_modules/node/bin/node --import tsx --test tests/configs.test.ts
-cd server && T_AGNET_TEST_FILE=tests/configs-e2e.test.ts uv run python scripts/check_shared.py   # 真实服务端，手机编辑到 Mac 检查
+npm test
+npm test --workspace=t-agnet-desktop
+T_AGNET_TEST_FILE=tests/configs-e2e.test.ts node --import tsx server/scripts/check-shared.ts   # 真实服务端，手机编辑到 Mac 检查
 cd android && ./gradlew testDebugUnitTest --tests dev.tagent.android.ConfigRulesTest
 ```
 

@@ -9,7 +9,7 @@ export interface McpConfig { name: string; transport: 'stdio' | 'http'; command:
 export interface DeviceConfigState { deviceId: string; label: string; state: ConfigState; checkedVersion: number; appliedVersion: number; reasons: ConfigReason[]; }
 // This Mac's own check. activeVersion is the last version that passed; a failing newer version never replaces it.
 export interface LocalConfigState { state: ConfigState; reasons: ConfigReason[]; checkedVersion: number; activeVersion: number; activeHash: string | null; }
-export interface ConfigItem<T> { id: string; version: number; hash: string; config: T; local: LocalConfigState; devices: DeviceConfigState[]; }
+export interface ConfigItem<T> { id: string; version: number; hash: string; config: T; local: LocalConfigState; devices: DeviceConfigState[]; cloud?: { state: ConfigState; checkedVersion: number; reasons: ConfigReason[] }; }
 export interface ConfigListing { paired: boolean; connected: boolean; syncedAt: number | null; error?: string; skills: ConfigItem<SkillConfig>[]; mcpServers: ConfigItem<McpConfig>[]; secrets: { name: string; present: boolean }[]; }
 export interface ConfigApi {
   configList: { input: Record<string, never>; output: ConfigListing };

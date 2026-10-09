@@ -1,3 +1,4 @@
+import type { PluginSnapshot } from '@t-agnet/agent/plugins';
 import { access, stat, mkdir, writeFile, rename, rm, readdir } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { join, resolve, sep, isAbsolute, dirname } from 'node:path';
@@ -137,11 +138,29 @@ export class ConfigSync {
     return { state: reasons.length ? 'unavailable' : 'available', reasons };
   }
 
+  agentPlugins(cwd: string, allowMcp: boolean): PluginSnapshot | undefined {
+    const b = this.bundle();
+    if (!b.skills.some(d => d.config.enabled && d.config.runtime !== 'cloud') && !b.mcp_servers.some(d => d.config.enabled && d.config.runtime !== 'cloud')) return undefined;
+    // Clone the configuration at run start; no server request is needed to run cached plugins.
+    return { runtime: 'mac', dir: join(this.h.dir, 'runtime'), cwd, skills: structuredClone(b.skills), mcp_servers: structuredClone(b.mcp_servers), allowMcp,
+      platform: this.h.env?.platform, path: [this.h.env?.path ?? process.env.PATH ?? '', ...EXTRA_BIN].join(':'), secret: name => this.h.keys.get(secretAccount(name)),
+      report: async (doc, state, reasons) => {
+        if (state === 'not_applicable') return;
+        const current = [...this.bundle().skills, ...this.bundle().mcp_servers].find(d => d.id === doc.id);
+        if (!current || current.version !== doc.version || current.content_hash !== doc.content_hash) return;
+        this.put('cfg-runtime', doc.id, { checkedVersion: doc.version, state, reasons }); this.h.emit();
+        if (this.h.connected()) await this.h.request('POST', `/device/configs/${this.bundle().skills.some(d => d.id === doc.id) ? 'skills' : 'mcp-servers'}/${doc.id}/applied`, { version: doc.version, hash: doc.content_hash, state, reasons }).catch(() => {});
+      },
+    };
+  }
+
   listing(): ConfigListing {
     const b = this.bundle();
     const item = <T>(d: any, config: T): ConfigItem<T> => {
       const { reported: _r, ...local } = this.get('cfg', d.id) ?? { state: 'pending', reasons: [], checkedVersion: 0, activeVersion: 0, activeHash: null };
-      return { id: d.id, version: d.version, hash: d.content_hash, config, local: local.checkedVersion === d.version ? local : { ...local, state: 'pending', reasons: [] }, devices: devices(d) };
+      const runtime = this.get('cfg-runtime', d.id);
+      if (runtime?.checkedVersion === d.version) Object.assign(local, { state: runtime.state, reasons: runtime.reasons });
+      return { id: d.id, version: d.version, hash: d.content_hash, config, ...(d.cloud ? { cloud: { state: d.cloud.checked_version === d.version ? d.cloud.state : 'pending', checkedVersion: d.cloud.checked_version, reasons: d.cloud.reasons ?? [] } } : {}), local: local.checkedVersion === d.version ? local : { ...local, state: 'pending', reasons: [] }, devices: devices(d) };
     };
     return {
       paired: this.h.paired(), connected: this.h.connected(), syncedAt: this.syncedAt, error: this.error,

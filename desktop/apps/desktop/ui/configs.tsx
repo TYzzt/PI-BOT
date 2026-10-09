@@ -3,7 +3,7 @@ import type { ConfigItem, ConfigListing, ConfigReason, ConfigState, McpConfig, S
 
 function errorText(e: unknown) { return (e instanceof Error ? e.message : String(e)).replace(/^Error invoking remote method '[^']+': Error: /, ''); }
 const stateLabel: Record<ConfigState, string> = { pending: '待检查', available: '可用', unavailable: '不可用', not_applicable: '不在本机运行', failed: '应用失败' };
-const runtimeLabel = { mac: '仅 Mac', cloud: '仅云端（云端暂未加载）', both: 'Mac 与云端' };
+const runtimeLabel = { mac: '仅 Mac', cloud: '仅云端', both: 'Mac 与云端' };
 export function reasonText(r: ConfigReason) {
   switch (r.code) {
     case 'command_missing': return `缺少命令 ${r.detail}（未在 PATH、/opt/homebrew/bin、/usr/local/bin 中找到可执行文件）`;
@@ -11,7 +11,7 @@ export function reasonText(r: ConfigReason) {
     case 'script_missing': return `技能包缺少脚本 ${r.detail}`;
     case 'mcp_missing': return `依赖的 MCP「${r.detail}」不存在`;
     case 'mcp_unavailable': return `依赖的 MCP 不可用：${r.detail}`;
-    case 'secret_missing': return `本机 Keychain 缺少 secret「${r.detail}」`;
+    case 'secret_missing': return `本机缺少 secret「${r.detail}」`;
     case 'write_failed': return `写入本地技能目录失败`;
     default: return `配置无效：${r.detail}`;
   }
@@ -23,9 +23,10 @@ const emptyMcp = (): McpConfig => ({ name: '', transport: 'stdio', command: '', 
 function Status({ item }: { item: ConfigItem<unknown> }) {
   const l = item.local;
   return <div className="config-status">
-    <div><span className={`state-pill state-${l.state}`}>{stateLabel[l.state]}</span><span className="config-version">最新 v{item.version} · 本机生效 {l.activeVersion ? `v${l.activeVersion}` : '无'}</span></div>
-    {l.state === 'unavailable' && l.activeVersion > 0 && l.activeVersion < item.version && <p className="muted">新版本不可用，本机继续使用 v{l.activeVersion}。</p>}
+    <div><span className={`state-pill state-${l.state}`}>{stateLabel[l.state]}</span><span className="config-version">最新 v{item.version} · 本机依赖检查 {l.activeVersion ? `v${l.activeVersion}` : '无'}</span></div>
+    {l.state === 'unavailable' && l.activeVersion > 0 && l.activeVersion < item.version && <p className="muted">新版本不可用，上次依赖检查通过的版本为 v{l.activeVersion}。</p>}
     {!!l.reasons.length && <ul className="config-reasons" aria-label="不可用原因">{l.reasons.map((r, i) => <li key={i}>{reasonText(r)}</li>)}</ul>}
+    {item.cloud && <p className="muted">云端：{stateLabel[item.cloud.state]} · 检查 v{item.cloud.checkedVersion}{item.cloud.reasons.length ? ` · ${item.cloud.reasons.map(r => r.detail).join('；')}` : ''}</p>}
     {item.devices.length > 0 && <details><summary>各设备状态</summary><ul className="config-devices">{item.devices.map(d => <li key={d.deviceId}>{d.label || '设备'}：{stateLabel[d.state]} · 生效 v{d.appliedVersion || 0}{d.reasons.length ? ` · ${d.reasons.map(reasonText).join('；')}` : ''}</li>)}</ul></details>}
   </div>;
 }
@@ -50,7 +51,7 @@ export function ConfigsPage({ connected, onError }: { connected: boolean; onErro
   }
   const disabled = !connected || busy || !data?.paired;
   return <div className="coding-page configs-page">
-    <div className="coding-heading"><div><div className="eyebrow">PLUGINS</div><h1>插件</h1><p>配置保存在云端，手机和 Mac 都能编辑。Mac 只检查依赖是否就绪，<strong>不会自动运行任何安装命令或脚本</strong>；缺少依赖时显示原因，由你手动安装后点击“重新检查”。</p></div>
+    <div className="coding-heading"><div><div className="eyebrow">PLUGINS</div><h1>插件</h1><p>配置保存在云端，手机和 Mac 都能编辑。两端在各自运行任务时加载启用的插件，<strong>不会自动安装依赖</strong>；缺少依赖时显示原因，由你手动安装后点击“重新检查”。</p></div>
       <button disabled={disabled} onClick={() => void perform(() => window.agent.call('configRecheck', {}), '已重新检查本机依赖。')}>重新检查</button></div>
     {data && !data.paired && <div className="task-notice">需要先在「设置」中配对云端。</div>}
     {data?.error && <div className="task-notice" role="alert">{data.error}</div>}
@@ -61,7 +62,7 @@ export function ConfigsPage({ connected, onError }: { connected: boolean; onErro
         <button className="new-chat" disabled={disabled} onClick={() => open(null)}>＋ 新建{tab === 'skill' ? ' Skill' : ' MCP'}</button>
         {items.map(i => <div key={i.id} className={`project-card ${selected === i.id ? 'active' : ''}`}><button className="project-title" onClick={() => open(i.id)}><strong>{i.config.name}</strong>{!i.config.enabled && <span className="tag">已停用</span>}<small>{runtimeLabel[i.config.runtime]}</small></button><Status item={i}/></div>)}
         {!items.length && <p className="muted">还没有{tab === 'skill' ? ' Skill' : ' MCP'} 配置。</p>}
-        {tab === 'mcp' && data && <div className="project-card"><h4>本机 secret（只存 macOS Keychain，不上传）</h4>
+        {tab === 'mcp' && data && <div className="project-card"><h4>本机 secret（存在应用数据，不上传）</h4>
           {data.secrets.map(s => <div key={s.name} className="secret-row"><span>{s.name}</span><span className={s.present ? 'state-pill state-available' : 'state-pill state-unavailable'}>{s.present ? '已设置' : '缺失'}</span>{s.present && <button disabled={busy} onClick={() => void perform(() => window.agent.call('configSecretDelete', { name: s.name }), `已删除 ${s.name}`)}>删除</button>}</div>)}
           <form className="secret-form" onSubmit={e => { e.preventDefault(); void perform(() => window.agent.call('configSecretSet', { name: secretName, value: secretValue }), `已保存 ${secretName}`).then(() => setSecretValue('')); }}>
             <input aria-label="secret 名称" placeholder="secret 名称" value={secretName} onChange={e => setSecretName(e.target.value)} required/><input aria-label="secret 值" type="password" autoComplete="off" placeholder="值" value={secretValue} onChange={e => setSecretValue(e.target.value)} required/><button disabled={busy}>保存</button></form></div>}
@@ -118,6 +119,6 @@ function McpForm({ value, onChange }: { value: McpConfig; onChange: (v: McpConfi
       <input aria-label="变量值" placeholder={v.secretRef !== null ? 'secret 名称' : '值'} value={v.secretRef ?? v.value ?? ''} onChange={e => set(v.secretRef !== null ? { secretRef: e.target.value } : { value: e.target.value })}/>
       <button type="button" onClick={() => onChange({ ...value, env: value.env.filter((_, j) => j !== i) })}>移除</button></div>; })}
     <button type="button" onClick={() => onChange({ ...value, env: [...value.env, { name: '', value: null, secretRef: '' }] })}>＋ 添加环境变量</button>
-    <label>停用的工具<input aria-label="停用的工具" value={value.disabledTools.join(', ')} onChange={e => onChange({ ...value, disabledTools: list(e.target.value) })}/><small>首版只管理配置；工具清单需在 MCP 接入运行后显示。</small></label>
+    <label>停用的工具<input aria-label="停用的工具" value={value.disabledTools.join(', ')} onChange={e => onChange({ ...value, disabledTools: list(e.target.value) })}/><small>填写 MCP 原始工具名称；停用在下一次运行生效。</small></label>
   </>;
 }

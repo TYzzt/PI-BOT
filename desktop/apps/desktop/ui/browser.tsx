@@ -18,10 +18,10 @@ export function BrowserPanel({ connected, onError }: { connected: boolean; onErr
         <p>配置后，执行阶段可以用 browser_task 让 Jev 逐步决定点击和输入。每一步会把页面标题、网址、元素列表和页面文字节选发送给 TypeSafe。</p>
         <label>Base URL<input aria-label="Jev Base URL" required type="url" value={form.baseUrl} onChange={e => setForm(f => ({ ...f, baseUrl: e.target.value }))}/><small>请求地址为 Base URL + /v1/systemone。</small></label>
         <label>模型<input aria-label="Jev 模型" required value={form.model} onChange={e => setForm(f => ({ ...f, model: e.target.value }))}/></label>
-        <label>API Key<input aria-label="Jev API Key" type="password" autoComplete="off" required={!jev?.hasKey} value={form.apiKey} placeholder={jev?.hasKey ? '已保存，留空则保持原密钥' : '仅保存在本机 Keychain'} onChange={e => setForm(f => ({ ...f, apiKey: e.target.value }))}/></label>
+        <label>API Key<input aria-label="Jev API Key" type="password" autoComplete="off" required={!jev?.hasKey} value={form.apiKey} placeholder={jev?.hasKey ? '已保存，留空则保持原密钥' : '只存在本机应用数据，不上传'} onChange={e => setForm(f => ({ ...f, apiKey: e.target.value }))}/></label>
         <div className="card-actions"><button className="primary" disabled={disabled}>{working ? '处理中…' : '保存'}</button><button type="button" onClick={() => setEditing(false)}>取消</button></div>
       </form> : <div className="cloud-info">
-        <dl><dt>Base URL</dt><dd>{jev!.baseUrl}</dd><dt>模型</dt><dd>{jev!.model}</dd><dt>密钥</dt><dd>{jev!.hasKey ? '已保存在 Keychain' : '未配置'}</dd></dl>
+        <dl><dt>Base URL</dt><dd>{jev!.baseUrl}</dd><dt>模型</dt><dd>{jev!.model}</dd><dt>密钥</dt><dd>{jev!.hasKey ? '已保存在本机' : '未配置'}</dd></dl>
         <div className="card-actions"><button disabled={disabled} onClick={edit}>{jev!.configured ? '修改' : '配置 Jev'}</button>{jev!.configured && <button disabled={disabled} onClick={() => perform(async () => { const r = await window.agent.call('jevTest', {}); return `Jev 连接成功（${r.model}）`; })}>测试连接</button>}{jev!.configured && <button disabled={disabled} onClick={() => perform(async () => { await window.agent.call('jevDelete', {}); return 'Jev 配置已删除'; })}>删除</button>}</div>
       </div>}
       {notice && <p className="success" role="status">✓ {notice}</p>}

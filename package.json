@@ -1,0 +1,30 @@
+{
+  "name": "t-agnet",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "server",
+    "desktop",
+    "desktop/apps/*",
+    "desktop/packages/*"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit && npm run typecheck --workspace=t-agnet-desktop",
+    "test": "node --import tsx --test server/tests/*.test.ts packages/agent/tests/*.test.ts",
+    "build": "npm run build --workspace=@t-agnet/server",
+    "start": "npm run start --workspace=@t-agnet/server",
+    "desktop:dev": "npm run dev --workspace=t-agnet-desktop",
+    "test:shared": "node --import tsx server/scripts/check-shared.ts"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2",
+    "tsx": "4.23.15",
+    "@types/node": "24.13.6",
+    "@types/pg": "^8.15.0",
+    "@types/ws": "8.18.1"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

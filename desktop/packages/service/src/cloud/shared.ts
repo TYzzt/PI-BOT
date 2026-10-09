@@ -44,7 +44,7 @@ export class SharedSync {
   }
   private async tick(){
     if(this.stopped||this.running)return;this.running=true;
-    try{if(this.h.cloud.db.link()&&this.h.cloud.connected){this.pendingTick=this.h.serial(()=>this.sync());await this.pendingTick;}}catch(e){this.error=e instanceof CloudHttpError?`同步被拒绝（${e.status}）`:e instanceof Error&&e.message.includes('Keychain')?'Keychain 不可用':'共享同步暂时失败，将自动重试';}
+    try{if(this.h.cloud.db.link()&&this.h.cloud.connected){this.pendingTick=this.h.serial(()=>this.sync());await this.pendingTick;}}catch(e){this.error=e instanceof CloudHttpError?`同步被拒绝（${e.status}）`:e instanceof Error&&e.message.includes('凭据')?'本机凭据不可用':'共享同步暂时失败，将自动重试';}
     finally{this.running=false;this.h.emit({type:'cloud.changed'});if(!this.stopped)this.timer=setTimeout(()=>void this.tick(),1000);}
   }
   private async sync(){
@@ -59,7 +59,7 @@ export class SharedSync {
     }
     for(const m of this.h.store.models()){
       try{await this.syncModel(m,remoteModels.find((r:any)=>r.id===m.id));}
-      catch{const state=this.get('model',m.id)??{};this.put('model',m.id,{...state,error:'模型配置待同步，请检查连接和 Keychain'});}
+      catch{const state=this.get('model',m.id)??{};this.put('model',m.id,{...state,error:'模型配置待同步，请检查连接和本机凭据'});}
     }
     for(const r of remoteModels)if(!this.h.store.models().some(m=>m.id===r.id)&&!this.h.busy()&&(!r.deleted||r.apply_state!=='applied'))await this.applyModel(r);
     for(const t of snapshot.tasks){const link=this.h.cloud.db.taskByCloud(t.id);if(link&&['rejected','cancelled'].includes(t.state)&&this.h.coding.active?.task.id!==link.taskId){const task=this.h.coding.db.task(link.taskId);if(task.state!==t.state){this.h.coding.db.putTask({...task,state:t.state,message:t.state==='rejected'?'计划已在云端拒绝':'任务已在云端取消'});this.h.emit({type:'state.changed'});}}}
@@ -92,13 +92,13 @@ export class SharedSync {
       if(!this.h.busy())await this.applyModel(remote);return;
     }
     if(state.fingerprint===fingerprint){if(state.error)this.put('model',m.id,{...state,error:undefined});if(remote&&remote.apply_state!=='applied'&&state.applied===remote.version)await this.h.cloud.request('POST',`/device/configs/models/${m.id}/applied`,{version:remote.version,state:'applied'});return;}
-    const key=await this.h.keys.get(m.id);if(!key)throw new Error('Keychain 缺少模型密钥');
+    const key=await this.h.keys.get(m.id);if(!key)throw new Error('本机缺少模型密钥');
     const keyRef=randomUUID();await this.h.keys.set(keyRef,key);
     state={...state,pending:{keyRef,fingerprint,body:{device_id:this.h.cloud.db.link()!.deviceId,config:fields(m),expected_version:state.version??0,request_id:randomUUID()}}};this.put('model',m.id,state);
     await this.sendModel(m.id,state);
   }
   private async sendModel(id:string,state:any){
-    const p=state.pending,key=await this.h.keys.get(p.keyRef);if(!key)throw new Error('Keychain 缺少待上传密钥');
+    const p=state.pending,key=await this.h.keys.get(p.keyRef);if(!key)throw new Error('待上传的模型密钥已丢失，请重新保存');
     try{const r=await this.h.cloud.request<any>('PUT',`/device/configs/models/${id}`,{...p.body,api_key:key});
       this.put('model',id,{version:r.version,applied:r.version,fingerprint:p.fingerprint});await this.h.keys.delete(p.keyRef);
       await this.h.cloud.request('POST',`/device/configs/models/${id}/applied`,{version:r.version,state:'applied'});
@@ -110,14 +110,14 @@ export class SharedSync {
       else{
         this.put('model',r.id,{...(this.get('model',r.id)??{}),applying:r.version});
         const k=await this.h.cloud.request<any>('GET',`/device/configs/models/${r.id}/credential?version=${r.version}`);
-        // Keychain is written before SQLite: a failed write cannot acknowledge an applied revision.
+        // The local secret file is written before SQLite: a failed write cannot acknowledge an applied revision.
         await this.h.keys.set(r.id,k.api_key);
         const c=r.config,old=this.h.store.models().find(m=>m.id===r.id);
         const m:ModelConfig={id:r.id,name:c.name,baseUrl:c.base_url,modelId:c.model_id,contextWindow:c.context_window,maxTokens:c.max_tokens,isDefault:c.is_default,hasKey:true,revision:(old?.revision??0)+1};
         this.h.store.putModel(m);this.put('model',r.id,{version:r.version,applied:r.version,fingerprint:hash({...fields(m),revision:m.revision})});
       }
       await this.h.cloud.request('POST',`/device/configs/models/${r.id}/applied`,{version:r.version,state:'applied'});this.h.emit({type:'state.changed'});
-    }catch{this.put('model',r.id,{...(this.get('model',r.id)??{}),remoteDeleted:!!r.deleted,error:'模型应用失败，请检查 Keychain 或配置引用'});await this.h.cloud.request('POST',`/device/configs/models/${r.id}/applied`,{version:r.version,state:'failed',error:r.deleted?'referenced':'keychain_failed'});}
+    }catch{this.put('model',r.id,{...(this.get('model',r.id)??{}),remoteDeleted:!!r.deleted,error:'模型应用失败，请检查本机凭据或配置引用'});await this.h.cloud.request('POST',`/device/configs/models/${r.id}/applied`,{version:r.version,state:'failed',error:r.deleted?'referenced':'credential_failed'});}
   }
   private conversationBody(c:any,state:any,remote?:any){
     const task=c.kind==='coding'?this.h.coding.db.byConversation(c.id):null;

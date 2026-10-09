@@ -1,1 +1,4 @@
 .ai-auto-collection.state.json
+
+node_modules/
+**/dist/

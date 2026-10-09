@@ -2,11 +2,10 @@ import {test,expect,_electron as electron,type ElectronApplication} from '@playw
 import {spawn,type ChildProcess} from 'node:child_process';
 import {resolve} from 'node:path';
 import {temp,endpoint} from './helpers.js';
-import {Keychain} from '../packages/service/src/keychain.js';
 const url=process.env.T_AGNET_SHARED_URL;
 test('Mac UI pairs and automatically syncs existing and new conversations',async()=>{
  test.skip(!url,'需要隔离云端服务');const dir=temp(),api=await endpoint();let app:ElectronApplication|undefined,service:ChildProcess|undefined,modelId='',deviceId='';
- const env={...process.env,T_AGNET_DATA_DIR:dir.path,T_AGNET_KEYCHAIN_HELPER:resolve('native/dist/keychain')};
+ const env={...process.env,T_AGNET_DATA_DIR:dir.path};
  try{
   service=spawn(resolve('node_modules/node/bin/node'),['packages/service/dist/server.mjs'],{env,stdio:'ignore'});
   app=await electron.launch({executablePath:resolve('node_modules/electron/dist/Electron.app/Contents/MacOS/Electron'),args:[resolve('apps/desktop')],env});const page=await app.firstWindow();
@@ -27,5 +26,5 @@ test('Mac UI pairs and automatically syncs existing and new conversations',async
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await page.screenshot({path:'work/shared-desktop.png',animations:'disabled'});
   await page.getByRole('button',{name:'设置'}).click();page.once('dialog',d=>d.accept());await page.getByRole('button',{name:'解除配对',exact:true}).click();await expect(page.getByRole('button',{name:'连接',exact:true})).toBeVisible();
- }finally{await app?.close();if(service&&service.exitCode===null){const exit=new Promise(r=>service!.once('exit',r));service.kill('SIGTERM');await exit;}if(modelId)await new Keychain(resolve('native/dist/keychain')).delete(modelId);await api.close();dir.cleanup();}
+ }finally{await app?.close();if(service&&service.exitCode===null){const exit=new Promise(r=>service!.once('exit',r));service.kill('SIGTERM');await exit;}await api.close();dir.cleanup();}
 });

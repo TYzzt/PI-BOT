@@ -25,7 +25,7 @@ export async function codingEndpoint(longRun = false) {
     try { current = JSON.parse(current).message ?? current; } catch {}
     const early = JSON.stringify(json.messages).includes('early-question') || JSON.stringify(json.messages).includes('execution-question');
     const answered = JSON.stringify(json.messages).includes('问题「这次修复需要覆盖哪些场景？');
-    const reading = names.includes('read_file') && !planning && (!names.includes('run_command') || (agent && !/修复|添加注释|slow-command/.test(current) && !(early && answered)));
+    const reading = names.includes('read_file') && !planning && (!names.includes('run_command') || (agent && !/修复|添加注释|slow-command|check-failure/.test(current) && !(early && answered)));
     const count = (reading || agent || early ? json.messages.slice(lastUser + 1) : json.messages).filter((m: any) => m.role === 'tool').length;
     const slow = (agent ? current : JSON.stringify(json.messages[1])).includes('slow-command');
     const ignored = JSON.stringify(json.messages[1]).includes('read-ignored');
@@ -42,20 +42,20 @@ export async function codingEndpoint(longRun = false) {
     } else if (names.includes('run_command')) {
       if (count === 0) call = replan ? { name: 'request_replan', args: { reason: '需要扩大范围', plan: fixturePlan } } : { name: 'read_file', args: { path: 'main.mjs' } };
       if (count === 1 && early && !answered) call = { name: 'request_user_input', args: { questions: fixtureQuestions } };
-      else if (count === 1 && slow && JSON.stringify(json.messages.findLast((m: any) => m.role === 'tool')).includes('a + b')) call = { name: 'git_status', args: {} };
+      else if (count === 1 && (current.includes('check-failure') || slow && JSON.stringify(json.messages.findLast((m: any) => m.role === 'tool')).includes('a + b'))) call = { name: 'git_status', args: {} };
       else if (count === 1) call = { name: 'edit_file', args: { path: 'main.mjs', oldText: current.includes('添加注释') ? 'export function' : 'a - b', newText: current.includes('添加注释') ? '// Adds two numbers.\nexport function' : 'a + b' } };
       // Deliberately attempt a write after asking; the pause gate must reject it.
       if (count === 2 && early && !answered) call = { name: 'edit_file', args: { path: 'main.mjs', oldText: 'a - b', newText: 'a + b' } };
       else if (count === 2 && slow && names.includes('update_step')) call = { name: 'update_step', args: { stepId: 'fix-add', state: 'running', note: '正在运行验证命令' } };
-      else if (count === 2) call = { name: 'run_command', args: { command: slow ? 'node -e "console.log(\'started\'); setInterval(()=>{},1000)"' : 'node test.mjs', verification: true, timeoutSeconds: 20 } };
-      if (count === 3 && slow && names.includes('update_step')) call = { name: 'run_command', args: { command: 'node -e \"console.log(\'started\'); setInterval(()=>{},1000)\"', verification: true, timeoutSeconds: 20 } };
+      else if (count === 2) call = { name: 'run_command', args: { command: current.includes('check-failure') ? 'node -e "process.exit(1)"' : slow ? 'node -e "console.log(\'started\'); setInterval(()=>{},1000)"' : 'node test.mjs', verification: true, timeoutSeconds: current.includes('review-ui') ? 60 : 20 } };
+      if (count === 3 && slow && names.includes('update_step')) call = { name: 'run_command', args: { command: 'node -e \"console.log(\'started\'); setInterval(()=>{},1000)\"', verification: true, timeoutSeconds: current.includes('review-ui') ? 60 : 20 } };
       else if (count === 3 && names.includes('update_step')) call = { name: 'update_step', args: { stepId: 'fix-add', state: 'completed', note: '实际验证已执行' } };
     }
     if (longRun && names.includes('run_command') && count >= 4 && count < 204) call = { name: 'git_status', args: {} };
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     const emit = (delta: unknown, finish_reason: string | null = null) => res.write('data: ' + JSON.stringify({ id: 'fixture', object: 'chat.completion.chunk', created: 1, model: json.model, choices: [{ index: 0, delta, finish_reason }] }) + '\n\n');
     if (call) { emit({ role: 'assistant', tool_calls: [{ index: 0, id: 'call_' + count, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.args) } }] }); emit({}, 'tool_calls'); }
-    else { emit({ role: 'assistant', content: early && !answered ? '等待你的回答。' : reading ? (json.messages.filter((m: any) => m.role === 'user').length > 1 ? '接着上次的说明：减号使 add 返回差值，而不是两数之和。' : 'main.mjs 中的 add 函数实际使用 a - b，返回两个参数的差值。这是直接阅读代码的结果。') : planning ? '计划已生成，请审阅。' : '执行结束，请查看真实验证和差异。' }); emit({}, 'stop'); }
+    else { emit({ role: 'assistant', content: early && !answered ? '等待你的回答。' : reading ? current.includes('file-link') ? '查看 [main.mjs](main.mjs:1)。' : (json.messages.filter((m: any) => m.role === 'user').length > 1 ? '接着上次的说明：减号使 add 返回差值，而不是两数之和。' : 'main.mjs 中的 add 函数实际使用 a - b，返回两个参数的差值。这是直接阅读代码的结果。') : planning ? '计划已生成，请审阅。' : '执行结束，请查看真实验证和差异。' }); emit({}, 'stop'); }
     res.end('data: [DONE]\n\n');
   });
   await new Promise<void>(r => server.listen(0, '127.0.0.1', r));

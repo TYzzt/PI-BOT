@@ -59,7 +59,7 @@ export class Store {
   }
   transaction<T>(fn: () => T): T { const savepoint = 'sp_' + randomUUID().replaceAll('-', ''); this.db.exec(`SAVEPOINT ${savepoint}`); try { const r = fn(); this.db.exec(`RELEASE ${savepoint}`); return r; } catch (e) { this.db.exec(`ROLLBACK TO ${savepoint}; RELEASE ${savepoint}`); throw e; } }
   models(): ModelConfig[] { return (this.db.prepare('SELECT data FROM models ORDER BY rowid').all() as { data: string }[]).map(r => JSON.parse(r.data)); }
-  assertModelReady(id: string) { const state = this.db.prepare("SELECT data FROM shared_state WHERE kind='model' AND id=?").get(id) as { data: string } | undefined; if (state && JSON.parse(state.data).applying) throw new Error('此模型配置尚未完整应用，请等待同步或处理 Keychain 错误'); }
+  assertModelReady(id: string) { const state = this.db.prepare("SELECT data FROM shared_state WHERE kind='model' AND id=?").get(id) as { data: string } | undefined; if (state && JSON.parse(state.data).applying) throw new Error('此模型配置尚未完整应用，请等待同步或重新保存密钥'); }
   model(id: string): ModelConfig { const m = this.models().find(m => m.id === id); if (!m) throw new Error('模型配置不存在'); return m; }
   putModel(model: ModelConfig) { this.db.prepare('INSERT INTO models(id,data) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(model.id, JSON.stringify(model)); }
   defaultModel(id: string) { this.model(id); this.transaction(() => { for (const m of this.models()) this.putModel({ ...m, isDefault: m.id === id }); }); }

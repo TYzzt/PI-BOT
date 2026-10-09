@@ -1,6 +1,8 @@
+> 当前实现：服务端已迁移到 Node.js 24 + Fastify；云端 Worker/Runner 和 Mac 本地 harness 复用 `packages/agent`（Pi），分别在云端和端侧执行。Skills/MCP 已接入运行。部署与迁移见 [server/README.md](server/README.md)；下文旧阶段技术描述保留作历史记录。
+
 # 共享聊天、模型配置与远程续聊
 
-本阶段实现 Mac 与云端同步。执行仍由会话所属 Mac 的 Pi 完成，不迁移 Pi 私有上下文。后续已接入：Android 应用可查看共享会话并继续提问（见 `android/`）；DeepAgents 云端问答见 [CLOUD-CHAT.md](CLOUD-CHAT.md)。
+本阶段实现 Mac 与云端同步。执行仍由会话所属 Mac 的 Pi 完成，不迁移 Pi 私有上下文。后续已接入：Android 应用可查看共享会话并继续提问（见 `android/`）；Pi 云端问答见 [CLOUD-CHAT.md](CLOUD-CHAT.md)。
 
 ## 使用规则
 
@@ -20,9 +22,9 @@
 
 ```sh
 cd ~/T-AGNET/server
-uv sync
+npm install --prefix ..
 mkdir -p "$HOME/Library/Application Support/T-AGNET/server-secrets"
-uv run python scripts/vault_key.py "$HOME/Library/Application Support/T-AGNET/server-secrets/sync-vault.json"
+node --import tsx scripts/vault-key.ts "$HOME/Library/Application Support/T-AGNET/server-secrets/sync-vault.json"
 export T_AGNET_SYNC_KEY_FILE="$HOME/Library/Application Support/T-AGNET/server-secrets/sync-vault.json"
 ```
 
@@ -32,7 +34,7 @@ export T_AGNET_SYNC_KEY_FILE="$HOME/Library/Application Support/T-AGNET/server-s
 docker compose -f docker-compose.yml -f docker-compose.sync.yml up -d --build
 ```
 
-本机直接运行 uvicorn 时，同样设置 `T_AGNET_SYNC_KEY_FILE` 为绝对路径，并使用项目现有数据库配置。公网访问需在反向代理配置 HTTPS/WSS；Mac 只允许 loopback 使用 HTTP。
+本机直接运行 Node API 时，同样设置 `T_AGNET_SYNC_KEY_FILE` 为绝对路径，并使用项目现有数据库配置。公网访问需在反向代理配置 HTTPS/WSS；Mac 只允许 loopback 使用 HTTP。
 
 Mac 启动：
 
@@ -51,12 +53,12 @@ npm run dev
 云端采用 AES-256-GCM；认证附加数据绑定配置 UUID 与凭据版本。数据库只保存密文、随机 nonce 和 key_id。主密钥文件权限为 0600，不能提交仓库，备份应与数据库分离。仅备份数据库不能恢复密钥。
 
 ```sh
-uv run python scripts/vault_key.py "$T_AGNET_SYNC_KEY_FILE" --rotate
+node --import tsx scripts/vault-key.ts "$T_AGNET_SYNC_KEY_FILE" --rotate
 ```
 
 轮换保留旧解密密钥并切换新写入密钥；Docker 文件挂载在原子替换后需重新创建 API 容器。旧配置修订仍可能使用旧密钥，不能直接删除旧 key_id。密钥文件与数据库共同泄漏可以解密凭据，这不是端到端加密。撤销设备仅阻止未来访问，不能抹除它已经保存的离线副本。
 
-Mac 使用真实 Keychain；本地发送队列只存不可变 Keychain 条目的引用，同步后清理。运行使用启动时的配置；模型更新等待空闲再应用，API Key 更新也会使旧计划批准失效。
+Mac 把密钥副本放在本机 `secrets.json`，不再使用钥匙串；本地发送队列只存该文件中不可变条目的引用，同步后清理。运行使用启动时的配置；模型更新等待空闲再应用，API Key 更新也会使旧计划批准失效。
 
 ## 接口与同步机制
 
@@ -86,9 +88,9 @@ Mac 使用真实 Keychain；本地发送队列只存不可变 Keychain 条目的
 
 ```sh
 cd ~/T-AGNET/server
-uv run python scripts/shared_client.py http://127.0.0.1:8000
-uv run python scripts/shared_client.py http://127.0.0.1:8000 --models
-uv run python scripts/shared_client.py http://127.0.0.1:8000 --conversation <UUID> --text "继续解释这个问题" --watch
+node --import tsx scripts/shared-client.ts http://127.0.0.1:8000
+node --import tsx scripts/shared-client.ts http://127.0.0.1:8000 --models
+node --import tsx scripts/shared-client.ts http://127.0.0.1:8000 --conversation <UUID> --text "继续解释这个问题" --watch
 ```
 
 ## 验证命令
@@ -100,20 +102,20 @@ npm test
 npm run build
 npm run test:ui
 cd ../server
-uv run pytest
-uv run python scripts/check_shared.py
-T_AGNET_TEST_FILE=tests/shared-desktop.spec.ts uv run python scripts/check_shared.py
-T_AGNET_TEST_FILE=tests/cloud-e2e.test.ts uv run python scripts/check_shared.py
+npm test --prefix ..
+node --import tsx scripts/check-shared.ts
+T_AGNET_TEST_FILE=tests/shared-desktop.spec.ts node --import tsx scripts/check-shared.ts
+T_AGNET_TEST_FILE=tests/cloud-e2e.test.ts node --import tsx scripts/check-shared.ts
 ```
 
-后三条分别创建独立临时 PostgreSQL 和 HTTP 服务；模型为可控端点，不碰实际云端库。桌面界面测试使用真实 Electron 与 Keychain，完成后清理临时凭据。
+后三条分别创建独立临时 PostgreSQL 和 HTTP 服务；模型为可控端点，不碰实际云端库。桌面界面测试使用真实 Electron，凭据写在隔离数据目录，结束后随临时目录删除。
 
 真实验收需要已有可用模型、已构建的 Swift helper，会消耗模型额度：
 
 ```sh
-T_AGNET_REAL_SYNC=1 uv run python scripts/check_shared.py
+T_AGNET_REAL_SYNC=1 node --import tsx scripts/check-shared.ts
 ```
 
-报告保存到 `desktop/work/shared-real-report.json`，不包含密钥和完整聊天内容。数据库迁移为 SQLite v4、Alembic 0004；升级前备份，旧应用不能打开新版 SQLite。安装包不属于本次交付；Android 应用与 DeepAgents 云端问答在后续阶段交付（后者新增 Alembic 0005，见 CLOUD-CHAT.md）。
+报告保存到 `desktop/work/shared-real-report.json`，不包含密钥和完整聊天内容。数据库迁移为 SQLite v4、Alembic 0004；升级前备份，旧应用不能打开新版 SQLite。安装包不属于本次交付；Android 应用与 Pi 云端问答在后续阶段交付（后者新增 Alembic 0005，见 CLOUD-CHAT.md）。
 
 验证结果、已知限制及尚未完成的部署验收见 [VALIDATION-SYNC.md](VALIDATION-SYNC.md)。

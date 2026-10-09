@@ -1,5 +1,5 @@
 // Opt-in, application-level acceptance against the user's configured endpoint.
-// Never print or persist the Keychain value. Only generated fixture projects are sent.
+// Never print or persist the secret value. Only generated fixture projects are sent.
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { Store } from '../packages/service/src/store.js';
 import { Application } from '../packages/service/src/application.js';
-import { Keychain } from '../packages/service/src/keychain.js';
+import { FileCredentials } from '../packages/service/src/keychain.js';
 import { piFactory } from '../packages/service/src/pi-adapter.js';
 import type { ModelConfig } from '../packages/protocol/src/index.js';
 const [action, scenario] = process.argv.slice(2);
@@ -19,7 +19,7 @@ const original = new DatabaseSync(join(homedir(), 'Library/Application Support/T
 const models = (original.prepare('SELECT data FROM models').all() as { data: string }[]).map(r => JSON.parse(r.data) as ModelConfig); original.close();
 const model = models.find(m => m.isDefault) ?? models[0]; if (!model) throw new Error('请先在桌面应用配置真实模型');
 const store = new Store(join(dataDir, 'app.sqlite')); store.putModel(model);
-const app = new Application(store, new Keychain(resolve('native/dist/keychain')), piFactory(dataDir), () => {});
+const app = new Application(store, new FileCredentials(join(homedir(), 'Library/Application Support/T-AGNET/secrets.json')), piFactory(dataDir), () => {});
 const reportPath = join(base, scenario, 'report.json');
 let report: any = existsSync(reportPath) ? JSON.parse(readFileSync(reportPath, 'utf8')) : { scenario, model: model.modelId, provider: new URL(model.baseUrl).hostname, startedAt: new Date().toISOString() };
 try {

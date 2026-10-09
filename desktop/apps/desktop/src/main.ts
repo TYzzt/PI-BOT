@@ -6,7 +6,8 @@ import { mkdirSync } from 'node:fs';
 import { dataDir } from '../../../packages/service/src/paths.js';
 import { pathToFileURL } from 'node:url';
 import { ServiceClient } from './service-client.js';
-import { parseInput, type Method } from '../../../packages/protocol/src/index.js';
+import { parseInput, type Method, type Project } from '../../../packages/protocol/src/index.js';
+import { resolveProjectFile } from './project-file.js';
 
 mkdirSync(join(dataDir, 'electron'), { recursive: true, mode: 0o700 });
 app.setPath('userData', join(dataDir, 'electron'));
@@ -52,6 +53,16 @@ else {
     ipcMain.handle('agent:cloudServerUrl', event => { validSender(event); return process.env.T_AGNET_SHARED_URL || CLOUD_SERVER_URL; });
     ipcMain.handle('agent:call', async (event, method: Method, input: unknown) => { validSender(event); return client.call(method, parseInput(method, input)); });
     ipcMain.handle('agent:openExternal', async (event, url: string) => { validSender(event); const parsed = new URL(url); if (!['https:', 'http:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error('不支持此链接'); await shell.openExternal(parsed.href); });
+    ipcMain.handle('agent:openProjectFile', async (event, projectId: unknown, href: unknown) => {
+      validSender(event);
+      if (typeof projectId !== 'string' || typeof href !== 'string') throw new Error('文件链接无效');
+      const project = (await client.call('projectList', {}) as Project[]).find(p => p.id === projectId && p.available && !p.removed);
+      if (!project) throw new Error('当前项目不可用');
+      const target = await resolveProjectFile(project.path, href);
+      const error = await shell.openPath(target.path);
+      if (error) throw new Error('无法用默认应用打开文件，请检查文件关联设置');
+      return target.line ? { warning: `文件已用默认应用打开；此方式不支持自动跳转至第 ${target.line} 行。` } : {};
+    });
     const createWindow = () => {
       window = new BrowserWindow({ width: 1160, height: 800, minWidth: 880, minHeight: 600, show: false, title: 'T-AGNET', backgroundColor: '#f7f8fa', titleBarStyle: 'hiddenInset', webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false } });
       window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));

@@ -9,7 +9,7 @@ const node = resolve(root, 'node_modules/node/bin/node');
 const runtime = resolve(root, 'apps/desktop/runtime');
 const require = createRequire(resolve(root, 'package.json'));
 const pkg = require(resolve(root, 'package.json'));
-const runtimeDeps = ['@earendil-works/pi-ai', '@earendil-works/pi-coding-agent', 'diff', 'playwright-core', 'typebox', 'ws', 'zod'];
+const runtimeDeps = ['@earendil-works/pi-ai', '@earendil-works/pi-coding-agent', '@modelcontextprotocol/sdk', 'diff', 'playwright-core', 'typebox', 'ws', 'zod'];
 
 function run(command, args, cwd) {
   const result = spawnSync(command, args, { cwd, stdio: 'inherit' });
@@ -28,7 +28,7 @@ writeFileSync(resolve(runtime, 'package.json'), JSON.stringify({
   name: 't-agnet-runtime',
   private: true,
   type: 'module',
-  dependencies: Object.fromEntries(runtimeDeps.map(name => [name, pkg.dependencies[name]])),
+  dependencies: Object.fromEntries(runtimeDeps.map(name => [name, pkg.dependencies[name] ?? require(resolve(root, '../packages/agent/package.json')).dependencies[name]])),
 }, null, 2));
 run('npm', ['install', '--omit=dev', '--no-package-lock', '--ignore-scripts'], runtime);
 run(resolve(root, 'node_modules/.bin/electron-forge'), ['package', '--platform', 'darwin'], resolve(root, 'apps/desktop'));

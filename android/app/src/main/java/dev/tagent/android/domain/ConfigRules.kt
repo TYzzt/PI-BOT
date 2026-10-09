@@ -63,7 +63,7 @@ fun configStateLabel(state: String): String = when (state) {
 }
 
 fun runtimeLabel(runtime: String): String = when (runtime) {
-    "cloud" -> "仅云端（云端暂未加载）"
+    "cloud" -> "仅云端"
     "both" -> "Mac 与云端"
     else -> "仅 Mac"
 }

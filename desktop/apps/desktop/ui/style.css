@@ -131,4 +131,10 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:28px;z-index:
 @media(max-width:640px){.code-review-layout{flex-direction:column}.change-file-list{width:100%;max-height:125px;min-height:55px;flex-shrink:0;border-right:0;border-bottom:1px solid var(--border)}.change-file-list .change-file{padding:6px 8px}.change-file-name{flex-direction:row;gap:8px;align-items:center}.change-file-name small{flex:1}.changes-empty{padding:8px}.changes-empty>span,.changes-empty p{display:none}}
 
 .numbered-diff .diff-number-col{width:35px}.numbered-diff .diff-sign-col{width:22px}
+/* A narrow review replaces the conversation instead of covering active controls. */
+@media(max-width:900px){.project-conversation.panel-open{display:none}.conversation-page .review-drawer{position:relative;inset:auto;width:100%;flex:1;box-shadow:none}.conversation-page .review-drawer.changes-review{width:100%}.project-conversation.panel-open+.review-drawer .execution-progress.compact{display:block}}
+@media(min-width:901px){.project-conversation+.review-drawer>.execution-progress.compact{display:none}}
+.load-tool-history{display:block;margin:0 auto 14px;font-size:12px;color:var(--muted)}
+.task-notice button{margin-left:8px;font-size:12px;text-decoration:underline}
+.file-link-notice{display:flex;align-items:center;gap:8px;margin:8px 12px 0;padding:8px 12px;font-size:11px;line-height:1.6;background:var(--accent-soft);border-radius:8px;color:var(--muted);flex-shrink:0}.file-link-notice button{margin-left:auto;padding:0 4px}
 @media(max-width:900px){.numbered-diff .diff-number-col{width:30px}}

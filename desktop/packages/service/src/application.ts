@@ -10,7 +10,7 @@ import { browserSchemas } from '../../protocol/src/browser.js';
 import { codingSchemas } from '../../protocol/src/coding.js';
 import { cloudSchemas } from '../../protocol/src/cloud.js';
 import { CloudSync, type CloudOptions } from './cloud/sync.js';
-import { rmSync } from 'node:fs';
+import { rmSync, mkdirSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import type { Api, Method, AppEvent, Run } from '../../protocol/src/index.js';
 import { parseInput } from '../../protocol/src/index.js';
@@ -24,9 +24,20 @@ export class Application {
   private serial: Promise<unknown> = Promise.resolve();
   readonly coding: CodingController; readonly cloud: CloudSync; readonly shared: SharedSync; readonly cloudChat: CloudChat; readonly configs: ConfigSync; readonly browser: BrowserService;
   constructor(readonly store: Store, private credentials: Credentials, private factory: AgentFactory, private emit: (event: AppEvent) => void, cloud: { dataDir?: string; credentials?: Credentials; options?: CloudOptions; configs?: { dir?: string; intervalMs?: number; env?: ConfigHost['env'] }; browser?: { profileDir?: string; executable?: string; headless?: boolean; args?: string[]; lockTimeoutMs?: number; fetch?: typeof fetch } } = {}) {
+    const rawFactory = factory;
+    const localFactory: AgentFactory = async (model, key, existing, id, ephemeral, options) => {
+      if (ephemeral) return rawFactory(model, key, existing, id, ephemeral, options);
+      const cwd = options?.cwd ?? join(cloud.dataDir ?? dataDir, 'pi', 'empty-workspace');
+      const allowMcp = !options || options.tools.some(t => ['run_command', 'write_file', 'edit_file'].includes(t.name));
+      const plugins = this.configs.agentPlugins(cwd, allowMcp);
+      if (!plugins) return rawFactory(model, key, existing, id, ephemeral, options);
+      if (!options) mkdirSync(cwd, { recursive: true, mode: 0o700 });
+      return rawFactory(model, key, existing, id, ephemeral, { ...(options ?? { cwd, tools: [], systemPrompt: '你是 T-AGNET 的中文助手，可使用已启用的 Skills 与 MCP。没有本机项目文件、终端或浏览器工具。' }), plugins });
+    };
+    this.factory = localFactory;
     const b = cloud.browser ?? {};
     this.browser = new BrowserService({ profileDir: b.profileDir ?? join(dataDir, 'chrome-profile'), executable: b.executable, headless: b.headless, args: b.args, lockTimeoutMs: b.lockTimeoutMs, jev: new JevConfig(store.db, credentials, b.fetch) });
-    this.coding = new CodingController(store, credentials, factory, emit, () => this.idle(), this.browser, cloud.dataDir ?? dataDir);
+    this.coding = new CodingController(store, credentials, localFactory, emit, () => this.idle(), this.browser, cloud.dataDir ?? dataDir);
     this.cloud = new CloudSync({ store, coding: this.coding, credentials: cloud.credentials ?? new MemoryCredentials(), serial: fn => this.enqueue(fn), busy: () => this.busy(), emit }, cloud.options);
     this.shared = new SharedSync({ store, keys: credentials, cloud: this.cloud, coding: this.coding, busy: () => this.busy(), serial: fn => this.enqueue(fn), call: (method, input) => this.dispatch(method as Method, input, true), emit });
     this.cloudChat = new CloudChat({ paired: () => !!this.cloud.db.link(), request: (method, path, body) => this.cloud.request(method, path, body) });
@@ -128,7 +139,7 @@ export class Application {
   }
   private async testModel(model: ReturnType<Store['model']>) {
     let agent: AgentHandle | undefined;
-    try { const key = await this.credentials.get(model.id); if (!key) throw new Error('Keychain 中缺少 API Key，请重新保存');
+    try { const key = await this.credentials.get(model.id); if (!key) throw new Error('本机缺少 API Key，请重新保存');
       agent = await this.factory({ ...model, maxTokens: Math.min(64, model.maxTokens) }, key, null, randomUUID(), true);
       await agent.prompt('Reply with OK.', () => {}); return { ok: true };
     } finally { agent?.dispose(); this.testing = false; this.changed(); }
@@ -137,7 +148,7 @@ export class Application {
     let content = '', lastFlush = 0, error: string | null = null; let state: 'completed' | 'cancelled' | 'failed' = 'completed';
     const ids = { conversation_id: active.run.conversationId, task_id: active.run.taskId, run_id: active.run.id, message_id: active.assistantId };
     try {
-      const key = await this.credentials.get(model.id); if (!key) throw new Error('Keychain 中缺少 API Key，请重新保存');
+      const key = await this.credentials.get(model.id); if (!key) throw new Error('本机缺少 API Key，请重新保存');
       if (active.cancelled) throw new Error('CANCELLED');
       const agent = await this.factory(model, key, this.store.sessionPath(active.run.conversationId), active.run.conversationId);
       active.agent = agent; if (agent.sessionPath) this.store.setSessionPath(active.run.conversationId, agent.sessionPath);
@@ -163,7 +174,8 @@ export class Application {
 }
 export function safeFailure(error: unknown): string {
   const text = error instanceof Error ? error.message : '';
-  if (text.includes('Keychain')) return '无法读取模型凭据，请在本机检查 Keychain 并重新保存 API Key';
+  if (text.startsWith('模型请求失败')) return '模型请求失败，请检查 API Key、模型名、Base URL、接口兼容性和网络后重试';
+  if (text.includes('凭据') || text.includes('API Key')) return '无法读取模型凭据，请重新保存 API Key';
   if (text.includes('会话文件缺失')) return '私有会话文件缺失，请新建会话';
   if (text.includes('未返回文本')) return '模型未返回文本，请检查 Chat Completions 接口配置';
   return '模型请求失败，请检查 API Key、模型名、Base URL、接口兼容性和网络后重试';

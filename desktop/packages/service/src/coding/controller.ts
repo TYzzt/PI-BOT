@@ -66,7 +66,7 @@ export class CodingController {
         this.launch(task, entry, task.intent === 'agent' ? 'agent' : task.intent === 'read' ? 'read' : 'plan', task.requirement); return task;
       }
       case 'codingGet': return this.detail(input.conversationId);
-      case 'codingLogs': this.db.task(input.taskId); return this.db.logs(input.taskId, input.offset);
+      case 'codingLogs': this.db.task(input.taskId); return this.db.logs(input.taskId, input.offset, input.beforeId);
       case 'codingEvents': this.db.task(input.taskId); return this.db.events(input.taskId, input.after);
       case 'codingSend': {
         this.idle(); let task = this.db.byConversation(input.conversationId);
@@ -127,10 +127,27 @@ export class CodingController {
     }
     throw new Error('不支持的编程请求');
   }
-  private detail(conversationId: string): CodingDetail {
-    const task = this.db.byConversation(conversationId), runs = this.db.runs(task.id), tools = this.db.tools(task.id), latestExecution = runs.findLast(r => r.mode === 'execute' || (r.mode === 'agent' && this.db.hasExecutionTools(r.run.id)));
-    const verification = this.verification(latestExecution ? this.db.verificationTools(latestExecution.run.id) : [], latestExecution?.run.id);
-    return { messages: this.store.messages(conversationId), summary: this.store.messages(conversationId).filter(m => m.role === 'assistant').at(-1)?.content ?? '', task, project: this.db.project(task.projectId), plans: this.db.plans(task.id), runs, steps: this.db.steps(task.id), tools: tools.map(t => ({ ...t, output: t.output.slice(-12000), truncated: t.truncated || t.output.length > 12000 })), lastSeq: this.db.lastSeq(task.id), verification };
+  private async detail(conversationId: string): Promise<CodingDetail> {
+    const task = this.db.byConversation(conversationId), runs = this.db.runs(task.id), tools = this.db.tools(task.id), latestExecution = runs.findLast(r => ['execute', 'agent'].includes(r.mode) && (this.db.hasBaseline(r.run.id) || this.db.verificationTools(r.run.id).length > 0));
+    const review = await this.reviewVerification(task, latestExecution?.run.id);
+    return { messages: this.store.messages(conversationId), summary: this.store.messages(conversationId).filter(m => m.role === 'assistant').at(-1)?.content ?? '', task, project: this.db.project(task.projectId), plans: this.db.plans(task.id), runs, steps: this.db.steps(task.id), tools: tools.map(t => ({ ...t, output: t.output.slice(-12000), truncated: t.truncated || t.output.length > 12000 })), toolCount: this.db.toolCount(task.id), hasChanges: !!latestExecution && this.db.hasBaseline(latestExecution.run.id), lastSeq: this.db.lastSeq(task.id), ...review };
+  }
+  private async reviewVerification(task: CodingTask, runId?: string): Promise<Pick<CodingDetail, 'verification' | 'verificationFreshness'>> {
+    const checks = runId ? this.db.verificationTools(runId) : [];
+    const latest = [...new Map(checks.map(t => { try { return [JSON.parse(t.input).command, t] as const; } catch { return [t.id, t] as const; } })).values()];
+    const verification = this.verification(latest, runId);
+    if (!latest.length || latest.some(t => ['running', 'cancelled', 'interrupted'].includes(t.state))) return { verification };
+    if (latest.some(t => t.verificationChanged)) return { verification: 'not_run', verificationFreshness: 'stale' };
+    if (latest.some(t => !t.verificationFingerprint)) return { verification: 'not_run', verificationFreshness: 'historical' };
+    try {
+      const root = await this.root(task), images = new Map<string, string>();
+      for (const check of latest) {
+        const extras = check.verificationExtras ?? [], key = JSON.stringify(extras);
+        if (!images.has(key)) images.set(key, (await capture(root, extras)).fingerprint);
+        if (images.get(key) !== check.verificationFingerprint) return { verification: 'not_run', verificationFreshness: 'stale' };
+      }
+      return { verification, verificationFreshness: 'current' };
+    } catch { return { verification: 'not_run', verificationFreshness: 'unavailable' }; }
   }
   verification(tools: ToolCall[], runId: string | undefined): Verification {
     const checks = tools.filter(t => t.runId === runId && t.verification);
@@ -152,15 +169,16 @@ export class CodingController {
     this.db.addPlan(plan, baseline); return plan;
   }
   private async perform(active: Active, feedback: string, approved?: PlanVersion, executionBaseline?: WorkspaceImage) {
-    const task = active.task; let content = '', state: TaskState = 'failed', message = '', context: ToolContext | undefined, runRecord: CodingRun | undefined, key = '';
+    const task = active.task; let content = '', state: TaskState = 'failed', message = '', context: ToolContext | undefined, runRecord: CodingRun | undefined, key = '', root = '', before: WorkspaceImage | undefined;
     const perf = createPerformanceLog(this.dataDir), wallStart = monotonicMs();
     let round = 0;
     try {
-      const root = await this.root(task), configs = this.config(task), configHash = digest(configs), model = active.mode === 'execute' ? configs.execute : configs.plan;
-      const before = active.mode === 'read' ? undefined : executionBaseline ?? await capture(root);
+      root = await this.root(task);
+      const configs = this.config(task), configHash = digest(configs), model = active.mode === 'execute' ? configs.execute : configs.plan;
+      before = active.mode === 'read' ? undefined : executionBaseline ?? await capture(root);
       // Recheck after approval and before even constructing the execution agent.
       if (executionBaseline && (await capture(root, executionBaseline.extras)).fingerprint !== executionBaseline.fingerprint) { state = 'needs_replan'; throw new Error('工作区在批准后变化，请重新规划'); }
-      key = await this.credentials.get(model.id) ?? ''; if (!key) throw new Error('Keychain 中缺少模型凭据');
+      key = await this.credentials.get(model.id) ?? ''; if (!key) throw new Error('本机缺少模型凭据，请重新保存');
       if (active.controller.signal.aborted) throw new Error('运行已停止');
       const reads = new ReadCache();
       context = { taskId: task.id, runId: active.run.id, root, mode: active.mode, store: this.db, key, cancelled: () => active.controller.signal.aborted, signal: active.controller.signal, notify: toolId => this.event(task, toolId ? 'tool.updated' : 'coding.changed', { tool_call_id: toolId }), onTool: tool => this.observe(o => o.toolFinished(task, tool)), onStep: step => this.observe(o => o.stepChanged(task, active.run.id, step)), readImages: new Map(), calls: 0, dataDir: this.dataDir, reads, duplicates: new DuplicateTracker(), verifications: new VerificationMemory(), outputs: createToolOutput(this.dataDir), performance: perf };
@@ -237,12 +255,21 @@ export class CodingController {
     } catch (error) {
       if (active.controller.signal.aborted) { state = 'cancelled'; message = active.mode === 'read' ? '已停止阅读，部分回答已保留。' : '已停止，已产生的修改保留；不会自动回滚'; }
       else if (context?.pause) { state = context.pause; message = context.pauseReason ?? '任务暂停'; }
-      else { const raw = error instanceof Error ? error.message : ''; message = error instanceof CompactionError || /^(工作区|模型没有|模型请求失败|项目|Git |Keychain|规划|文件|索引)/.test(raw) ? raw : '编程运行失败，请检查模型配置、端点兼容性和本机项目权限'; }
+      else { const raw = error instanceof Error ? error.message : ''; message = error instanceof CompactionError || /^(工作区|模型没有|模型请求失败|本机缺少|项目|Git |规划|文件|索引)/.test(raw) ? raw : '编程运行失败，请检查模型配置、端点兼容性和本机项目权限'; }
     } finally {
       active.agent?.dispose();
       this.browser?.release(task.id);
-      // A question must not replace the last edit's diff baseline or verification.
-      if (active.mode === 'agent' && !this.db.hasExecutionTools(active.run.id)) this.db.clearBaseline(active.run.id);
+      // Inspect actual changes: commands used only for checking must not replace the last edit's baseline.
+      if (before && ['execute', 'agent'].includes(active.mode)) {
+        const after = await capture(root, before.extras).catch(() => undefined);
+        if (after?.fingerprint === before.fingerprint) this.db.clearBaseline(active.run.id);
+      }
+      const review = ['execute', 'agent'].includes(active.mode) ? await this.reviewVerification(task, active.run.id) : { verification: 'not_run' as const };
+      if (state === 'completed' && ['execute', 'agent'].includes(active.mode)) {
+        if (review.verification === 'failed') message = '执行结束，验证未通过；请查看验证输出并继续修复。';
+        else if (review.verificationFreshness === 'stale') message = '执行结束，修改后未验证；请重新运行相关检查。';
+        else if (this.db.hasBaseline(active.run.id) && review.verification === 'not_run') message = '执行结束，尚未验证；请检查代码变更并运行相关验证。';
+      }
       if (active.controller.signal.aborted) state = 'cancelled';
       if (state !== 'awaiting_input') task.pendingInput = undefined;
       if (key) { content = content.replaceAll(key, '[已隐藏凭据]'); message = message.replaceAll(key, '[已隐藏凭据]'); }
@@ -251,7 +278,7 @@ export class CodingController {
       if (this.active === active) this.active = null;
       this.event(task, 'message.finalized', { message_id: active.assistantId, content });
       this.event(task, runState === 'completed' ? 'run.completed' : runState === 'cancelled' ? 'run.cancelled' : 'run.failed');
-      this.observe(o => o.runFinished({ ...task, state, activeRunId: null, message }, active.run.id, active.mode, state, (active.mode === 'execute' || active.mode === 'agent') ? this.verification(this.db.verificationTools(active.run.id), active.run.id) : 'not_run'));
+      this.observe(o => o.runFinished({ ...task, state, activeRunId: null, message }, active.run.id, active.mode, state, review.verification));
       perf.summary({ taskId: task.id, runId: active.run.id, wallMs: monotonicMs() - wallStart });
     }
   }

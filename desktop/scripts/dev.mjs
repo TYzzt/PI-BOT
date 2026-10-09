@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 const node = resolve('node_modules/node/bin/node');
 if (!existsSync(node)) throw new Error('请先运行 npm install 安装项目 Node.js 24');
-const env = { ...process.env, T_AGNET_KEYCHAIN_HELPER: resolve('native/dist/keychain') };
+const env = { ...process.env };
 const children = new Set(); let closing = false;
 function run(binary, args, options = {}) { const child = spawn(binary, args, { stdio: 'inherit', env, detached: true, ...options }); children.add(child); child.on('exit', () => children.delete(child)); return child; }
 const build = run(node, ['scripts/build.mjs']);

@@ -7,7 +7,9 @@ import { join } from 'node:path';
 import { ConfigSync, secretAccount } from '../packages/service/src/cloud/configs.js';
 import { CloudHttpError, CloudNetworkError } from '../packages/service/src/cloud/client.js';
 import { Store } from '../packages/service/src/store.js';
-import { MemoryCredentials, temp } from './helpers.js';
+import { MemoryCredentials, temp, endpoint, eventually } from './helpers.js';
+import { piFactory } from '../packages/service/src/pi-adapter.js';
+import { Application } from '../packages/service/src/application.js';
 
 const hash = (c: unknown) => createHash('sha256').update(JSON.stringify(c)).digest('hex');
 function server() {
@@ -140,4 +142,25 @@ test('edits go to the server with the seen version; conflicts refresh and offlin
     t.s.setOffline(true);
     await assert.rejects(t.sync.dispatch('configSkillPut', { id, expectedVersion: 2, requestId: randomUUID(), config }), /需要连接云端/);
   } finally { await t.close(); }
+});
+
+
+test('cached shared skill loads into local Pi while the sync server is offline', async () => {
+  const t = setup(), api = await endpoint();
+  try {
+    t.s.add('skills', skill({ requires: { commands: [], platforms: [], scripts: [], mcp: [] }, files: [] }));
+    await t.sync.pull(true);
+    t.s.setOffline(true);
+    const app = new Application(t.store, t.keys, piFactory(t.dir.path), () => {}, { dataDir: t.dir.path, configs: { dir: join(t.dir.path, 'skills') }, browser: { profileDir: join(t.dir.path, 'browser') } });
+    try {
+      const model = await app.call('modelSave', { name: 'local', baseUrl: api.url, modelId: 'fixture', apiKey: 'local-secret', contextWindow: 32000, maxTokens: 1000 });
+      const conversation = await app.call('conversationCreate', { modelConfigId: model.id });
+      const run = await app.call('messageSend', { conversationId: conversation.id, text: '你好', requestId: randomUUID() });
+      await eventually(() => t.store.run(run.id).state !== 'running');
+      assert.equal(t.store.run(run.id).state, 'completed', t.store.run(run.id).error ?? '');
+      assert.ok(api.requests[0].tools.some((t: any) => t.function.name === 'read_skill'));
+      assert.equal(app.configs.listing().skills[0].local.state, 'available');
+      assert.ok(existsSync(join(t.dir.path, 'pi', 'empty-workspace')));
+    } finally { await app.shutdown(); }
+  } finally { await api.close(); await t.close(); }
 });

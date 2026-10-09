@@ -1,3 +1,5 @@
+> 当前实现：服务端已迁移到 Node.js 24 + Fastify；云端 Worker/Runner 和 Mac 本地 harness 复用 `packages/agent`（Pi），分别在云端和端侧执行。Skills/MCP 已接入运行。部署与迁移见 [server/README.md](../server/README.md)；下文旧阶段技术描述保留作历史记录。
+
 # 个人智能体：架构与需求 v1
 
 日期：2026-09-24。状态：可用于拆分开发任务的设计稿，尚未实现或验证。文中框架能力以官方资料为依据，其余为本项目的设计决策；开发时固定具体版本并完成兼容性验证。
@@ -18,7 +20,7 @@
 | macOS 运行服务 | 独立 Node.js LTS 服务 + Pi coding-agent SDK | 将任务生命周期与窗口分离；使用 SDK，不解析终端输出 |
 | macOS 启动管理 | 用户级 launchd LaunchAgent | 用户登录后启动；窗口关闭仍运行；不以 root 守护进程启动 |
 | 本地存储 | SQLite + Pi 原生会话文件 + 本地附件目录 | SQLite 管任务/事件/配置；Pi 文件保存私有模型上下文 |
-| 本地凭据 | macOS Keychain，小型原生桥接模块 | 保存 API key、设备凭据和 MCP secrets |
+| 本地凭据 | 应用数据目录 `secrets.json`（0600） | 本机保存设备私钥、API key 副本和 MCP secrets；模型 API key 的权威副本在云端保险库 |
 | 终端 | Node child_process；交互程序使用 node-pty；UI 使用 xterm.js | 普通命令与 PTY 分开处理，支持流式输出、超时和取消 |
 | MCP | 官方 TypeScript MCP SDK + 自建 Pi 工具适配层 | 统一 stdio / Streamable HTTP 连接与工具策略 |
 | Chrome | Chrome DevTools MCP | 操作真实 Chrome 的页面、表单和标签页 |
@@ -391,7 +393,7 @@ Android：会话列表；server/本地聊天；项目和在线状态；Plan 审�
 
 Mac 是本地会话的唯一执行设备；云端保存共享用户消息、完整助手回答及版本，远程问答通过持久化 chat_run 队列交给所属 Mac。读代码直接回答，不触发编程审批。新会话在配对后默认共享，旧会话手动选择；不传输 Pi 会话、源码目录、diff 或原始工具输出。
 
-所有模型配置与 API Key 自动同步到可信云端，API Key 采用独立主密钥的 AES-256-GCM 加密；只有绑定设备能下载到 Keychain。使用 expected_version、desired/applied 版本和显式冲突解决。Android 通过 JWT 读取共享记录、发送问题（已实现），不获得密钥查询权限。详细规则与冻结接口见项目根目录 SYNC.md 及 server/openapi.json。
+所有模型配置与 API Key 自动同步到可信云端，API Key 采用独立主密钥的 AES-256-GCM 加密；只有绑定设备能下载到本机凭据文件。使用 expected_version、desired/applied 版本和显式冲突解决。Android 通过 JWT 读取共享记录、发送问题（已实现），不获得密钥查询权限。详细规则与冻结接口见项目根目录 SYNC.md 及 server/openapi.json。
 
 
 ```mermaid
@@ -406,7 +408,7 @@ flowchart LR
     UI[Electron] -->|受控 IPC| Mac
     Mac --> Local[(SQLite
 消息修订 / 同步状态 / 执行映射)]
-    Mac --> Keychain[macOS Keychain]
+    Mac --> Secrets[本机 secrets.json]
     Mac --> Pi[Pi Ask / 只读代码问答]
     Pi --> Context[本机项目与 Pi 会话]
 ```
@@ -439,7 +441,7 @@ shared_documents device_id 为空)]
 
 ## Skills 与 MCP 配置同步实现补充（A11）
 
-Skill 包和 MCP 服务配置是全局共享文档（`kind` 为 `skill` / `mcp_server`，`device_id` 为空），带版本号和 revision，用 `expected_version` 检测并发修改。Mac 和 Android 都可以编辑；secret 只以引用名出现在配置中，值保存在各台 Mac 的 Keychain。
+Skill 包和 MCP 服务配置是全局共享文档（`kind` 为 `skill` / `mcp_server`，`device_id` 为空），带版本号和 revision，用 `expected_version` 检测并发修改。Mac 和 Android 都可以编辑；secret 只以引用名出现在配置中，值保存在各台 Mac 的 `secrets.json`。
 
 Mac 每 5 秒拉取配置包，只做静态依赖检查：在 PATH 与常见 Homebrew 目录中查找可执行文件、核对平台、包内脚本、依赖的 MCP 和本机 secret。检查不启动任何进程，安装提示只展示，包内脚本以 0644 权限写入本地目录。检查结果按设备回报：可用时 `applied_version` 前进；不可用时保留上一可用版本，并列出原因码。手机和 Mac 都能看到每台设备的"最新版本 / 生效版本 / 原因"。
 
@@ -477,7 +479,7 @@ Mac 服务启动一个独立自动化 profile 的 Chrome（`<数据目录>/chrom
 
 浏览器锁：每个 profile 一把锁，任务第一次调用浏览器工具时获取，运行结束、取消或失败时释放。同一任务可重入；其他任务排队，60 秒内没拿到就报"浏览器正被任务 X 使用"。换持有者时清空上一次快照，新任务不能沿用旧编号。
 
-Jev（TypeSafe 的决策模型）：在设置页"Jev 浏览器决策"填 Base URL（默认 `https://api.typesafe.ai`）、模型（默认 `jev-latest`）和 API Key 后即启用，key 存在 Keychain（条目 `jev-key`），配置只存本机，不同步到云端。`browser_task` 每一步先快照，再向 `POST {Base URL}/v1/systemone` 发一个请求，包含三个问题：下一步操作（choice，选项是本页可执行的动作）、目标是否达成（noul）、是否卡住（noul）。
+Jev（TypeSafe 的决策模型）：在设置页"Jev 浏览器决策"填 Base URL（默认 `https://api.typesafe.ai`）、模型（默认 `jev-latest`）和 API Key 后即启用，key 存在本机 `secrets.json`，配置只存本机，不同步到云端。`browser_task` 每一步先快照，再向 `POST {Base URL}/v1/systemone` 发一个请求，包含三个问题：下一步操作（choice，选项是本页可执行的动作）、目标是否达成（noul）、是否卡住（noul）。
 
 - 选项只由执行器生成：点击某元素、在某输入框输入 `inputs` 中的第几段、在下拉框选某项、滚动、等待、结束、放弃。Jev 不生成文字，返回未列出的选项直接报错。密码框不会出现在选项里。
 - 达成或卡住的概率不低于 0.85 即停止；另有步数上限（默认 15，最多 40）和 90 秒时间上限。每一步仍走上面的执行前检查，敏感操作同样暂停任务。

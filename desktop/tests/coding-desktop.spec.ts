@@ -7,12 +7,10 @@ import { temp } from './helpers.js';
 import { codingEndpoint, fixtureProject } from './coding-helpers.js';
 import { Store } from '../packages/service/src/store.js';
 import { CloudStore } from '../packages/service/src/cloud/store.js';
-import { Keychain } from '../packages/service/src/keychain.js';
-
 test('desktop coding plan revision approval diff validation and cancellation', async () => {
   const dir = temp(), root = join(dir.path, 'repo'); mkdirSync(root); fixtureProject(root);
-  const api = await codingEndpoint(); let app: ElectronApplication | undefined, service: ChildProcess | undefined, modelId = '';
-  const env = { ...process.env, T_AGNET_DATA_DIR: dir.path, T_AGNET_KEYCHAIN_HELPER: resolve('native/dist/keychain') };
+  const api = await codingEndpoint(); let app: ElectronApplication | undefined, service: ChildProcess | undefined;
+  const env = { ...process.env, T_AGNET_DATA_DIR: dir.path };
   try {
     // Seed an offline pairing in the isolated test database; the current app requires pairing to enter the shell.
     const seeded = new Store(join(dir.path, 'app.sqlite'));
@@ -20,7 +18,7 @@ test('desktop coding plan revision approval diff validation and cancellation', a
     service = spawn(resolve('node_modules/node/bin/node'), ['packages/service/dist/server.mjs'], { env, stdio: 'ignore' });
     app = await electron.launch({ executablePath: resolve('node_modules/electron/dist/Electron.app/Contents/MacOS/Electron'), args: [resolve('apps/desktop')], env }); const page = await app.firstWindow();
     await expect(page.getByText('离线 · 等待自动同步', { exact: true })).toBeVisible();
-    modelId = await page.evaluate(async ({ url }) => (await window.agent.call('modelSave', { name: '编程测试模型', baseUrl: url, modelId: 'fixture', apiKey: 'coding-ui-secret', contextWindow: 32000, maxTokens: 4096 })).id, { url: api.url });
+    await page.evaluate(async ({ url }) => (await window.agent.call('modelSave', { name: '编程测试模型', baseUrl: url, modelId: 'fixture', apiKey: 'coding-ui-secret', contextWindow: 32000, maxTokens: 4096 })).id, { url: api.url });
     // Replace only the OS dialog response; exercise the actual native bridge, UI and service.
     await app.evaluate(({ dialog }, path) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [path] }); }, root);
     await page.getByRole('button', { name: '添加项目', exact: true }).click();
@@ -130,7 +128,7 @@ test('desktop coding plan revision approval diff validation and cancellation', a
     await page.getByLabel('审阅面板').locator('.plan-details').scrollIntoViewIfNeeded();
     await page.getByLabel('项目对话记录').evaluate(el => { el.scrollTop = 0; });
     await expect(progress).toBeInViewport();
-    await expect(page.getByLabel('计划执行状态')).toBeInViewport();
+    await expect(page.getByLabel('计划执行状态')).toBeHidden();
     await page.screenshot({ path: 'work/coding-progress-dark.png', animations: 'disabled' });
     await progress.getByRole('button', { name: '查看活动 ↗' }).click();
     await expect(page.getByLabel('执行活动详情')).toContainText('正在运行验证命令');
@@ -158,6 +156,6 @@ test('desktop coding plan revision approval diff validation and cancellation', a
     await expect(page.getByRole('alert')).toHaveCount(0);
   } finally {
     await app?.close(); if (service && service.exitCode === null) { const stopped = new Promise(r => service!.once('exit', r)); service.kill('SIGTERM'); await stopped; }
-    if (modelId) await new Keychain(resolve('native/dist/keychain')).delete(modelId); await api.close(); dir.cleanup();
+    await api.close(); dir.cleanup();
   }
 });

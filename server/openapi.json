@@ -1898,6 +1898,9 @@
           "version": {
             "title": "Version",
             "type": "integer"
+          },
+          "cloud": {
+            "$ref": "#/components/schemas/CloudConfigState"
           }
         },
         "required": [
@@ -3457,6 +3460,9 @@
           "version": {
             "title": "Version",
             "type": "integer"
+          },
+          "cloud": {
+            "$ref": "#/components/schemas/CloudConfigState"
           }
         },
         "required": [
@@ -4049,6 +4055,38 @@
         ],
         "title": "WsSubscribeMessage",
         "type": "object"
+      },
+      "CloudConfigState": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "available",
+              "unavailable",
+              "not_applicable",
+              "failed"
+            ]
+          },
+          "checked_version": {
+            "type": "integer"
+          },
+          "checked_at": {
+            "type": "string"
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConfigReason"
+            }
+          }
+        },
+        "required": [
+          "state",
+          "checked_version",
+          "reasons"
+        ]
       }
     },
     "securitySchemes": {
@@ -4080,9 +4118,9 @@
     }
   },
   "info": {
-    "description": "阶段 2：单用户认证、设备配对、项目目录、持久任务、计划版本审批、设备命令投递与任务事件回放。WebSocket：/ws/device（设备签名握手）与 /ws/events（用户 JWT），消息格式见 components 中 Ws* 模型。包含共享聊天、模型配置同步，以及由 DeepAgents Worker 执行的云端问答（/cloud/*）。",
+    "description": "Node.js 控制服务、共享聊天与配置、设备任务审批，以及 Pi 云端 harness。Mac harness 在本机独立运行。",
     "title": "T-AGNET Server",
-    "version": "0.2.0"
+    "version": "0.3.0"
   },
   "openapi": "3.1.0",
   "paths": {

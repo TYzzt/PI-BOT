@@ -1,3 +1,5 @@
+> 当前运行实现已迁移到 Node.js/Fastify + Pi Worker/Runner，部署见 [README.md](README.md)。本文旧阶段技术选型保留作历史记录；Mac harness 始终在端侧运行。
+
 # T-AGNET 云端需求
 
 定位：共享状态与任务控制服务，加上独立 DeepAgents 云端问答 Worker。

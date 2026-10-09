@@ -7,5 +7,6 @@ const bridge: DesktopBridge = {
   call: (method, input) => ipcRenderer.invoke('agent:call', method, input),
   subscribe: listener => { const handler = (_event: Electron.IpcRendererEvent, event: AppEvent) => listener(event); ipcRenderer.on('agent:event', handler); return () => ipcRenderer.removeListener('agent:event', handler); },
   openExternal: url => ipcRenderer.invoke('agent:openExternal', url),
+  openProjectFile: (projectId, href) => ipcRenderer.invoke('agent:openProjectFile', projectId, href),
 };
 contextBridge.exposeInMainWorld('agent', bridge);

@@ -12,7 +12,7 @@
 - 独立 Node.js LTS 常驻服务 + Pi coding-agent SDK：任务执行。
 - 用户级 launchd LaunchAgent：登录启动与运行管理。
 - SQLite：任务、事件、配置、outbox；Pi 原生会话文件：私有上下文。
-- macOS Keychain：模型、MCP 与设备密钥。
+- 应用数据目录 `secrets.json`：模型密钥的本机副本、MCP secret 与设备私钥。模型 API Key 的权威副本在云端保险库。
 - child_process / node-pty / xterm.js：普通命令、交互式 CLI、终端展示。
 - 官方 MCP TypeScript SDK + Pi 工具适配器；Chrome DevTools MCP 操作 Chrome。
 
@@ -32,7 +32,7 @@
 - 注册项目生成 project_id；真实路径仅保存在 LocalProjectBinding。
 - 云端仅同步项目名称、设备和可用状态，远程请求不能指定任意 cwd。
 - 模型配置包含 provider、API 类型、base_url、model_id、推理参数和连接测试。
-- 本地 Ask、Plan、Execute 可分别指定模型；密钥存 Keychain。
+- 本地 Ask、Plan、Execute 可分别指定模型；密钥加密存云端，本机 `secrets.json` 留一份副本。
 - Skills 支持文件包、版本、启停、作用域、依赖与 local_only。
 - MCP 支持 stdio/Streamable HTTP、工具列表、连接测试、超时和权限配置。
 - 配置模板与设备路径、秘密分离；显示 desired_version/applied_version；运行固定配置快照。

@@ -43,9 +43,9 @@ export interface CodingTask { shared?: boolean; intent?: 'read' | 'code' | 'agen
 export interface CodingRun { run: Run; mode: 'read' | 'plan' | 'execute' | 'agent'; planId: string | null; model: ModelConfig; sessionPath: string | null; startedAt?: number; endedAt?: number | null; }
 export interface ToolOutputRef { callId: string; omittedChars: number; headChars: number; tailChars: number }
 export interface ToolStats { queueMs: number; execMs: number; duplicateHits?: number }
-export interface ToolCall { id: string; taskId: string; runId: string; name: string; input: string; output: string; state: 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted'; startedAt: number; endedAt: number | null; exitCode: number | null; verification: boolean; truncated: boolean; cwd: string; path: string; outputRef?: ToolOutputRef; stats?: ToolStats; }
+export interface ToolCall { id: string; taskId: string; runId: string; name: string; input: string; output: string; state: 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted'; startedAt: number; endedAt: number | null; exitCode: number | null; verification: boolean; verificationFingerprint?: string; verificationExtras?: string[]; verificationChanged?: boolean; truncated: boolean; cwd: string; path: string; outputRef?: ToolOutputRef; stats?: ToolStats; }
 export interface StepStatus { stepId: string; state: 'pending' | 'running' | 'completed' | 'failed'; note: string; }
-export interface CodingDetail { messages: Message[]; summary: string; task: CodingTask; project: Project; plans: PlanVersion[]; runs: CodingRun[]; steps: StepStatus[]; tools: ToolCall[]; lastSeq: number; verification: 'passed' | 'failed' | 'not_run' | 'cancelled'; cloud?: CloudTaskInfo; }
+export interface CodingDetail { messages: Message[]; summary: string; task: CodingTask; project: Project; plans: PlanVersion[]; runs: CodingRun[]; steps: StepStatus[]; tools: ToolCall[]; toolCount?: number; hasChanges?: boolean; lastSeq: number; verification: 'passed' | 'failed' | 'not_run' | 'cancelled'; verificationFreshness?: 'current' | 'stale' | 'historical' | 'unavailable'; cloud?: CloudTaskInfo; }
 export interface FileChange { path: string; kind: 'added' | 'modified' | 'deleted'; preview: boolean; additions?: number; deletions?: number; }
 export interface Changes { files: FileChange[]; diff: string; warning: string; }
 export interface CodingApi {
@@ -60,7 +60,7 @@ export interface CodingApi {
   codingApprove: { input: { taskId: string; planId: string; hash: string; requestId: string }; output: Run | null };
   codingReject: { input: { taskId: string; requestId: string }; output: null };
   codingChanges: { input: { taskId: string; view: 'baseline' | 'workspace'; path?: string }; output: Changes };
-  codingLogs: { input: { taskId: string; offset: number }; output: ToolCall[] };
+  codingLogs: { input: { taskId: string; offset: number; beforeId?: string }; output: ToolCall[] };
   codingEvents: { input: { taskId: string; after: number }; output: AppEvent[] };
 }
 const id = z.string().uuid(), requestId = id, taskId = id;
@@ -71,6 +71,6 @@ export const codingSchemas = {
   codingGet: z.object({ conversationId: id }).strict(), codingRead: z.object({ taskId, text: z.string().trim().min(1).max(30000), modelId: id.optional(), requestId }).strict(), codingPlan: z.object({ taskId, feedback: z.string().trim().min(1).max(30000), planModelId: id.optional(), executeModelId: id.optional(), requestId }).strict(),
   codingApprove: z.object({ taskId, planId: id, hash: z.string().length(64), requestId }).strict(), codingReject: z.object({ taskId, requestId }).strict(),
   codingChanges: z.object({ taskId, view: z.enum(['baseline', 'workspace']), path: z.string().max(4096).optional() }).strict(),
-  codingLogs: z.object({ taskId, offset: z.number().int().nonnegative().max(1000000) }).strict(),
+  codingLogs: z.object({ taskId, offset: z.number().int().nonnegative().max(1000000), beforeId: id.optional() }).strict(),
   codingEvents: z.object({ taskId, after: z.number().int().nonnegative() }).strict(),
 } satisfies Record<keyof CodingApi, z.ZodType>;

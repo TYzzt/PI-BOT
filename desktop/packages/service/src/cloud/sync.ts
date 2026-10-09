@@ -36,7 +36,7 @@ export class CloudSync implements CodingObserver {
     const link = this.db.link(); if (!link || this.stopped) return;
     let key: string | null = null;
     try { key = await this.host.credentials.get(link.account); } catch { /* Reported below. */ }
-    if (!key) { this.note('Keychain 中缺少设备密钥，请解除配对后重新配对'); return; }
+    if (!key) { this.note('本机缺少设备密钥，请解除配对后重新配对'); return; }
     this.serverUrl = link.serverUrl; this.sign = signer(link.deviceId, key);
     this.recover();
     const base = this.options.retryBaseMs ?? 1000, max = this.options.retryMaxMs ?? 30000;

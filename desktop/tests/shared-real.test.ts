@@ -2,29 +2,29 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {homedir} from 'node:os';
-import {join,resolve} from 'node:path';
+import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {mkdirSync,writeFileSync,readFileSync} from 'node:fs';
 import {Store} from '../packages/service/src/store.js';
 import {Application} from '../packages/service/src/application.js';
-import {Keychain} from '../packages/service/src/keychain.js';
+import {FileCredentials} from '../packages/service/src/keychain.js';
 import {piFactory} from '../packages/service/src/pi-adapter.js';
 import {temp,eventually} from './helpers.js';
 import {fixtureProject} from './coding-helpers.js';
 const enabled=process.env.T_AGNET_REAL_SYNC==='1',url=process.env.T_AGNET_SHARED_URL;
-test('real model + Keychain shared conversation acceptance',{skip:!enabled||!url,timeout:240000},async()=>{
+test('real model shared conversation acceptance',{skip:!enabled||!url,timeout:240000},async()=>{
  const source=new DatabaseSync(join(homedir(),'Library/Application Support/T-AGNET/app.sqlite'),{readOnly:true});
  const configs=(source.prepare('SELECT data FROM models').all() as {data:string}[]).map(r=>JSON.parse(r.data));source.close();
  const config=configs.find(m=>m.isDefault)??configs[0];assert.ok(config,'需要已有真实模型配置');
- const keys=new Keychain(resolve('native/dist/keychain')),deviceKeys=new Keychain(resolve('native/dist/keychain'),'dev.t-agnet.device');
- const dir=temp();let store=new Store(join(dir.path,'app.sqlite')),app=new Application(store,keys,piFactory(dir.path),()=>{},{credentials:deviceKeys});let modelId='',deviceAccount='';
+ const userSecrets=new FileCredentials(join(homedir(),'Library/Application Support/T-AGNET/secrets.json'));
+ const dir=temp();const secrets=new FileCredentials(join(dir.path,'secrets.json'));let store=new Store(join(dir.path,'app.sqlite')),app=new Application(store,secrets,piFactory(dir.path),()=>{},{credentials:secrets});let modelId='';
  const report:any={started:new Date().toISOString(),model:config.modelId,checks:[]};
  try{
-  const secret=await keys.get(config.id);assert.ok(secret);
+  const secret=await userSecrets.get(config.id);assert.ok(secret);
   const model=await app.call('modelSave',{name:'真实同步验收',baseUrl:config.baseUrl,modelId:config.modelId,apiKey:secret,contextWindow:config.contextWindow,maxTokens:Math.min(config.maxTokens,4096)});modelId=model.id;
   const c=await app.call('conversationCreate',{modelConfigId:model.id});
   await app.call('messageSend',{conversationId:c.id,text:'请记住本次验收口令是青色海豚。只回答已记住。',requestId:randomUUID()});await eventually(async()=>!(await app.call('snapshot',{})).activeRun,90000);
-  const paired=await app.call('cloudPair',{serverUrl:url!,label:'真实 Keychain 验收',password:process.env.T_AGNET_SHARED_PASSWORD!});deviceAccount=app.cloud.db.link()!.account;
+  const paired=await app.call('cloudPair',{serverUrl:url!,label:'真实同步验收',password:process.env.T_AGNET_SHARED_PASSWORD!});
   const login=await(await fetch(url+'/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:process.env.T_AGNET_SHARED_PASSWORD})})).json() as any;
   const user=async(method:string,path:string,body?:any)=>{const r=await fetch(url+path,{method,headers:{authorization:`Bearer ${login.access_token}`,'content-type':'application/json'},body:body?JSON.stringify(body):undefined});assert.ok(r.ok,`HTTP ${r.status}`);return r.json() as Promise<any>;};
   await eventually(async()=> (await user('GET','/configs/models')).some((m:any)=>m.id===modelId&&m.applied_version>0),30000);report.checks.push('model_and_key_synced');
@@ -32,12 +32,12 @@ test('real model + Keychain shared conversation acceptance',{skip:!enabled||!url
   const run=await user('POST',`/conversations/${c.id}/messages`,{text:'之前让你记住的验收口令是什么？只回答口令。',request_id:randomUUID()});await eventually(async()=> (await user('GET',`/chat-runs/${run.id}`)).state==='completed',90000);
   let history=await user('GET',`/conversations/${c.id}/messages`);assert.match(history.messages.at(-1).content,/青色海豚/);report.checks.push('remote_context_retained');
   const m=(await user('GET','/configs/models')).find((x:any)=>x.id===modelId);
-  await user('PUT',`/configs/models/${modelId}`,{device_id:paired.deviceId,expected_version:m.version,request_id:randomUUID(),config:{...m.config,name:'真实同步验收已更新'},api_key:secret});await eventually(()=>store.model(modelId).name==='真实同步验收已更新',30000);assert.equal(await keys.get(modelId),secret);report.checks.push('remote_key_applied_to_keychain');
+  await user('PUT',`/configs/models/${modelId}`,{device_id:paired.deviceId,expected_version:m.version,request_id:randomUUID(),config:{...m.config,name:'真实同步验收已更新'},api_key:secret});await eventually(()=>store.model(modelId).name==='真实同步验收已更新',30000);assert.equal(await secrets.get(modelId),secret);report.checks.push('remote_key_applied_locally');
   await app.shared.stop();app.cloud.stop();
   const queued=await user('POST',`/conversations/${c.id}/messages`,{text:'断线排队后继续：请只回答之前的验收口令。',request_id:randomUUID()});
   assert.equal(queued.state,'queued');
   await app.call('messageSend',{conversationId:c.id,text:'这是一条断线时的本机提问，请回答收到。',requestId:randomUUID()});await eventually(async()=>!(await app.call('snapshot',{})).activeRun,90000);
-  await app.shutdown();store.close();store=new Store(join(dir.path,'app.sqlite'));app=new Application(store,keys,piFactory(dir.path),()=>{},{credentials:deviceKeys});
+  await app.shutdown();store.close();store=new Store(join(dir.path,'app.sqlite'));app=new Application(store,secrets,piFactory(dir.path),()=>{},{credentials:secrets});
   await eventually(async()=> (await user('GET',`/chat-runs/${queued.id}`)).state==='completed',90000);
   history=await user('GET',`/conversations/${c.id}/messages`);assert.match(history.messages.at(-1).content,/青色海豚/);
   assert.ok(history.messages.findIndex((x:any)=>x.content==='这是一条断线时的本机提问，请回答收到。')<history.messages.findIndex((x:any)=>x.id===queued.message_id));report.checks.push('offline_history_before_remote_queue');
@@ -55,6 +55,6 @@ test('real model + Keychain shared conversation acceptance',{skip:!enabled||!url
   const detail=await app.call('codingGet',{conversationId:cid});assert.equal(detail.plans.length,0);assert.ok(detail.tools.some(t=>t.name==='read_file'));assert.ok(detail.tools.every(t=>['read_file','list_files','search_files','find_files','git_status'].includes(t.name)));assert.equal(readFileSync(join(root,'acceptance.txt'),'utf8'),marker);report.checks.push('real_project_read_only_without_plan');
   report.finished=new Date().toISOString();report.status='passed';
  }catch(e){report.status='failed';report.finished=new Date().toISOString();throw e;}finally{
-  await app.shutdown();const staged=(store.db.prepare("SELECT data FROM shared_state WHERE kind='model'").all() as any[]).map(r=>JSON.parse(r.data).pending?.keyRef).filter(Boolean);store.close();for(const id of [modelId,...staged].filter(Boolean))await keys.delete(id);if(deviceAccount)await deviceKeys.delete(deviceAccount);dir.cleanup();mkdirSync('work',{recursive:true});writeFileSync('work/shared-real-report.json',JSON.stringify(report,null,2),{mode:0o600});
+  await app.shutdown();store.close();dir.cleanup();mkdirSync('work',{recursive:true});writeFileSync('work/shared-real-report.json',JSON.stringify(report,null,2),{mode:0o600});
  }
 });

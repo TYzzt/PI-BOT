@@ -4,7 +4,7 @@ import type { JevStatus } from '../../../protocol/src/index.js';
 
 export const JEV_DEFAULT_URL = 'https://api.typesafe.ai';
 export const JEV_DEFAULT_MODEL = 'jev-latest';
-// Keychain helper only accepts a UUID account under dev.t-agnet.*.
+// Fixed account id in the local secret file, kept as a UUID so older Keychain entries could be identified.
 export const JEV_KEY = '6f0e2b1a-9c34-4d5e-8f70-1a2b3c4d5e6f';
 export interface JevSettings { baseUrl: string; model: string; }
 export type JevQuestion = { type: 'choice'; instructions: string; criteria: Record<string, string> } | { type: 'noul'; instructions: string; criteria?: { true: string; false: string } };

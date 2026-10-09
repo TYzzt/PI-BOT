@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
 import { piFactory, isolatedResources } from '../packages/service/src/pi-adapter.js';
-import { Application } from '../packages/service/src/application.js';
+import { Application, safeFailure } from '../packages/service/src/application.js';
 import { Store } from '../packages/service/src/store.js';
 import { endpoint, temp, MemoryCredentials, eventually } from './helpers.js';
 
@@ -35,4 +35,12 @@ test('真实 Pi SDK + 可控端点：隔离、流式定稿、多轮恢复、取�
     const resources = isolatedResources(); assert.equal(resources.getExtensions().extensions.length, 0); assert.equal(resources.getAgentsFiles().agentsFiles.length, 0); assert.equal(resources.getSkills().skills.length, 0);
     assert.ok(!readFileSync(join(dir.path, 'db.sqlite')).includes(Buffer.from('fixture-secret')));
   } finally { await app.shutdown(); store.close(); await api.close(); dir.cleanup(); }
+});
+
+
+test('Pi model failures stay distinct from local credential errors after sanitizing', () => {
+  const message = safeFailure(new Error('模型请求失败，请检查凭据、模型名称、接口兼容性和网络'));
+  assert.match(message, /模型请求失败/);
+  assert.equal(safeFailure(new Error(message)), message);
+  assert.match(safeFailure(new Error('凭据文件不安全')), /无法读取模型凭据/);
 });

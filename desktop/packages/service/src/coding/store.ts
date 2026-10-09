@@ -36,12 +36,19 @@ export class CodingStore {
     return !!this.store.db.prepare("SELECT 1 FROM tool_calls WHERE runId=? AND json_extract(data, '$.name') IN ('write_file','edit_file','run_command') LIMIT 1").get(runId);
   }
   clearBaseline(runId: string) { this.store.db.prepare('UPDATE coding_runs SET baseline=NULL WHERE runId=?').run(runId); }
+  hasBaseline(runId: string) { return !!this.store.db.prepare('SELECT 1 FROM coding_runs WHERE runId=? AND baseline IS NOT NULL').get(runId); }
   baseline(taskId: string): WorkspaceImage | null { const r = this.store.db.prepare('SELECT baseline FROM coding_runs WHERE taskId=? AND baseline IS NOT NULL ORDER BY rowid DESC LIMIT 1').get(taskId) as { baseline: string } | undefined; return r ? JSON.parse(r.baseline) : null; }
   approval(planId: string): string | null { return (this.store.db.prepare('SELECT runId FROM approvals WHERE planId=?').get(planId) as { runId: string } | undefined)?.runId ?? null; }
   approve(planId: string, runId: string, details: unknown) { this.store.db.prepare('INSERT INTO approvals VALUES(?,?,?)').run(planId, runId, JSON.stringify(details)); }
   tools(taskId: string) { return this.all<ToolCall>('SELECT data FROM tool_calls WHERE taskId=? ORDER BY rowid DESC LIMIT 150', taskId).reverse(); }
+  toolCount(taskId: string) { return Number((this.store.db.prepare('SELECT COUNT(*) AS n FROM tool_calls WHERE taskId=?').get(taskId) as { n: number }).n); }
   verificationTools(runId: string) { return this.all<ToolCall>('SELECT data FROM tool_calls WHERE runId=? ORDER BY rowid', runId).filter(tool => tool.verification); }
-  logs(taskId: string, offset: number): ToolCall[] { return (this.store.db.prepare('SELECT data FROM tool_calls WHERE taskId=? ORDER BY rowid DESC LIMIT 25 OFFSET ?').all(taskId, offset) as { data: string }[]).map(r => JSON.parse(r.data)); }
+  logs(taskId: string, offset: number, beforeId?: string): ToolCall[] {
+    const rows = beforeId
+      ? this.store.db.prepare('SELECT data FROM tool_calls WHERE taskId=? AND rowid < (SELECT rowid FROM tool_calls WHERE taskId=? AND id=?) ORDER BY rowid DESC LIMIT 25').all(taskId, taskId, beforeId)
+      : this.store.db.prepare('SELECT data FROM tool_calls WHERE taskId=? ORDER BY rowid DESC LIMIT 25 OFFSET ?').all(taskId, offset);
+    return (rows as { data: string }[]).map(r => { const t: ToolCall = JSON.parse(r.data); return { ...t, output: t.output.slice(-12000), truncated: t.truncated || t.output.length > 12000 }; });
+  }
   putTool(tool: ToolCall) { this.store.db.prepare('INSERT INTO tool_calls VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(tool.id, tool.taskId, tool.runId, JSON.stringify(tool)); }
   steps(taskId: string) { return this.all<StepStatus[]>('SELECT data FROM task_steps WHERE taskId=?', taskId)[0] ?? []; }
   putSteps(taskId: string, steps: StepStatus[]) { this.store.db.prepare('INSERT INTO task_steps VALUES(?,?) ON CONFLICT(taskId) DO UPDATE SET data=excluded.data').run(taskId, JSON.stringify(steps)); }

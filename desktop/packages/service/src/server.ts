@@ -2,10 +2,9 @@ import { createServer, type Socket, connect } from 'node:net';
 import { mkdirSync, chmodSync, readFileSync, writeFileSync, existsSync, unlinkSync, lstatSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
 import { createLog } from './log.js';
 import { Store } from './store.js';
-import { Keychain } from './keychain.js';
+import { FileCredentials } from './keychain.js';
 import { piFactory } from './pi-adapter.js';
 import { Application, safeFailure } from './application.js';
 import { dataDir, socketDir, socketPath, tokenPath } from './paths.js';
@@ -28,7 +27,6 @@ function send(s: Socket, value: unknown) { if (!s.destroyed) { if (s.writableLen
 function broadcast(event: AppEvent) { for (const peer of peers) send(peer, { event }); }
 const log = createLog(dataDir);
 let store: Store;
-const helper = process.env.T_AGNET_KEYCHAIN_HELPER || fileURLToPath(new URL('../../../native/dist/keychain', import.meta.url));
 let application: Application;
 const server = createServer(socket => {
   socket.setEncoding('utf8');
@@ -61,7 +59,8 @@ server.on('error', () => { console.error('本地服务无法监听，请检查�
 server.listen(socketPath, () => {
   chmodSync(socketPath, 0o600);
   store = new Store(join(dataDir, 'app.sqlite'));
-  application = new Application(store, new Keychain(helper), piFactory(dataDir), broadcast, { credentials: new Keychain(helper, 'dev.t-agnet.device') });
+  const secrets = new FileCredentials(join(dataDir, 'secrets.json'));
+  application = new Application(store, secrets, piFactory(dataDir), broadcast, { credentials: secrets });
   log('service.started');
   console.log('T-AGNET service ready');
 });

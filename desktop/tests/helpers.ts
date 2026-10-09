@@ -3,6 +3,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer, type Server } from 'node:http';
 import type { Credentials } from '../packages/service/src/keychain.js';
+import { randomUUID } from 'node:crypto';
+export async function seedOfflinePairing(dir: string) {
+  const { Store } = await import('../packages/service/src/store.js');
+  const { CloudStore } = await import('../packages/service/src/cloud/store.js');
+  const store = new Store(join(dir, 'app.sqlite'));
+  new CloudStore(store).putLink({ account: 'offline-ui-fixture', serverUrl: 'http://127.0.0.1:1', deviceId: randomUUID(), label: '离线测试 Mac', publicKey: '', pairedAt: Date.now(), producerSeq: 0, lastSyncAt: null });
+  store.close();
+}
 export class MemoryCredentials implements Credentials { values = new Map<string, string>(); async get(id: string) { return this.values.get(id) ?? null; } async set(id: string, value: string) { this.values.set(id, value); } async delete(id: string) { this.values.delete(id); } }
 export function temp() { const path = realpathSync(mkdtempSync(join(tmpdir(), 't-agnet-test-'))); return { path, cleanup: () => rmSync(path, { recursive: true, force: true }) }; }
 export async function eventually(fn: () => boolean | Promise<boolean>, timeout = 10000) { const start = Date.now(); while (!(await fn())) { if (Date.now() - start > timeout) throw new Error('等待条件超时'); await new Promise(r => setTimeout(r, 25)); } }

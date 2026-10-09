@@ -1,17 +1,18 @@
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
-
+FROM node:24-bookworm-slim AS build
 WORKDIR /app
-ENV UV_COMPILE_BYTECODE=1 \
-    UV_LINK_MODE=copy \
-    PYTHONPATH=/app/src \
-    PYTHONUNBUFFERED=1
-
-COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev
-
-COPY alembic.ini ./
-COPY alembic alembic
-COPY src src
-
+COPY . .
+RUN npm ci --ignore-scripts --workspace=@t-agnet/server --workspace=@t-agnet/agent --include-workspace-root
+RUN npm run build --workspace=@t-agnet/server
+FROM node:24-bookworm-slim
+ENV NODE_ENV=production
+WORKDIR /app
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/server/dist ./server/dist
+COPY --from=build /app/server/migrations ./server/migrations
+COPY --from=build /app/server/openapi.json ./server/openapi.json
+COPY --from=build /app/server/scripts/wait.mjs ./server/scripts/wait.mjs
+COPY --from=build /app/server/package.json ./server/package.json
+RUN mkdir -p /data && chown node:node /data
+USER node
 EXPOSE 8000
-CMD ["uv", "run", "--no-dev", "uvicorn", "tagent_server.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["node", "server/dist/main.mjs"]

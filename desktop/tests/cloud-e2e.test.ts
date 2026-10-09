@@ -86,7 +86,7 @@ test('cloud link: pairing, sharing, plans, approvals, events, cancel, offline re
     const eventsA = await allEvents(taskA);
     assert.equal(eventsA.find(e => e.type === 'approval.recorded').payload.actor, 'device');
     assert.ok(eventsA.some(e => e.type === 'step.completed' && e.payload.step_id === 'fix-add'));
-    assert.ok(eventsA.some(e => e.type === 'tool.finished' && e.payload.tool_name === 'run_command' && e.payload.verification === 'passed' && e.payload.exit_code === 0));
+    assert.ok(eventsA.some(e => e.type === 'tool.finished' && e.payload.tool_name === 'run_command' && e.payload.verification === 'passed' && e.payload.exit_code === 0), JSON.stringify(eventsA.filter(e => e.type === 'tool.finished').map(e => e.payload)));
     assert.equal(eventsA.find(e => e.type === 'run.completed').payload.verification, 'passed');
 
     // D3-05 duplicate user approvals yield one run; the changed workspace forces a replan.

@@ -1,10 +1,12 @@
+> 当前实现：服务端已迁移到 Node.js 24 + Fastify；云端 Worker/Runner 和 Mac 本地 harness 复用 `packages/agent`（Pi），分别在云端和端侧执行。Skills/MCP 已接入运行。部署与迁移见 [server/README.md](../server/README.md)；下文旧阶段技术描述保留作历史记录。
+
 > 新增：聊天记录、模型配置/API Key 同步与远程续聊已接入。共享规则、加密密钥部署及验收命令见 [SYNC.md](../SYNC.md)。原阶段说明保留作为历史记录。
 
 # T-AGNET desktop
 
-macOS 个人智能体桌面应用：本地 Ask + 项目代码问答 + Git 项目编程闭环 + 云端任务执行。Electron + React + TypeScript + Vite / Electron Forge，独立 Node.js 24 服务，真实 Pi SDK，SQLite 和 macOS Keychain。
+macOS 个人智能体桌面应用：本地 Ask + 项目代码问答 + Git 项目编程闭环 + 云端任务执行。Electron + React + TypeScript + Vite / Electron Forge，独立 Node.js 24 服务，真实 Pi SDK，SQLite。模型 API Key 加密存在云端，本机凭据放在应用数据目录，不使用钥匙串。
 
-**当前状态：第三阶段（接入云端）已实现，自动化与对本地服务器的端到端测试通过，待 Mac 验收。** 第二阶段的项目管理、读代码问答、计划审批、代码编辑、命令、diff 和验证记录均已验收。第三阶段让 Mac 与云端配对，接收云端任务、本地规划与执行，手机或 Mac 任一方审批，进度脱敏回传。共享 Skills/MCP 配置（A11）和执行阶段的 Chrome 操作（A12，可选 Jev 决策）已实现，待 Mac 验收；Skills 加载进 Pi、MCP 客户端和交互终端尚未开放。
+**当前状态：第三阶段（接入云端）已实现，自动化与对本地服务器的端到端测试通过，待 Mac 验收。** 第二阶段的项目管理、读代码问答、计划审批、代码编辑、命令、diff 和验证记录均已验收。第三阶段让 Mac 与云端配对，接收云端任务、本地规划与执行，手机或 Mac 任一方审批，进度脱敏回传。共享 Skills/MCP 配置（A11）和执行阶段的 Chrome 操作（A12，可选 Jev 决策）已实现，待 Mac 验收；Skills 与 MCP 已通过共享 Pi Agent 接入本机执行；交互终端尚未开放。
 
 编程使用说明见 [PHASE-2.md](./PHASE-2.md)，验收证据见 [VALIDATION-PHASE-2.md](./VALIDATION-PHASE-2.md)。云端接入说明与验证记录见 [PHASE-3.md](./PHASE-3.md)。
 
@@ -13,9 +15,9 @@ macOS 个人智能体桌面应用：本地 Ask + 项目代码问答 + Git 项目
 前置条件：macOS（已在 Apple Silicon 验证）、可用的 npm、Xcode Command Line Tools（`xcrun swiftc --version` 可执行）、可访问 npm 和 Electron 下载源。首次安装需要联网。
 
 ```sh
-cd ~/T-AGNET/desktop
+cd ~/T-AGNET
 npm ci
-npm run dev
+npm run desktop:dev
 ```
 
 项目固定 Node.js `24.21.0`，安装在 `node_modules/node/bin/node`；npm scripts 使用项目运行时，不替换系统 Node。Electron 安装脚本通过根项目 `postinstall` 下载对应二进制，不要使用 `--ignore-scripts`。Swift helper 在构建时编译。
@@ -42,6 +44,8 @@ npm run dev
 
 输入框的「计划」模式用于先讨论方案，确认后执行。遇到影响方案的问题时，智能体会立即暂停，在对话中逐题展示选项或自由回答；回答后继续完善计划。计划准备好后以卡片展示目标和步骤，可直接「确认执行」，或点击「查看计划」审阅完整范围与验证；侧栏底部固定显示执行操作，「代码变更」按需打开。执行时输入框上方固定显示实时进度，包括当前步骤、正在运行的工具或命令、耗时和最新输出；「执行活动」侧栏可查看步骤状态与最近工具记录。步骤完成数按智能体上报显示，工具活动独立实时更新。执行耗时每秒更新，包含模型思考与工具执行，结束或暂停后固定保存；会话累计耗时仅统计正常对话与批准执行，不含规划和等待用户确认。代码变更提供文件增删统计、文件列表、带行号的彩色 diff、自动换行与文件切换，并可选择本次执行或整个工作区；执行期间低频自动刷新。执行中遇到需要澄清的问题也会暂停，补充后生成新计划，再确认执行。对话只选一个模型，下一轮分析、修改和验证使用该模型；计划生成后切换模型需要重新规划再确认。
 
+验证结果绑定检查时的工作区状态；检查后再次修改会显示「修改后未验证」，旧记录显示「历史验证结果」。运行结束与验收通过分别展示。只检查且未改变工作区的轮次保留上次修改的 diff 基线；工具活动支持加载更早记录。项目回答中的文件链接可用默认应用打开，含行号时会提示默认应用无法自动定位。窄窗口打开审阅面板时切换为单面板视图，关闭后恢复对话和草稿。
+
 直接执行保留已有工作区修改，不自动提交、推送或回滚；停止或失败后可以继续发送消息。手机远程项目问答仍保持只读，云端管理的任务仍通过原有审批流程执行。
 
 ## 云端同步
@@ -65,14 +69,13 @@ flowchart LR
   Pi -->|Chat Completions| Model[用户配置的模型端点]
   Service --> Cloud[cloud: 配对 / 命令 / outbox]
   Cloud -->|签名 HTTPS + WSS| Server[T-AGNET server]
-  Service -->|stdin / stdout| Helper[Swift helper]
-  Helper --> Keychain[macOS Keychain]
+  Service --> Secrets[secrets.json]
 ```
 
 - `apps/desktop`：Electron 主进程、preload、React 界面和 Forge 配置。
 - `packages/service`：socket 服务、串行命令管理、运行协调、SQLite、凭据与 Pi 适配器。
 - `packages/protocol`：应用自己的请求/事件和 Zod 输入校验，不向 renderer 暴露 Pi 对象。
-- `native`：Keychain helper；`scripts`：构建和开发启动器；`tests`：适配器、存储、凭据和 Electron 测试。
+- `native`：旧的 Keychain helper，日常运行不再调用；`scripts`：构建和开发启动器；`tests`：适配器、存储、凭据和 Electron 测试。
 
 Pi SDK 固定为 `0.87.1`。Ask 显式禁用所有工具，项目会话按 Read / Plan / Execute 注册不同工具集；所有模式禁用自动资源发现。不会加载用户原有 Pi 配置、项目 AGENTS 文件、Skills、扩展或命令模板。输入的 `/` 前缀按普通文本处理。运行结束依据 SDK 最终生命周期；中间 turn 结束不会提前将任务标为完成。禁用自动重试和自动上下文压缩，服务恢复不会自动重发模型请求。
 
@@ -89,17 +92,18 @@ renderer 使用 sandbox、contextIsolation、无 Node 权限；导航和新窗�
 | `pi/empty-workspace/` | 隔离工作目录 |
 | `electron/` | Electron 本地用户数据 |
 | `ipc-token` | 仅当前用户可读的本机握手令牌 |
+| `secrets.json` | 仅当前用户可读。设备私钥、模型 API Key 的本机副本、MCP secret 和 Jev 密钥 |
 | `logs/service.log` | 仅固定服务事件及时间；超过 1 MB 保留一个轮转文件 |
 
-配对云端后，设备 Ed25519 私钥保存在 Keychain，service 为 `dev.t-agnet.device`；`app.sqlite` 另外保存云端映射、收到的命令和待发送事件（`cloud_*` 表），不保存管理员密码或登录令牌。
+配对云端后，设备 Ed25519 私钥写入 `secrets.json`。它必须留在这台 Mac 上，用来给设备请求签名，不能放到云端。`app.sqlite` 另外保存云端映射、收到的命令和待发送事件（`cloud_*` 表），不保存管理员密码或登录令牌。
 
-API Key 保存在 Keychain，service 为 `dev.t-agnet.models`，account 为模型配置 UUID；不放入命令参数、SQLite 或前端返回对象。供应商错误不直接展示或记录，并在 Pi 会话写入前遮蔽当前密钥。日志不包含消息、请求头或原始供应商错误。
+模型 API Key 的权威副本加密保存在云端保险库。保存或从其他设备同步时，本机把同一份密钥写入 `secrets.json`，供 Mac 直接请求模型。密钥不放入命令参数、SQLite 或前端返回对象。供应商错误不直接展示或记录，并在 Pi 会话写入前遮蔽当前密钥。日志不包含消息、请求头或原始供应商错误。MCP secret 和 Jev 密钥只在本机，没有云端存储位置。
 
 Unix socket 放在 `/tmp/t-agnet-<uid>-<data-dir-hash>/service.sock`，避开 macOS socket 路径长度限制；目录 0700，socket 和令牌 0600。主进程断线后每秒重连，恢复后刷新状态。启动时遗留运行标为 `interrupted`，保留内容，不自动重新调用模型。发送使用幂等 UUID，同一请求重复提交返回原运行。
 
 删除会话同时删除对应 Pi 会话文件。编程任务还保存工作区基线、工具日志和批准记录；均仅存本机。消息会自动同步到已配对的云端；项目源码文件、diff、原始工具输出与 Pi 会话文件不上传。历史数据未加密，依赖当前 macOS 用户的文件访问权限。聊天内容会发往你配置的模型提供商。
 
-测试可通过 `T_AGNET_DATA_DIR` 使用隔离数据目录，通过 `T_AGNET_KEYCHAIN_HELPER` 指定构建后的 helper。
+测试可通过 `T_AGNET_DATA_DIR` 使用隔离数据目录。日常服务不再读取 `T_AGNET_KEYCHAIN_HELPER`。
 
 ## 检查
 
@@ -121,6 +125,6 @@ npm run test:ui
 
 - 支持单用户、单 Mac、文本 Ask 与 Git 项目编程；一台 Mac 只配对一个云端服务器，解除配对不会在云端吊销设备，应用退出后不再接收云端任务。没有 OAuth、Responses、Anthropic 原生接口、自动模型发现或推理参数配置。
 - 上下文过长时需新建会话或调整配置；当前没有自动压缩。取消/异常运行的部分内容保留，完整多轮恢复已由正常完成的对话测试覆盖。
-- Keychain 若锁定或访问被拒绝，需在本机解锁或重新保存配置。开发 helper 未签名，尚未覆盖正式分发和权限迁移。
+- 本机凭据文件权限不对或被替换成符号链接时，服务会拒绝读写。重新保存模型密钥即可恢复。
 - 不保证所有标为 OpenAI-compatible 的第三方接口行为一致，需要用自己的端点验收。
 - 当前锁文件的运行时依赖审计为 0 项；Forge 开发依赖链仍有安全公告，详见验收记录。正式打包前需处理并重新验证。
