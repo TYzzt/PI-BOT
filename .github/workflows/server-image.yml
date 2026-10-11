@@ -1,5 +1,5 @@
-# 服务端与共享 Agent 变更时，先验证再构建镜像。
-# 仓库：registry.cn-beijing.aliyuncs.com/liuhx/t-agent-server
+# 服务端、管理后台与共享包变更时，先验证再构建镜像。
+# 仓库：registry.cn-beijing.aliyuncs.com/liuhx/pi-bot-server
 # 在 GitHub 仓库 Settings → Secrets 中配置：
 #   ALIYUN_REGISTRY_USER      控制台登录用户名
 #   ALIYUN_REGISTRY_PASSWORD  访问凭证里的固定密码（不是登录密码）
@@ -10,7 +10,8 @@ on:
     branches: [main]
     paths:
       - "server/**"
-      - "packages/agent/**"
+      - "admin/**"
+      - "packages/**"
       - "package.json"
       - "package-lock.json"
       - ".github/workflows/server-image.yml"
@@ -23,12 +24,12 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_USER: tagent
-          POSTGRES_PASSWORD: tagent
-          POSTGRES_DB: tagent
+          POSTGRES_USER: pibot
+          POSTGRES_PASSWORD: pibot
+          POSTGRES_DB: pibot
         ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U tagent -d tagent"
+          --health-cmd "pg_isready -U pibot -d pibot"
           --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
@@ -40,7 +41,7 @@ jobs:
       - run: npm run typecheck
       - run: npm test
         env:
-          T_AGNET_TEST_DATABASE_URL: postgresql://tagent:tagent@127.0.0.1:5432/tagent
+          PI_BOT_TEST_DATABASE_URL: postgresql://pibot:pibot@127.0.0.1:5432/pibot
       - run: npm run build
   build:
     needs: test
@@ -65,5 +66,5 @@ jobs:
           provenance: false
           sbom: false
           tags: |
-            registry.cn-beijing.aliyuncs.com/liuhx/t-agent-server:latest
-            registry.cn-beijing.aliyuncs.com/liuhx/t-agent-server:${{ github.sha }}
+            registry.cn-beijing.aliyuncs.com/liuhx/pi-bot-server:latest
+            registry.cn-beijing.aliyuncs.com/liuhx/pi-bot-server:${{ github.sha }}

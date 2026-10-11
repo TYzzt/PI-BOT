@@ -1,6 +1,7 @@
-import { readFile, writeFile } from "node:fs/promises";
-const path = new URL("../openapi.json", import.meta.url),
-  contract = JSON.parse(await readFile(path, "utf8"));
-// This contract drives the Node server's runtime validators and route registration.
-await writeFile(path, JSON.stringify(contract, null, 2) + "\n");
-console.log("已验证并格式化 OpenAPI 契约");
+import { writeFile } from "node:fs/promises";
+import { openapi } from "../src/app.js";
+await writeFile(
+  new URL("../openapi.json", import.meta.url),
+  JSON.stringify(openapi(), null, 2) + "\n",
+);
+console.log("已根据路由注册表生成 openapi.json");

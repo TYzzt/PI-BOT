@@ -7,23 +7,12 @@ import {
   createDecipheriv,
 } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { SignJWT, jwtVerify } from "jose";
+import { SignJWT, jwtVerify, type JWTPayload } from "jose";
 import { hash, verify as verifyPassword, argon2id } from "argon2";
 import { fail, type Tx, type Row } from "./db.js";
 import type { Settings } from "./config.js";
 export const sha256 = (value: string | Buffer) =>
   createHash("sha256").update(value).digest("hex");
-export function canonical(value: any): string {
-  return JSON.stringify(value, (_key, v) =>
-    v && typeof v === "object" && !Array.isArray(v)
-      ? Object.fromEntries(
-          Object.keys(v)
-            .sort()
-            .map((k) => [k, v[k]]),
-        )
-      : v,
-  );
-}
 export const passwordHash = (password: string) =>
   hash(password, {
     type: argon2id,
@@ -38,27 +27,59 @@ export async function passwordMatches(hashed: string, password: string) {
     return false;
   }
 }
-export const issueToken = (id: string, s: Settings) =>
-  new SignJWT({ sub: id })
+const secret = (s: Settings) => new TextEncoder().encode(s.jwtSecret);
+export const issueToken = (u: Row, s: Settings) =>
+  new SignJWT({ typ: "user", role: u.role })
     .setProtectedHeader({ alg: "HS256" })
+    .setSubject(u.user_id)
     .setIssuedAt()
     .setExpirationTime(Math.floor(Date.now() / 1000) + s.jwtTtl)
-    .sign(new TextEncoder().encode(s.jwtSecret));
-export async function user(tx: Tx, headers: Row, s: Settings) {
-  const m = /^Bearer\s+(.+)$/i.exec(headers.authorization ?? "");
-  if (!m) fail(401, "需要认证");
+    .sign(secret(s));
+export interface LlmClaims {
+  sub: string;
+  src: "mac" | "cloud" | "memory" | "test";
+  bot?: string;
+  did?: string;
+}
+/** Short-lived bearer for the model proxy. Provider keys never leave the server. */
+export const issueLlmToken = (claims: LlmClaims, s: Settings, ttl = s.llmTokenTtl) =>
+  new SignJWT({ typ: "llm", src: claims.src, bot: claims.bot, did: claims.did })
+    .setProtectedHeader({ alg: "HS256" })
+    .setSubject(claims.sub)
+    .setIssuedAt()
+    .setExpirationTime(Math.floor(Date.now() / 1000) + ttl)
+    .sign(secret(s));
+async function verifyToken(value: string, s: Settings, typ: string) {
+  let payload: JWTPayload;
   try {
-    const { payload } = await jwtVerify(
-      m![1],
-      new TextEncoder().encode(s.jwtSecret),
-      { algorithms: ["HS256"] },
-    );
-    if (!payload.sub || !payload.exp || !(await tx.get("users", payload.sub)))
-      fail(401, "认证失败");
-    return payload;
+    ({ payload } = await jwtVerify(value, secret(s), { algorithms: ["HS256"] }));
   } catch {
     return fail(401, "认证失败");
   }
+  if (payload.typ !== typ || !payload.sub || !payload.exp) fail(401, "认证失败");
+  return payload;
+}
+function bearer(headers: Row) {
+  const m = /^Bearer\s+(.+)$/i.exec(headers.authorization ?? "");
+  return m?.[1];
+}
+async function activeUser(tx: Tx, id: string) {
+  const u = await tx.get("users", id);
+  if (!u || u.disabled) fail(401, "账号不可用");
+  return u;
+}
+export async function user(tx: Tx, headers: Row, s: Settings) {
+  const token = bearer(headers);
+  if (!token) fail(401, "需要认证");
+  const payload = await verifyToken(token!, s, "user");
+  return activeUser(tx, payload.sub!);
+}
+export async function llmCaller(tx: Tx, headers: Row, s: Settings) {
+  const token = bearer(headers);
+  if (!token) fail(401, "需要认证");
+  const payload = await verifyToken(token!, s, "llm");
+  const u = await activeUser(tx, payload.sub!);
+  return { user: u, claims: payload as unknown as LlmClaims };
 }
 export function decodeBase64(value: string, size?: number) {
   if (
@@ -71,6 +92,13 @@ export function decodeBase64(value: string, size?: number) {
   if (size && b.length !== size) throw new Error("length");
   return b;
 }
+export const DEVICE_HEADERS = {
+  id: "x-pibot-device-id",
+  timestamp: "x-pibot-timestamp",
+  nonce: "x-pibot-nonce",
+  signature: "x-pibot-signature",
+} as const;
+export const isSigned = (headers: Row) => !!headers[DEVICE_HEADERS.signature];
 export async function device(
   tx: Tx,
   headers: Row,
@@ -78,14 +106,12 @@ export async function device(
   path: string,
   body: Buffer,
   s: Settings,
-  allowBearer = false,
 ) {
-  if (!allowBearer && headers.authorization)
-    fail(403, "当前身份不能执行此操作");
-  const id = headers["x-tagnet-device-id"],
-    timestamp = headers["x-tagnet-timestamp"],
-    nonce = headers["x-tagnet-nonce"],
-    signature = headers["x-tagnet-signature"];
+  if (headers.authorization) fail(400, "不能同时使用用户令牌和设备签名");
+  const id = headers[DEVICE_HEADERS.id],
+    timestamp = headers[DEVICE_HEADERS.timestamp],
+    nonce = headers[DEVICE_HEADERS.nonce],
+    signature = headers[DEVICE_HEADERS.signature];
   if (
     !/^[0-9a-f-]{36}$/i.test(id ?? "") ||
     !/^-?\d+$/.test(timestamp ?? "") ||
@@ -129,7 +155,8 @@ export async function device(
     [id, nonce, new Date((Number(timestamp) + s.signatureSkew) * 1000)],
   );
   if (!saved) fail(401, "设备认证失败");
-  return d;
+  const owner = await activeUser(tx, d.user_id);
+  return { device: d, user: owner };
 }
 export class Vault {
   private keys!: Record<string, string>;
@@ -145,19 +172,19 @@ export class Vault {
       )
         throw new Error();
     } catch {
-      return fail(503, "凭据同步不可用：请检查服务端加密密钥文件");
+      return fail(503, "模型密钥不可用：请检查服务端加密密钥文件");
     }
   }
-  seal(secret: string, id: string, version: number) {
+  seal(value: string, id: string) {
     const nonce = randomBytes(12),
       c = createCipheriv(
         "aes-256-gcm",
         decodeBase64(this.keys[this.active], 32),
         nonce,
       );
-    c.setAAD(Buffer.from(`${id}:${version}`));
+    c.setAAD(Buffer.from(`model:${id}`));
     const ciphertext = Buffer.concat([
-      c.update(secret, "utf8"),
+      c.update(value, "utf8"),
       c.final(),
       c.getAuthTag(),
     ]);
@@ -165,7 +192,6 @@ export class Vault {
       key_id: this.active,
       nonce: nonce.toString("base64"),
       ciphertext: ciphertext.toString("base64"),
-      version,
     };
   }
   open(value: Row, id: string): string {
@@ -176,13 +202,13 @@ export class Vault {
           decodeBase64(this.keys[value.key_id], 32),
           decodeBase64(value.nonce, 12),
         );
-      d.setAAD(Buffer.from(`${id}:${value.version}`));
+      d.setAAD(Buffer.from(`model:${id}`));
       d.setAuthTag(b.subarray(-16));
       return Buffer.concat([d.update(b.subarray(0, -16)), d.final()]).toString(
         "utf8",
       );
     } catch {
-      return fail(503, "凭据无法解密，请检查加密密钥");
+      return fail(503, "模型密钥无法解密，请检查加密密钥");
     }
   }
 }

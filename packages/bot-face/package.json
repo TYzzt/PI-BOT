@@ -1,0 +1,17 @@
+{
+  "name": "@pi-bot/bot-face",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./react": "./src/react.tsx",
+    "./spec.json": "./spec.json"
+  },
+  "peerDependencies": {
+    "react": ">=19"
+  },
+  "peerDependenciesMeta": {
+    "react": { "optional": true }
+  }
+}

@@ -1,5 +1,4 @@
 import { Pool, types, type PoolClient } from "pg";
-import { randomUUID } from "node:crypto";
 types.setTypeParser(20, (value) => Number(value));
 export type Row = Record<string, any>;
 export class HttpError extends Error {
@@ -16,18 +15,21 @@ export const fail = (status: number, detail: unknown): never => {
 const keys: Record<string, string> = {
   users: "user_id",
   devices: "device_id",
-  projects: "project_id",
-  tasks: "task_id",
-  plans: "plan_id",
-  runs: "run_id",
+  models: "model_id",
+  bots: "bot_id",
+  bot_runs: "run_id",
+  bot_messages: "message_id",
+  bot_memories: "bot_id",
   approvals: "approval_id",
-  commands: "command_id",
-  events: "event_id",
-  pairing_codes: "pairing_code_id",
-  plan_feedback: "feedback_id",
-  shared_documents: "id",
-  shared_receipts: "id",
 };
+export const CHANNEL = "pibot_changes";
+export interface Change {
+  user_id: string;
+  bot_id?: string;
+  message_id?: string;
+  content?: string;
+  presence?: boolean;
+}
 export class Tx {
   private queue: Promise<unknown> = Promise.resolve();
   constructor(readonly client: PoolClient) {}
@@ -35,7 +37,7 @@ export class Tx {
     const result = this.queue.then(
       async () => (await this.client.query(sql, args)).rows as Row[],
     );
-    this.queue = result;
+    this.queue = result.catch(() => {});
     return result;
   }
   async one(sql: string, args: unknown[] = []): Promise<Row | undefined> {
@@ -52,64 +54,48 @@ export class Tx {
     const values = Object.entries(data).filter(([, v]) => v !== undefined);
     return (await this.one(
       `INSERT INTO ${table} (${values.map(([k]) => k).join(",")}) VALUES (${values.map((_, i) => `$${i + 1}`).join(",")}) RETURNING *`,
-      values.map(([, v]) => (Array.isArray(v) ? JSON.stringify(v) : v)),
+      values.map(([, v]) => encode(v)),
     ))!;
   }
-  async save(table: string, row: Row): Promise<Row> {
-    const key = keys[table],
-      entries = Object.entries(row).filter(
-        ([k]) => k !== key && k !== "position" && k !== "server_cursor",
-      );
-    await this.rows(
-      `UPDATE ${table} SET ${entries.map(([k], i) => `${k}=$${i + 2}`).join(",")} WHERE ${key}=$1`,
-      [
-        row[key],
-        ...entries.map(([, v]) => (Array.isArray(v) ? JSON.stringify(v) : v)),
-      ],
+  async update(table: string, id: string, data: Row): Promise<Row> {
+    const entries = Object.entries(data).filter(([, v]) => v !== undefined);
+    const row = await this.one(
+      `UPDATE ${table} SET ${entries.map(([k], i) => `${k}=$${i + 2}`).join(",")} WHERE ${keys[table]}=$1 RETURNING *`,
+      [id, ...entries.map(([, v]) => encode(v))],
     );
-    return row;
+    if (!row) fail(404, "记录不存在");
+    return row!;
   }
-  async event(
-    type: string,
-    task_id: string | null = null,
-    payload: Row = {},
-    run_id: string | null = null,
-    extra: Row = {},
-  ) {
-    const e = await this.insert("events", {
-      event_id: randomUUID(),
-      task_id,
-      run_id,
-      producer_id: "server",
-      producer_seq: null,
-      type,
-      schema_version: 1,
-      occurred_at: new Date(),
-      recorded_at: new Date(),
-      payload,
-      ...extra,
-    });
-    await this.rows("SELECT pg_notify('tagent_changes','')");
-    return e;
+  /** Large deltas are dropped to a plain change; clients refetch the tail. */
+  async notify(change: Change) {
+    let payload = JSON.stringify(change);
+    if (payload.length > 7000)
+      payload = JSON.stringify({ ...change, content: undefined });
+    await this.rows("SELECT pg_notify($1,$2)", [CHANNEL, payload]);
   }
+}
+function encode(v: unknown) {
+  return v !== null &&
+    typeof v === "object" &&
+    !(v instanceof Date) &&
+    !Buffer.isBuffer(v)
+    ? JSON.stringify(v)
+    : v;
 }
 export class Database {
   readonly pool: Pool;
   constructor(url: string) {
-    this.pool = new Pool({
-      connectionString: url.replace("postgresql+psycopg:", "postgresql:"),
-    });
+    this.pool = new Pool({ connectionString: url });
   }
   async tx<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
     const c = await this.pool.connect();
     try {
       await c.query("BEGIN");
-      await c.query("SELECT pg_advisory_xact_lock(7420250925)");
       const result = await fn(new Tx(c));
       await c.query("COMMIT");
       return result;
     } catch (e) {
-      await c.query("ROLLBACK");
+      await c.query("ROLLBACK").catch(() => {});
       throw e;
     } finally {
       c.release();

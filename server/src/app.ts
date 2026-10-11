@@ -1,39 +1,102 @@
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import websocket from "@fastify/websocket";
-import Ajv from "ajv/dist/2020.js";
-import formats from "ajv-formats";
-import { readFile } from "node:fs/promises";
-import { randomUUID, randomBytes } from "node:crypto";
-import { Database, HttpError, fail, type Tx, type Row } from "./db.js";
+import { randomUUID } from "node:crypto";
+import { readFile, stat } from "node:fs/promises";
+import { extname, join, normalize, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+import { z } from "zod";
+import { Database, HttpError, fail, type Row, type Tx } from "./db.js";
 import { migrate } from "./migrate.js";
-import {
-  passwordHash,
-  passwordMatches,
-  issueToken,
-  user,
-  device,
-  decodeBase64,
-  sha256,
-  Vault,
-} from "./security.js";
+import { device, isSigned, llmCaller, passwordHash, user } from "./security.js";
 import { settings, type Settings } from "./config.js";
-import * as task from "./tasks.js";
-import * as shared from "./shared.js";
+import { Hub } from "./hub.js";
+import { routes, type Context, type Route } from "./routes.js";
 import { sockets } from "./sockets.js";
+import { failOrphanedMacRuns } from "./runs.js";
+
+export async function bootstrapAdmin(db: Database, s: Settings) {
+  await db.tx(async (tx) => {
+    if (await tx.one("SELECT 1 FROM users WHERE role='admin' LIMIT 1")) return;
+    if (!s.adminPassword)
+      throw new Error("首次启动需要设置 PI_BOT_ADMIN_PASSWORD 来创建管理员");
+    await tx.insert("users", {
+      user_id: randomUUID(),
+      username: s.adminUsername,
+      display_name: "管理员",
+      password_hash: await passwordHash(s.adminPassword),
+      role: "admin",
+    });
+  });
+}
+
+function issues(error: z.ZodError, where: string) {
+  return error.issues.map((i) => ({
+    loc: [where, ...i.path.map(String)],
+    msg: i.message,
+    type: i.code,
+  }));
+}
+function parse(schema: z.ZodType | undefined, value: unknown, where: string) {
+  if (!schema) return value;
+  const r = schema.safeParse(value);
+  if (!r.success) fail(422, issues(r.error, where));
+  return r.data;
+}
+async function authenticate(
+  tx: Tx,
+  route: Route,
+  req: FastifyRequest,
+  raw: Buffer,
+  s: Settings,
+): Promise<Pick<Context, "user" | "device" | "llm">> {
+  const signedPath = req.url.split("?")[0];
+  switch (route.auth) {
+    case "none":
+      return { user: {} };
+    case "user":
+      return { user: await user(tx, req.headers, s) };
+    case "admin": {
+      const u = await user(tx, req.headers, s);
+      if (u.role !== "admin") fail(403, "需要管理员权限");
+      return { user: u };
+    }
+    case "device":
+      return device(tx, req.headers, req.method, signedPath, raw, s);
+    case "actor":
+      return isSigned(req.headers)
+        ? device(tx, req.headers, req.method, signedPath, raw, s)
+        : { user: await user(tx, req.headers, s) };
+    case "llm": {
+      const { user: u, claims } = await llmCaller(tx, req.headers, s);
+      return { user: u, llm: claims };
+    }
+  }
+}
+
+const MIME: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".ico": "image/x-icon",
+  ".json": "application/json",
+  ".woff2": "font/woff2",
+};
+function adminRoot(s: Settings) {
+  return resolve(
+    s.adminDir ?? fileURLToPath(new URL("../../admin/dist", import.meta.url)),
+  );
+}
+
 export async function createApp(
   s: Settings = settings(),
   db = new Database(s.databaseUrl),
-): Promise<FastifyInstance> {
+  hub = new Hub(),
+) {
   await migrate(db);
-  await db.tx(async (tx) => {
-    if (!(await tx.one("SELECT 1 FROM users LIMIT 1")))
-      await tx.insert("users", {
-        user_id: randomUUID(),
-        password_hash: await passwordHash(s.adminPassword),
-        singleton: true,
-        created_at: new Date(),
-      });
-  });
+  await bootstrapAdmin(db, s);
+  await failOrphanedMacRuns(db);
   const app = Fastify({ logger: false, bodyLimit: 8 * 1024 * 1024 });
   app.removeContentTypeParser("application/json");
   app.addContentTypeParser(
@@ -41,511 +104,121 @@ export async function createApp(
     { parseAs: "buffer" },
     (_req, body, done) => done(null, body),
   );
-  const contract = JSON.parse(
-    await readFile(new URL("../openapi.json", import.meta.url), "utf8"),
-  );
-  const ajv = new Ajv({
-    strict: false,
-    useDefaults: true,
-    coerceTypes: true,
-    allErrors: true,
-  });
-  formats(ajv);
-  ajv.addSchema({ $id: "contract", components: contract.components });
-  const bodyAjv = new Ajv({
-    strict: false,
-    useDefaults: true,
-    coerceTypes: false,
-    allErrors: true,
-  });
-  formats(bodyAjv);
-  bodyAjv.addSchema({ $id: "contract", components: contract.components });
-  const deref = (schema: Row): Row =>
-    schema.$ref
-      ? contract.components.schemas[schema.$ref.split("/").at(-1)]
-      : schema;
-  function normalize(value: any, schema: Row): any {
-    schema = deref(schema);
-    if (schema.anyOf) {
-      const candidate = schema.anyOf.find((x: Row) => x.type !== "null");
-      return value == null ? value : normalize(value, candidate);
-    }
-    if (schema.type === "array")
-      return value.map((v: any) => normalize(v, schema.items));
-    if (schema.properties && value) {
-      const out: Row = {};
-      for (const [k, raw] of Object.entries(schema.properties)) {
-        const sub = raw as Row;
-        let v = value[k];
-        if (v === undefined && sub.default !== undefined)
-          v = structuredClone(sub.default);
-        if (
-          v === undefined &&
-          !schema.required?.includes(k) &&
-          deref(sub).type === "object"
-        )
-          v = {};
-        if (
-          v === undefined &&
-          !schema.required?.includes(k) &&
-          deref(sub).type === "array"
-        )
-          v = [];
-        // Pydantic emitted optional nullable fields as null even when omitted.
-        if (
-          v === undefined &&
-          !schema.required?.includes(k) &&
-          sub.anyOf?.some((x: Row) => x.type === "null")
-        )
-          v = null;
-        if (v !== undefined) out[k] = normalize(v, sub);
-      }
-      return out;
-    }
-    if (schema.format === "uri" && typeof value === "string")
-      return new URL(value).toString();
-    return schema.format === "uuid" && typeof value === "string"
-      ? value.toLowerCase()
-      : value;
-  }
-  const validate = (fn: any, value: any, where: string) => {
-    if (!fn(value))
-      fail(
-        422,
-        (fn.errors ?? []).map((e: Row) => ({
-          loc: [where, ...e.instancePath.split("/").filter(Boolean)],
-          msg: e.message,
-          type: e.keyword,
-        })),
-      );
-  };
   app.setErrorHandler((error, _req, reply) => {
     if (error instanceof HttpError)
       return reply.code(error.status).send({ detail: error.detail });
-    if ((error as any).code === "23505")
-      return reply.code(409).send({ detail: "记录冲突" });
-    if ((error as any).statusCode === 413)
-      return reply.code(413).send({ detail: "请求体过大" });
+    const e = error as Row;
+    if (e.code === "23505") return reply.code(409).send({ detail: "记录冲突" });
+    if (e.statusCode === 413) return reply.code(413).send({ detail: "请求体过大" });
+    if (e.statusCode === 415) return reply.code(415).send({ detail: "仅支持 JSON" });
     reply.code(500).send({ detail: "服务暂时不可用" });
   });
-  app.get("/openapi.json", () => contract);
-  for (const [path, methods] of Object.entries(contract.paths))
-    for (const [method, raw] of Object.entries(methods as Row)) {
-      const op = raw as Row,
-        bodySchema = op.requestBody?.content?.["application/json"]?.schema,
-        bodyValidator = bodySchema
-          ? bodyAjv.compile({ $ref: `contract${bodySchema.$ref}` })
-          : null;
-      const parameterSchema = (where: string) => {
-        const ps = (op.parameters ?? []).filter((p: Row) => p.in === where);
-        return {
-          type: "object",
-          properties: Object.fromEntries(
-            ps.map((p: Row) => [p.name, p.schema]),
-          ),
-          required: ps.filter((p: Row) => p.required).map((p: Row) => p.name),
-        };
-      };
-      const queryValidator = ajv.compile(parameterSchema("query")),
-        pathValidator = ajv.compile(parameterSchema("path"));
-      app.route({
-        method: method.toUpperCase() as any,
-        url: path.replace(/\{([^}]+)\}/g, ":$1"),
-        handler: async (req, reply) => {
-          const rawBody = Buffer.isBuffer(req.body)
-              ? req.body
-              : Buffer.alloc(0),
-            params = req.params as Row,
-            query = req.query as Row;
-          return db.tx(async (tx) => {
-            let actor: Row | undefined, deviceId: string | undefined;
-            const securities = op.security ?? [];
-            if (securities.length) {
-              const mixed = securities.length > 1;
-              if (
-                mixed &&
-                req.headers.authorization &&
-                req.headers["x-tagnet-signature"]
-              )
-                fail(400, "不能同时使用用户令牌和设备签名");
-              const wantsUser =
-                securities.some((x: Row) => x.UserBearer) &&
-                (!mixed || req.headers.authorization);
-              if (wantsUser) actor = await user(tx, req.headers, s);
-              else {
-                actor = await device(
-                  tx,
-                  req.headers,
-                  req.method,
-                  path.replace(/\{([^}]+)\}/g, (_, k) => params[k]),
-                  rawBody,
-                  s,
-                );
-                deviceId = actor.device_id;
-              }
-            }
-            validate(pathValidator, params, "path");
-            validate(queryValidator, query, "query");
-            let body: Row = {};
-            if (rawBody.length)
-              try {
-                body = JSON.parse(rawBody.toString("utf8"));
-              } catch {
-                fail(422, "JSON 格式错误");
-              }
-            if (bodyValidator) {
-              validate(bodyValidator, body, "body");
-              body = normalize(body, bodySchema);
-            }
-            const result = await dispatch(
-              tx,
-              s,
-              method.toUpperCase(),
-              path,
-              params,
-              query,
-              body,
-              deviceId,
-              req.headers,
-              reply,
-            );
-            return result;
+
+  for (const route of routes)
+    app.route({
+      method: route.method,
+      url: route.path,
+      handler: async (req, reply) => {
+        const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+        let json: unknown = {};
+        if (raw.length)
+          try {
+            json = JSON.parse(raw.toString("utf8"));
+          } catch {
+            fail(422, "JSON 格式错误");
+          }
+        const query = parse(route.query, req.query, "query");
+        const params = req.params as Record<string, string>;
+        for (const [k, v] of Object.entries(params))
+          if (k === "id" && !/^[0-9a-f-]{36}$/i.test(v)) fail(404, "记录不存在");
+        const after: (() => unknown)[] = [];
+        const base = { db, s, hub, query, params, req, reply, after: (fn: () => unknown) => void after.push(fn) };
+        let result: unknown;
+        if (route.tx === false) {
+          const who = await db.tx((tx) => authenticate(tx, route, req, raw, s));
+          const body = parse(route.body, json, "body") ?? json;
+          result = await route.handler({ ...base, ...who, body, tx: undefined as never });
+        } else
+          result = await db.tx(async (tx) => {
+            const who = await authenticate(tx, route, req, raw, s);
+            const body = parse(route.body, json, "body") ?? json;
+            return route.handler({ ...base, ...who, body, tx });
           });
-        },
-      });
-    }
-  await app.register(websocket, { options: { maxPayload: 8 * 1024 * 1024 } });
-  await sockets(app, db, s, ajv);
-  return app;
-}
-async function dispatch(
-  tx: Tx,
-  s: Settings,
-  method: string,
-  path: string,
-  a: Row,
-  q: Row,
-  p: Row,
-  actor: string | undefined,
-  headers: Row,
-  reply: any,
-): Promise<any> {
-  if (path === "/health") return { ok: true };
-  if (path === "/auth/login") {
-    const u = await tx.one("SELECT * FROM users LIMIT 1");
-    if (!u || !(await passwordMatches(u.password_hash, p.password)))
-      fail(401, "认证失败");
-    return {
-      access_token: await issueToken(u!.user_id, s),
-      expires_in: s.jwtTtl,
-    };
-  }
-  if (path === "/devices/pairing-codes") {
-    const code = randomBytes(24).toString("base64url"),
-      expires_at = new Date(Date.now() + s.pairingTtl * 1000);
-    await tx.insert("pairing_codes", {
-      pairing_code_id: randomUUID(),
-      code_hash: sha256(code),
-      expires_at,
-      used_at: null,
-      created_at: new Date(),
-    });
-    return { pairing_code: code, expires_at };
-  }
-  if (path === "/devices/pair") {
-    if (p.previous_device_id) await user(tx, headers, s);
-    try {
-      decodeBase64(p.public_key, 32);
-    } catch {
-      fail(422, "公钥必须是 32 字节 Ed25519 的标准 Base64");
-    }
-    const consumed = await tx.one(
-      "UPDATE pairing_codes SET used_at=now() WHERE code_hash=$1 AND used_at IS NULL AND expires_at>now() RETURNING pairing_code_id",
-      [sha256(p.pairing_code)],
-    );
-    if (!consumed) fail(400, "配对码无效");
-    let d = p.previous_device_id
-      ? await tx.get("devices", p.previous_device_id)
-      : undefined;
-    const fields = {
-      public_key: p.public_key,
-      label: p.label,
-      capabilities: p.capabilities ?? [],
-      revoked_at: null,
-      last_seen_at: null,
-    };
-    d = d
-      ? await tx.save("devices", { ...d, ...fields })
-      : await tx.insert("devices", {
-          device_id: randomUUID(),
-          ...fields,
-          created_at: new Date(),
-        });
-    return task.deviceOut(d, s);
-  }
-  if (path === "/devices")
-    return (
-      await tx.rows("SELECT * FROM devices ORDER BY created_at,device_id")
-    ).map((d) => task.deviceOut(d, s));
-  if (path === "/devices/{device_id}/heartbeat") {
-    if (actor !== a.device_id) fail(401, "设备认证失败");
-    return task.deviceOut(
-      (await tx.one(
-        "UPDATE devices SET last_seen_at=now() WHERE device_id=$1 RETURNING *",
-        [actor],
-      ))!,
-      s,
-    );
-  }
-  if (path === "/devices/{device_id}/revoke") {
-    const d = await tx.get("devices", a.device_id, true);
-    d.revoked_at ??= new Date();
-    await tx.save("devices", d);
-    await tx.rows("SELECT pg_notify('tagent_changes','')");
-    return task.deviceOut(d, s);
-  }
-  if (path === "/projects" && method === "GET") {
-    const ps = await tx.rows(
-      "SELECT * FROM projects ORDER BY created_at,project_id",
-    );
-    return Promise.all(
-      ps.map(async (p) =>
-        task.projectOut(p, await tx.get("devices", p.device_id)),
-      ),
-    );
-  }
-  if (path === "/projects" && method === "POST") {
-    const id = p.request_id ? shared.uuid5(actor!, p.request_id) : randomUUID();
-    const old = await tx.get("projects", id);
-    const project =
-      old ??
-      (await tx.insert("projects", {
-        project_id: id,
-        device_id: actor,
-        display_name: p.display_name,
-        availability: p.availability ?? "available",
-        created_at: new Date(),
-        updated_at: new Date(),
-      }));
-    return task.projectOut(project, await tx.get("devices", actor!));
-  }
-  if (path === "/projects/{project_id}") {
-    const project = await tx.get("projects", a.project_id, true);
-    if (actor) {
-      if (project.device_id !== actor) fail(404, "项目不存在");
-      if (p.device_id) fail(403, "设备不能改绑项目");
-    }
-    if (p.device_id) {
-      const d = await tx.get("devices", p.device_id, true);
-      if (d.revoked_at) fail(400, "目标设备已撤销");
-      project.device_id = p.device_id;
-    }
-    for (const k of ["display_name", "availability"])
-      if (p[k] != null) project[k] = p[k];
-    project.updated_at = new Date();
-    await tx.save("projects", project);
-    return task.projectOut(project, await tx.get("devices", project.device_id));
-  }
-  if (path === "/tasks" && method === "POST")
-    return task.taskOut(tx, await task.createTask(tx, s, p), s);
-  if (path === "/tasks" && method === "GET") {
-    await task.expireDue(tx);
-    return Promise.all(
-      (
-        await tx.rows("SELECT * FROM tasks ORDER BY created_at DESC,task_id")
-      ).map((t) => task.taskOut(tx, t, s, false)),
-    );
-  }
-  if (path === "/tasks/{task_id}") {
-    await task.expireDue(tx);
-    return task.taskOut(tx, await tx.get("tasks", a.task_id, true), s);
-  }
-  if (path === "/tasks/{task_id}/cancel") {
-    await task.expireDue(tx);
-    return task.taskOut(tx, await task.cancelTask(tx, s, a.task_id), s);
-  }
-  if (path === "/tasks/{task_id}/plans")
-    return task.planOut(
-      await task.publishPlan(tx, await tx.get("devices", actor!), a.task_id, p),
-    );
-  if (path === "/plans/{plan_id}")
-    return task.planOut(await tx.get("plans", a.plan_id, true));
-  if (/^\/(device\/)?plans\/\{plan_id\}\//.test(path)) {
-    await task.expireDue(tx);
-    if (actor)
-      await tx.rows(
-        "UPDATE devices SET last_seen_at=now() WHERE device_id=$1",
-        [actor],
-      );
-    if (path.endsWith("/approve"))
-      return task.approvePlan(tx, s, a.plan_id, p, actor);
-    return task.taskOut(
-      tx,
-      path.endsWith("/reject")
-        ? await task.rejectPlan(tx, a.plan_id, p, actor)
-        : await task.revisePlan(tx, s, a.plan_id, p, actor),
-      s,
-    );
-  }
-  if (path === "/device/commands") return task.commands(tx, actor!);
-  if (path === "/device/commands/{command_id}/ack")
-    return task.ackCommand(tx, a.command_id, actor!);
-  if (path === "/device/events") return task.ingest(tx, actor!, p);
-  if (path === "/events")
-    return task.events(tx, q.after ?? 0, q.limit ?? 100, q.task_id);
-  const cloud = path.includes("/cloud/"),
-    base = path.replace(/^\/device/, "").replace(/^\/cloud/, "");
-  if (base === "/models" || base === "/configs/models") {
-    const kind = cloud ? "cloud_model" : "model";
-    return (await shared.docs(tx, kind)).map(shared.publicDoc);
-  }
-  if (base === "/models/from-mac")
-    return shared.withReceipt(
-      tx,
-      `cloud-model-copy:${p.request_id}`,
-      p,
-      async () => {
-        const d = await shared.loadDoc(tx, p.model_id, "model", actor);
-        if (d.data.deleted) fail(404, "模型不存在");
-        return shared.publicDoc(await shared.mirror(tx, s, d));
+        for (const fn of after)
+          await Promise.resolve()
+            .then(fn)
+            .catch(() => {});
+        return result;
       },
-    );
-  if (base === "/models/{id}" || base === "/configs/models/{id}")
-    return shared.putModel(tx, s, a.id, p, cloud, actor);
-  if (base === "/models/{id}/delete" || base === "/configs/models/{id}/delete")
-    return shared.deleteModel(tx, a.id, p, cloud, actor);
-  if (base === "/configs/models/{id}/credential") {
-    const d = await shared.loadDoc(tx, a.id, "model", actor);
-    if (d.version !== q.version || d.data.deleted) fail(409, "配置版本已变化");
-    reply.header("Cache-Control", "no-store");
-    return { api_key: new Vault(s.vaultFile).open(d.data.secret, d.id) };
-  }
-  if (base === "/configs/models/{id}/applied") {
-    const d = await shared.loadDoc(tx, a.id, "model", actor);
-    if (d.version !== p.version) fail(409, "配置版本已变化");
-    d.data = {
-      ...d.data,
-      apply_state: p.state,
-      apply_error: p.error ?? null,
-      applied_version:
-        p.state === "applied" ? p.version : d.data.applied_version,
-    };
-    await shared.change(tx, d);
-    return shared.publicDoc(d);
-  }
-  if (base === "/conversations")
-    return (await shared.docs(tx, "conversation", cloud ? null : undefined))
-      .filter((d) => !d.data.deleted)
-      .reverse()
-      .map(shared.publicDoc);
-  if (base === "/conversations/{id}")
-    return method === "GET"
-      ? shared.publicDoc(await shared.loadDoc(tx, a.id, "conversation"))
-      : shared.putConversation(tx, a.id, p, cloud, actor);
-  if (base === "/conversations/{id}/handoff-from/{source_id}")
-    return shared.handoff(tx, a.id, a.source_id, p, actor);
-  if (base === "/conversations/{id}/messages") {
-    if (method === "GET")
-      return shared.messagePage(tx, a.id, q.after ?? 0, q.limit ?? 100, cloud);
-    if (actor && !cloud) return shared.upload(tx, a.id, p, actor);
-    return shared.send(tx, s, a.id, p, cloud);
-  }
-  if (base.startsWith("/chat-runs/{id}"))
-    return shared.chatAction(
-      tx,
-      a.id,
-      base.split("/")[3] ?? "get",
-      p,
-      actor,
-      cloud,
-    );
-  if (path === "/device/shared/enable") {
-    const d = await tx.get("devices", actor!);
-    if (!d.capabilities.includes("shared_v1")) {
-      d.capabilities.push("shared_v1");
-      await tx.save("devices", d);
+    });
+
+  app.get("/openapi.json", async () => openapi());
+
+  const root = adminRoot(s);
+  const serveAdmin = async (req: FastifyRequest, reply: any) => {
+    const rel = normalize(decodeURIComponent((req.params as Row)["*"] ?? "")).replace(/^(\.\.(\/|\\|$))+/, "");
+    let file = join(root, rel);
+    if (rel.startsWith("api/") || (file !== root && !file.startsWith(root + sep))) fail(404, "Not found");
+    const info = await stat(file).catch(() => null);
+    if (!info?.isFile()) file = join(root, "index.html");
+    const body = await readFile(file).catch(() => null);
+    if (!body) return reply.code(404).type("text/plain").send("管理后台尚未构建（npm run build -w @pi-bot/admin）");
+    return reply
+      .header("cache-control", file.endsWith("index.html") ? "no-cache" : "public, max-age=31536000, immutable")
+      .type(MIME[extname(file)] ?? "application/octet-stream")
+      .send(body);
+  };
+  app.get("/admin", (_req, reply) => reply.redirect("admin/"));
+  app.get("/admin/*", serveAdmin);
+
+  await app.register(websocket, { options: { maxPayload: 8 * 1024 * 1024 } });
+  await sockets(app, db, s, hub);
+  return Object.assign(app, { hub, db });
+}
+
+export function openapi() {
+  const paths: Row = {};
+  const schema = (t: z.ZodType) => z.toJSONSchema(t, { io: "input", unrepresentable: "any" });
+  const security: Record<string, Row[]> = {
+    none: [],
+    user: [{ UserBearer: [] }],
+    admin: [{ UserBearer: [] }],
+    device: [{ DeviceSignature: [] }],
+    actor: [{ UserBearer: [] }, { DeviceSignature: [] }],
+    llm: [{ LlmBearer: [] }],
+  };
+  for (const r of routes) {
+    const path = r.path.replace(/:(\w+)/g, "{$1}");
+    const parameters: Row[] = [...r.path.matchAll(/:(\w+)/g)].map((m) => ({
+      name: m[1], in: "path", required: true, schema: { type: "string", format: "uuid" },
+    }));
+    if (r.query) {
+      const q = schema(r.query) as Row;
+      for (const [name, sch] of Object.entries(q.properties ?? {}))
+        parameters.push({ name, in: "query", required: (q.required ?? []).includes(name), schema: sch });
     }
-    return { ok: true };
-  }
-  if (path === "/device/shared/snapshot")
-    return {
-      documents: (
-        await tx.rows(
-          "SELECT * FROM shared_documents WHERE device_id=$1 AND kind IN ('model','conversation','chat_run') ORDER BY position",
-          [actor],
-        )
-      ).map((d) => ({ ...shared.publicDoc(d), entity_kind: d.kind })),
-      tasks: (
-        await tx.rows(
-          "SELECT task_id,status FROM tasks WHERE target_device_id=$1",
-          [actor],
-        )
-      ).map((t) => ({ id: t.task_id, state: t.status })),
-    };
-  if (path === "/device/shared/changes") {
-    const after = q.after ?? 0,
-      limit = q.limit ?? 100,
-      rows = await tx.rows(
-        "SELECT * FROM shared_changes WHERE device_id=$1 AND cursor>$2 ORDER BY cursor LIMIT $3",
-        [actor, after, limit + 1],
-      );
-    return {
-      changes: await Promise.all(
-        rows.slice(0, limit).map(async (r) => {
-          const d = await tx.get("shared_documents", r.entity_id);
-          return {
-            cursor: r.cursor,
-            kind: r.kind,
-            id: r.entity_id,
-            document: d ? shared.publicDoc(d) : null,
-          };
-        }),
-      ),
-      next_cursor: rows.slice(0, limit).at(-1)?.cursor ?? after,
-      has_more: rows.length > limit,
+    (paths[path] ??= {})[r.method.toLowerCase()] = {
+      tags: [r.tag],
+      summary: r.summary,
+      security: security[r.auth],
+      ...(parameters.length ? { parameters } : {}),
+      ...(r.body ? { requestBody: { required: true, content: { "application/json": { schema: schema(r.body) } } } } : {}),
+      responses: { "200": { description: "OK" }, default: { description: "{ detail }" } },
     };
   }
-  if (base === "/configs/bundle")
-    return {
-      skills: await shared.configList(tx, "skill"),
-      mcp_servers: await shared.configList(tx, "mcp_server"),
-    };
-  if (base.startsWith("/configs/")) {
-    const resource = base.split("/")[2],
-      kind =
-        resource === "skills"
-          ? "skill"
-          : resource === "mcp-servers"
-            ? "mcp_server"
-            : a.kind === "skills"
-              ? "skill"
-              : "mcp_server";
-    if (!a.id) return shared.configList(tx, kind);
-    if (base.endsWith("/revisions")) {
-      await shared.loadDoc(tx, a.id, kind, null);
-      return (
-        await tx.rows(
-          "SELECT * FROM shared_revisions WHERE document_id=$1 ORDER BY version DESC",
-          [a.id],
-        )
-      ).map((r) => ({
-        version: r.version,
-        content_hash: r.data.content_hash,
-        deleted: !!r.data.deleted,
-      }));
-    }
-    return shared.configWrite(
-      tx,
-      kind,
-      a.id,
-      p,
-      base.endsWith("/applied")
-        ? "applied"
-        : base.endsWith("/delete")
-          ? "delete"
-          : "put",
-      actor,
-    );
-  }
-  return fail(404, "接口不存在");
+  return {
+    openapi: "3.1.0",
+    info: { title: "Pi Bot API", version: "0.4.0" },
+    paths,
+    components: {
+      securitySchemes: {
+        UserBearer: { type: "http", scheme: "bearer", bearerFormat: "JWT" },
+        LlmBearer: { type: "http", scheme: "bearer", description: "POST /device/llm-token 签发的短期模型代理令牌" },
+        DeviceSignature: {
+          type: "apiKey", in: "header", name: "x-pibot-signature",
+          description: "Ed25519 签名 `${timestamp}.${nonce}.${METHOD}.${path}.${sha256(body)}`，配合 x-pibot-device-id / x-pibot-timestamp / x-pibot-nonce",
+        },
+      },
+    },
+  };
 }

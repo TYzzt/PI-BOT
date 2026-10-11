@@ -1,9 +1,17 @@
 import { randomUUID } from "node:crypto";
-import { Database, type Row, type Tx } from "./db.js";
+import { Database, type Row } from "./db.js";
 import { settings, type Settings } from "./config.js";
-import { Vault } from "./security.js";
-import { change, docs, newDoc, terminal } from "./shared.js";
+import { issueLlmToken, Vault } from "./security.js";
 import { migrate } from "./migrate.js";
+import { buildContext, finishRun, markRunning, recordTool, resolveModel, setContent, type RunContext } from "./bots.js";
+import { complete, recordUsage } from "./llm.js";
+
+const RUN_LIMIT_MS = 30 * 60 * 1000;
+
+/**
+ * Executes cloud runs (Mac offline) through the Runner and keeps each bot's
+ * rolling memory summary up to date.
+ */
 export class Worker {
   readonly id = randomUUID();
   private stopped = false;
@@ -12,158 +20,38 @@ export class Worker {
     readonly db: Database,
     readonly s: Settings,
   ) {
-    if (!s.runnerToken || s.runnerToken.length < 32)
-      throw new Error("需要配置 Runner token");
+    if (!s.runnerToken || s.runnerToken.length < 32) throw new Error("需要配置 PI_BOT_RUNNER_TOKEN（至少 32 字符）");
   }
   stop() {
     this.stopped = true;
     this.abort?.abort();
   }
-  async finish(
-    tx: Tx,
-    r: Row,
-    state: string,
-    error: string | null,
-    content?: string,
-  ) {
-    r.version++;
-    r.data = { ...r.data, state, error, lease_until: null };
-    await change(tx, r);
-    const m = r.data.assistant_message_id
-      ? await tx.get("shared_documents", r.data.assistant_message_id)
-      : null;
-    if (m) {
-      m.version++;
-      m.data = {
-        ...m.data,
-        status: state,
-        ...(content !== undefined ? { content } : {}),
-      };
-      await change(tx, m);
-    }
-    if (state !== "completed") {
-      const c = await tx.get("shared_documents", r.data.conversation_id);
-      if (c) {
-        c.data = { ...c.data, generation: (c.data.generation ?? 0) + 1 };
-        await tx.save("shared_documents", c);
-      }
-    }
-  }
-  async claim(): Promise<Row | undefined> {
+  async claim(): Promise<RunContext | undefined> {
     return this.db.tx(async (tx) => {
-      const running = (await docs(tx, "chat_run", null)).filter(
-        (r) => r.data.state === "running",
+      const stale = await tx.rows(
+        "SELECT run_id FROM bot_runs WHERE executor='cloud' AND status='running' AND lease_until < now() FOR UPDATE SKIP LOCKED",
       );
-      for (const r of running)
-        if (new Date(r.data.lease_until ?? 0).getTime() < Date.now())
-          await this.finish(tx, r, "interrupted", "云端执行中断，请重新提问");
-        else return undefined;
+      for (const r of stale) await finishRun(tx, r.run_id, "failed", "云端执行中断，请重新发送");
       const run = await tx.one(
-        "SELECT * FROM shared_documents WHERE kind='chat_run' AND device_id IS NULL AND data->>'state'='queued' ORDER BY position LIMIT 1 FOR UPDATE SKIP LOCKED",
+        "SELECT * FROM bot_runs WHERE executor='cloud' AND status='queued' ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED",
       );
       if (!run) return;
-      const c = await tx.get("shared_documents", run.data.conversation_id),
-        model = c
-          ? await tx.get("shared_documents", c.data.model_config_id)
-          : null;
-      run.version++;
-      run.data = {
-        ...run.data,
-        state: "running",
-        acked: true,
-        worker_id: this.id,
-        lease_until: new Date(
-          Date.now() + this.s.leaseSeconds * 1000,
-        ).toISOString(),
-        error: null,
-      };
-      await change(tx, run);
-      const history = c
-          ? await tx.rows(
-              "SELECT * FROM shared_documents WHERE kind='message' AND device_id IS NULL AND data->>'conversation_id'=$1 AND (data->>'sequence')::bigint>0 ORDER BY (data->>'sequence')::bigint",
-              [c.id],
-            )
-          : [],
-        sequence = history.reduce((n, m) => Math.max(n, m.data.sequence), 0),
-        question = await tx.get("shared_documents", run.data.message_id);
-      if (question) {
-        question.version++;
-        question.data = {
-          ...question.data,
-          status: "completed",
-          sequence: sequence + 1,
-        };
-        await change(tx, question);
-      }
-      const assistant = await newDoc(tx, randomUUID(), "message", null, {
-        conversation_id: run.data.conversation_id,
-        run_id: run.id,
-        role: "assistant",
-        content: "",
-        status: "running",
-        sequence: sequence + 2,
-      });
-      await change(tx, assistant);
-      run.data = { ...run.data, assistant_message_id: assistant.id };
-      await tx.save("shared_documents", run);
-      if (
-        !c ||
-        c.data.deleted ||
-        !model ||
-        model.kind !== "cloud_model" ||
-        model.data.deleted
-      ) {
-        await this.finish(tx, run, "failed", "云端模型不可用，请更换模型");
+      if (run.cancel_requested) {
+        await finishRun(tx, run.run_id, "cancelled", null);
         return;
       }
-      let key: string;
+      await tx.rows("UPDATE bot_runs SET worker_id=$2, lease_until=$3 WHERE run_id=$1", [
+        run.run_id,
+        this.id,
+        new Date(Date.now() + this.s.leaseSeconds * 1000),
+      ]);
+      await markRunning(tx, run.run_id);
+      await tx.notify({ user_id: run.user_id, bot_id: run.bot_id });
       try {
-        key = new Vault(this.s.vaultFile).open(model.data.secret, model.id);
+        return await buildContext(tx, this.s, run, { search: !!this.s.tavilyKey });
       } catch {
-        await this.finish(
-          tx,
-          run,
-          "failed",
-          "云端模型密钥不可用，请重新保存模型",
-        );
-        return;
+        await finishRun(tx, run.run_id, "failed", "管理员尚未配置可用模型");
       }
-      const config = model.data.config;
-      return {
-        runId: run.id,
-        conversationId: c.id,
-        generation: c.data.generation ?? 0,
-        question: run.data.text,
-        history: history
-          .filter((m) => m.data.content)
-          .map((m) => ({ role: m.data.role, content: m.data.content })),
-        model: {
-          id: model.id,
-          name: config.name,
-          baseUrl: config.base_url,
-          modelId: config.model_id,
-          contextWindow: config.context_window,
-          maxTokens: config.max_tokens,
-        },
-        key,
-        searchKey: this.s.tavilyKey,
-        skills: (await docs(tx, "skill", null))
-          .filter((d) => !d.data.deleted)
-          .map((d) => ({
-            id: d.id,
-            version: d.version,
-            content_hash: d.data.content_hash,
-            config: d.data.config,
-          })),
-        mcp_servers: (await docs(tx, "mcp_server", null))
-          .filter((d) => !d.data.deleted)
-          .map((d) => ({
-            id: d.id,
-            version: d.version,
-            content_hash: d.data.content_hash,
-            config: d.data.config,
-          })),
-      };
     });
   }
   async runOnce() {
@@ -171,68 +59,54 @@ export class Worker {
     if (!job) return false;
     const controller = new AbortController();
     this.abort = controller;
+    const owner = await this.db.tx((tx) => tx.get("bot_runs", job.run_id));
     let content = "",
-      state = "failed",
-      error: string | null = "模型请求失败，请检查云端模型配置后重试",
+      state: "completed" | "failed" | "cancelled" = "failed",
+      error: string | null = "模型请求失败，请稍后重试",
       lost = false,
       cancelled = false,
-      lastSnapshot = 0,
+      written = 0,
       beating = false;
-    const headers = {
-      Authorization: `Bearer ${this.s.runnerToken}`,
-      "Content-Type": "application/json",
-    };
+    const headers = { Authorization: `Bearer ${this.s.runnerToken}`, "Content-Type": "application/json" };
     const cancelRunner = () =>
-      fetch(`${this.s.runnerUrl}/runs/${job.runId}/cancel`, {
-        method: "POST",
-        headers,
-        signal: AbortSignal.timeout(5000),
-      }).catch(() => {});
+      fetch(`${this.s.runnerUrl}/runs/${job.run_id}/cancel`, { method: "POST", headers, signal: AbortSignal.timeout(5000) }).catch(() => {});
+    const ours = (r: Row | undefined) => !!r && r.status === "running" && r.worker_id === this.id;
     const beat = async () => {
       if (beating) return;
       beating = true;
       try {
         await this.db.tx(async (tx) => {
-          const r = await tx.get("shared_documents", job.runId);
-          if (
-            !r ||
-            terminal.has(r.data.state) ||
-            r.data.worker_id !== this.id
-          ) {
+          const r = await tx.get("bot_runs", job.run_id);
+          if (!ours(r)) {
             lost = true;
             return;
           }
-          cancelled = !!r.data.cancel_requested;
-          r.data = {
-            ...r.data,
-            lease_until: new Date(
-              Date.now() + this.s.leaseSeconds * 1000,
-            ).toISOString(),
-          };
-          await tx.save("shared_documents", r);
+          cancelled = r.cancel_requested;
+          await tx.rows("UPDATE bot_runs SET lease_until=$2 WHERE run_id=$1", [job.run_id, new Date(Date.now() + this.s.leaseSeconds * 1000)]);
         });
-        if (cancelled || lost || this.stopped) {
-          await cancelRunner();
-          controller.abort();
-        }
       } catch {
         lost = true;
-        await cancelRunner();
-        controller.abort();
       } finally {
         beating = false;
       }
+      if (cancelled || lost || this.stopped) {
+        await cancelRunner();
+        controller.abort();
+      }
     };
-    const timer = setInterval(
-      () => void beat(),
-      Math.max(1000, Math.min(15000, this.s.leaseSeconds * 250)),
-    );
+    const timer = setInterval(() => void beat(), Math.max(1000, Math.min(15000, this.s.leaseSeconds * 250)));
+    const deadline = setTimeout(() => {
+      error = "运行超过 30 分钟，已停止";
+      void cancelRunner();
+      controller.abort();
+    }, RUN_LIMIT_MS);
     let sawDone = false;
     try {
+      const token = await issueLlmToken({ sub: owner.user_id, src: "cloud", bot: job.bot.id }, this.s, Math.ceil(RUN_LIMIT_MS / 1000) + 300);
       const response = await fetch(`${this.s.runnerUrl}/runs`, {
         method: "POST",
         headers,
-        body: JSON.stringify(job),
+        body: JSON.stringify({ run: job, base_url: `${this.s.internalUrl}/llm/v1`, token, search_key: this.s.tavilyKey }),
         signal: controller.signal,
       });
       if (!response.ok || !response.body) throw new Error("Runner unavailable");
@@ -246,54 +120,27 @@ export class Worker {
           buffer = buffer.slice(index + 1);
           if (e.type === "text") {
             content = e.text;
-            if (Date.now() - lastSnapshot >= 1000) {
+            if (Date.now() - written >= 500) {
+              written = Date.now();
               await this.db.tx(async (tx) => {
-                const r = await tx.get("shared_documents", job.runId);
-                if (
-                  !r ||
-                  terminal.has(r.data.state) ||
-                  r.data.worker_id !== this.id
-                ) {
-                  lost = true;
-                  return;
-                }
-                const m = await tx.get(
-                  "shared_documents",
-                  r.data.assistant_message_id,
-                );
-                if (m && m.data.content !== content) {
-                  m.version++;
-                  m.data = { ...m.data, content };
-                  await change(tx, m);
-                }
+                const r = await tx.get("bot_runs", job.run_id);
+                if (!ours(r)) return void (lost = true);
+                await setContent(tx, r, content);
+                await tx.notify({ user_id: r.user_id, bot_id: r.bot_id, message_id: r.assistant_message_id, content });
               });
-              lastSnapshot = Date.now();
             }
-          }
-          if (e.type === "plugin")
+          } else if (e.type === "tool")
             await this.db.tx(async (tx) => {
-              const d = await tx.get("shared_documents", e.id);
-              if (
-                d &&
-                d.version === e.version &&
-                d.data.content_hash === e.hash
-              ) {
-                d.data = {
-                  ...d.data,
-                  cloud: {
-                    checked_version: e.version,
-                    state: e.state,
-                    reasons: e.reasons,
-                    checked_at: new Date().toISOString(),
-                  },
-                };
-                await change(tx, d);
-              }
+              const r = await tx.get("bot_runs", job.run_id);
+              if (!ours(r)) return;
+              await recordTool(tx, r, e);
+              await tx.notify({ user_id: r.user_id, bot_id: r.bot_id });
             });
-          if (e.type === "done") {
+          else if (e.type === "done") {
             sawDone = true;
             state = e.state;
             error = e.error ?? null;
+            if (typeof e.text === "string") content = e.text;
           }
         }
       }
@@ -302,51 +149,100 @@ export class Worker {
       if (cancelled) {
         state = "cancelled";
         error = null;
-      } else if (this.stopped) {
-        state = "interrupted";
-        error = "云端执行中断，请重新提问";
-      }
+      } else if (this.stopped) error = "云端执行中断，请重新发送";
+      state = cancelled ? "cancelled" : "failed";
       await cancelRunner();
     } finally {
       clearInterval(timer);
+      clearTimeout(deadline);
       this.abort = undefined;
     }
     if (!lost)
       await this.db.tx(async (tx) => {
-        const r = await tx.get("shared_documents", job.runId);
-        if (!r || terminal.has(r.data.state) || r.data.worker_id !== this.id)
-          return;
-        if (r.data.cancel_requested) {
-          state = "cancelled";
-          error = null;
-        }
-        await this.finish(tx, r, state, error, content);
+        const r = await tx.get("bot_runs", job.run_id);
+        if (!ours(r)) return;
+        await finishRun(tx, job.run_id, state, error, content);
       });
     return true;
   }
+
+  /** Folds old messages into the bot's long-term summary once the tail grows past the threshold. */
+  async compactOnce(): Promise<boolean> {
+    const job = await this.db.tx(async (tx) => {
+      const b = await tx.one(
+        `SELECT b.*, coalesce(m.through_seq,0) AS through_seq, coalesce(m.summary,'') AS summary FROM bots b
+         LEFT JOIN bot_memories m USING(bot_id)
+         WHERE b.archived_at IS NULL AND b.next_seq - 1 - coalesce(m.through_seq,0) > $1
+           AND NOT EXISTS (SELECT 1 FROM bot_runs r WHERE r.bot_id=b.bot_id AND r.status IN ('queued','running','waiting_approval'))
+         ORDER BY b.last_active_at DESC LIMIT 1 FOR UPDATE OF b SKIP LOCKED`,
+        [this.s.memoryThreshold],
+      );
+      if (!b) return null;
+      const until = b.next_seq - 1 - Math.min(20, Math.floor(this.s.memoryThreshold / 2));
+      const messages = await tx.rows(
+        "SELECT seq, role, content FROM bot_messages WHERE bot_id=$1 AND seq>$2 AND seq<=$3 AND content<>'' ORDER BY seq",
+        [b.bot_id, b.through_seq, until],
+      );
+      const model = await resolveModel(tx, b);
+      if (!model) return null;
+      // Mark progress first so a failing provider cannot make this bot block the queue.
+      await tx.rows(
+        `INSERT INTO bot_memories(bot_id, summary, through_seq, updated_at) VALUES($1,$2,$3,now())
+         ON CONFLICT (bot_id) DO UPDATE SET through_seq=EXCLUDED.through_seq, updated_at=now()`,
+        [b.bot_id, b.summary, until],
+      );
+      return { bot: b, messages, model, until };
+    });
+    if (!job) return false;
+    const transcript = job.messages
+      .map((m) => `${m.role === "user" ? "用户" : job.bot.name}：${m.content.slice(0, 4000)}`)
+      .join("\n\n")
+      .slice(-job.model.context_window * 2);
+    try {
+      const key = new Vault(this.s.vaultFile).open(job.model.secret, job.model.model_id);
+      const r = await complete(
+        job.model,
+        key,
+        [
+          {
+            role: "system",
+            content: "你负责维护一个智能体的长期记忆。把旧记忆和新增对话合并成简洁的中文要点：用户偏好、身份与背景、进行中的事项、已完成的结论、资料库中重要文件。删除寒暄和过时信息，不超过 1500 字。只输出记忆正文。",
+          },
+          { role: "user", content: `旧记忆：\n${job.bot.summary || "（无）"}\n\n新增对话：\n${transcript}` },
+        ],
+        2000,
+        120000,
+      );
+      await recordUsage(this.db, { sub: job.bot.user_id, src: "memory", bot: job.bot.bot_id }, job.model.model_id, r.usage);
+      if (r.text.trim())
+        await this.db.tx((tx) =>
+          tx.rows("UPDATE bot_memories SET summary=$2, updated_at=now() WHERE bot_id=$1 AND through_seq=$3", [job.bot.bot_id, r.text.trim().slice(0, 8000), job.until]),
+        );
+    } catch {
+      console.error("memory compaction failed");
+    }
+    return true;
+  }
+
   async runForever() {
     while (!this.stopped) {
       try {
         if (await this.runOnce()) continue;
+        if (await this.compactOnce()) continue;
       } catch {
         console.error("cloud worker cycle failed");
       }
-      await new Promise((resolve) =>
-        setTimeout(resolve, this.s.pollSeconds * 1000),
-      );
+      await new Promise((resolve) => setTimeout(resolve, this.s.pollSeconds * 1000));
     }
   }
 }
-if (
-  process.argv[1]?.endsWith("/worker.ts") ||
-  process.argv[1]?.endsWith("/worker.mjs")
-) {
+
+if (process.argv[1]?.endsWith("/worker.ts") || process.argv[1]?.endsWith("/worker.mjs")) {
   const s = settings(),
     db = new Database(s.databaseUrl);
   await migrate(db);
   const worker = new Worker(db, s);
-  for (const signal of ["SIGINT", "SIGTERM"] as const)
-    process.once(signal, () => worker.stop());
+  for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => worker.stop());
   try {
     await worker.runForever();
   } finally {

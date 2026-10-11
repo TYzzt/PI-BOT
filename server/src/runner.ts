@@ -1,198 +1,91 @@
 import Fastify from "fastify";
 import { z } from "zod";
-import { mkdir, readFile, writeFile, realpath, lstat } from "node:fs/promises";
-import { resolve, join, dirname, sep } from "node:path";
-import { spawn } from "node:child_process";
+import { mkdir } from "node:fs/promises";
+import { join } from "node:path";
 import { timingSafeEqual } from "node:crypto";
 import { Type } from "typebox";
-import { piFactory, type AgentFactory, type AgentHandle } from "@t-agnet/agent";
+import {
+  CANCELLED,
+  createBotAgent,
+  type AgentFactory,
+  type AgentHandle,
+} from "@pi-bot/agent";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { PluginDocument } from "@t-agnet/agent/plugins";
+
 const requestSchema = z.object({
-  runId: z.string().uuid(),
-  conversationId: z.string().uuid(),
-  generation: z.number().int().nonnegative(),
-  question: z.string().min(1).max(30000),
-  history: z.array(
-    z.object({ role: z.enum(["user", "assistant"]), content: z.string() }),
-  ),
-  model: z.object({
-    id: z.string().uuid(),
-    name: z.string(),
-    baseUrl: z.string().url(),
-    modelId: z.string(),
-    contextWindow: z.number().int().positive(),
-    maxTokens: z.number().int().positive(),
+  run: z.object({
+    run_id: z.string().uuid(),
+    bot: z.object({ id: z.string().uuid(), name: z.string(), slug: z.string() }),
+    model: z.object({
+      id: z.string().uuid(),
+      name: z.string(),
+      context_window: z.number().int().positive(),
+      max_tokens: z.number().int().positive(),
+    }),
+    system: z.string(),
+    history: z.array(z.object({ role: z.enum(["user", "assistant"]), content: z.string() })),
+    text: z.string().min(1),
   }),
-  key: z.string().min(1),
-  searchKey: z.string().optional(),
-  skills: z.array(z.any()),
-  mcp_servers: z.array(z.any()),
+  base_url: z.string().url(),
+  token: z.string().min(16),
+  search_key: z.string().optional(),
 });
-export async function workspaceTools(cwd: string): Promise<ToolDefinition[]> {
-  await mkdir(cwd, { recursive: true, mode: 0o700 });
-  const root = await realpath(cwd);
-  async function path(value: string, write = false) {
-    const full = resolve(root, value);
-    if (full !== root && !full.startsWith(root + sep))
-      throw new Error("文件必须位于云端工作区");
-    let existing = full;
-    while (!(await lstat(existing).catch(() => null))) {
-      const parent = dirname(existing);
-      if (parent === existing) throw new Error("文件不存在");
-      existing = parent;
-    }
-    const actual = await realpath(existing);
-    if (actual !== root && !actual.startsWith(root + sep))
-      throw new Error("路径越过工作区");
-    if (!write) await realpath(full);
-    return full;
-  }
-  return [
-    {
-      name: "read_file",
-      label: "读取云端文件",
-      description: "读取云端工作区中的 UTF-8 文件，最多 200KB。",
-      parameters: Type.Object({ path: Type.String() }),
-      execute: async (_id, args: any) => {
-        const full = await path(args.path);
-        if ((await lstat(full)).size > 200000) throw new Error("文件过大");
-        return {
-          content: [{ type: "text", text: await readFile(full, "utf8") }],
-          details: {},
-        };
-      },
+
+export function searchTool(key: string): ToolDefinition {
+  return {
+    name: "web_search",
+    label: "联网搜索",
+    description: "搜索网络信息并返回标题、链接和摘要。",
+    parameters: Type.Object({ query: Type.String({ minLength: 1, maxLength: 2000 }) }),
+    execute: async (_id: string, args: any, signal?: AbortSignal) => {
+      const response = await fetch("https://api.tavily.com/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ api_key: key, query: args.query, max_results: 5 }),
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30000)]) : AbortSignal.timeout(30000),
+      });
+      if (!response.ok) throw new Error("联网搜索失败");
+      const data = (await response.json()) as any;
+      const results = (data.results ?? []).map((r: any) => ({ title: r.title, url: r.url, content: String(r.content ?? "").slice(0, 2000) }));
+      return { content: [{ type: "text" as const, text: JSON.stringify(results) }], details: {} };
     },
-    {
-      name: "write_file",
-      label: "写入云端文件",
-      description: "在云端工作区写入 UTF-8 文件。",
-      parameters: Type.Object({
-        path: Type.String(),
-        content: Type.String({ maxLength: 200000 }),
-      }),
-      execute: async (_id, args: any) => {
-        const full = await path(args.path, true);
-        await mkdir(dirname(full), { recursive: true });
-        await writeFile(full, args.content, { mode: 0o600 });
-        return { content: [{ type: "text", text: "已写入" }], details: {} };
-      },
-    },
-    {
-      name: "run_command",
-      label: "云端命令",
-      description:
-        "在隔离云端容器的当前工作区执行命令，最长 60 秒；无法访问 Mac 或服务端部署凭据。",
-      parameters: Type.Object({ command: Type.String({ maxLength: 10000 }) }),
-      execute: async (_id, args: any, signal) =>
-        new Promise((done, reject) => {
-          if (signal?.aborted) {
-            reject(new Error("CANCELLED"));
-            return;
-          }
-          const child = spawn("/bin/sh", ["-c", args.command], {
-            cwd: root,
-            env: {
-              PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
-              HOME: root,
-              LANG: "C.UTF-8",
-            },
-            detached: true,
-            stdio: ["ignore", "pipe", "pipe"],
-          });
-          let output = "",
-            settled = false,
-            timedOut = false;
-          const stop = () => {
-            try {
-              process.kill(-child.pid!, "SIGTERM");
-            } catch {}
-            setTimeout(() => {
-              try {
-                process.kill(-child.pid!, "SIGKILL");
-              } catch {}
-            }, 1000).unref();
-          };
-          const timer = setTimeout(() => {
-            timedOut = true;
-            stop();
-          }, 60000);
-          const abort = () => stop();
-          signal?.addEventListener("abort", abort, { once: true });
-          const collect = (b: Buffer) => {
-            output = (output + b.toString()).slice(-200000);
-          };
-          child.stdout.on("data", collect);
-          child.stderr.on("data", collect);
-          const finish = (error?: Error, code?: number | null) => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timer);
-            signal?.removeEventListener("abort", abort);
-            if (error) reject(new Error("云端命令无法启动"));
-            else if (signal?.aborted) reject(new Error("CANCELLED"));
-            else
-              done({
-                content: [
-                  {
-                    type: "text",
-                    text: JSON.stringify({
-                      exit_code: code,
-                      timeout: timedOut,
-                      output,
-                    }),
-                  },
-                ],
-                details: {},
-              });
-          };
-          child.once("error", (e) => finish(e));
-          child.once("close", (code) => finish(undefined, code));
-        }),
-    },
-  ];
+  } as ToolDefinition;
 }
-export async function createRunner(options: {
-  token: string;
-  dir: string;
-  factory?: AgentFactory;
-  secrets?: Record<string, string>;
-}) {
+
+/**
+ * Cloud execution for bots whose Mac is offline: conversation and optional web
+ * search only. It has no file system or shell tools and never sees provider keys.
+ */
+export async function createRunner(options: { token: string; dir: string; factory?: AgentFactory }) {
   if (options.token.length < 32) throw new Error("Runner token 至少 32 字符");
-  const app = Fastify({ bodyLimit: 8 * 1024 * 1024, logger: false }),
-    factory = options.factory ?? piFactory(options.dir);
-  let active:
-    { id: string; agent?: AgentHandle; cancelled: boolean } | undefined;
+  const app = Fastify({ bodyLimit: 16 * 1024 * 1024, logger: false });
+  const factory = options.factory ?? createBotAgent;
+  const active = new Map<string, { agent?: AgentHandle; cancelled: boolean }>();
   app.addHook("onRequest", async (req, reply) => {
+    if (req.url === "/health") return;
     const value = Buffer.from(req.headers.authorization ?? ""),
       expected = Buffer.from(`Bearer ${options.token}`);
     if (value.length !== expected.length || !timingSafeEqual(value, expected))
       return reply.code(401).send({ error: "认证失败" });
   });
-  app.get("/health", () => ({ ok: true }));
-  app.post("/runs/:id/cancel", async (req, reply) => {
-    if (active && active.id === (req.params as any).id) {
-      active.cancelled = true;
-      await active.agent?.abort();
+  app.get("/health", () => ({ ok: true, active: active.size }));
+  app.post("/runs/:id/cancel", async (req) => {
+    const state = active.get((req.params as any).id);
+    if (state) {
+      state.cancelled = true;
+      await state.agent?.abort();
     }
     return { ok: true };
   });
   app.post("/runs", async (req, reply) => {
     const parsed = requestSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(422).send({ error: "运行参数无效" });
-    if (active) return reply.code(409).send({ error: "Runner 正忙" });
-    const p = parsed.data,
-      state = {
-        id: p.runId,
-        cancelled: false,
-        agent: undefined as AgentHandle | undefined,
-      };
-    active = state;
+    const p = parsed.data;
+    if (active.has(p.run.run_id)) return reply.code(409).send({ error: "运行已存在" });
+    const state: { agent?: AgentHandle; cancelled: boolean } = { cancelled: false };
+    active.set(p.run.run_id, state);
     reply.hijack();
-    reply.raw.writeHead(200, {
-      "Content-Type": "application/x-ndjson",
-      "Cache-Control": "no-store",
-    });
+    reply.raw.writeHead(200, { "Content-Type": "application/x-ndjson", "Cache-Control": "no-store" });
     const emit = (value: unknown) => {
       if (!reply.raw.destroyed) reply.raw.write(JSON.stringify(value) + "\n");
     };
@@ -201,160 +94,56 @@ export async function createRunner(options: {
       void state.agent?.abort();
     });
     try {
-      const cwd = join(options.dir, "workspaces", p.conversationId),
-        sessionId = `${p.conversationId}-${p.generation}`,
-        manifest = join(
-          options.dir,
-          "pi",
-          "sessions",
-          sessionId,
-          "current.json",
-        );
+      const cwd = join(options.dir, "empty");
       await mkdir(cwd, { recursive: true, mode: 0o700 });
-      let existing: string | null = null;
-      try {
-        existing = JSON.parse(await readFile(manifest, "utf8")).path;
-      } catch {}
-      const secretValues = options.secrets ?? {},
-        skills = p.skills as PluginDocument[],
-        mcp = p.mcp_servers as PluginDocument[];
-      const agent = await factory(p.model, p.key, existing, sessionId, false, {
+      state.agent = await factory({
+        model: {
+          id: p.run.model.id,
+          name: p.run.model.name,
+          baseUrl: p.base_url,
+          modelId: p.run.model.id,
+          contextWindow: p.run.model.context_window,
+          maxTokens: p.run.model.max_tokens,
+        },
+        apiKey: p.token,
         cwd,
-        systemPrompt: `你是 T-AGNET 的中文云端助手。日期 ${new Date().toISOString().slice(0, 10)}。你仅能操作云端隔离工作区，不能访问 Mac 的文件、终端或浏览器。需要本机信息时请用户在 Mac 项目会话中操作。`,
-        tools: [
-          ...(await workspaceTools(cwd)),
-          ...(p.searchKey
-            ? [
-                {
-                  name: "web_search",
-                  label: "联网搜索",
-                  description: "搜索网络信息并返回来源链接。",
-                  parameters: Type.Object({
-                    query: Type.String({ minLength: 1, maxLength: 2000 }),
-                  }),
-                  execute: async (
-                    _id: string,
-                    args: any,
-                    signal?: AbortSignal,
-                  ) => {
-                    const response = await fetch(
-                      "https://api.tavily.com/search",
-                      {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
-                          api_key: p.searchKey,
-                          query: args.query,
-                          max_results: 5,
-                        }),
-                        signal: signal
-                          ? AbortSignal.any([
-                              signal,
-                              AbortSignal.timeout(30000),
-                            ])
-                          : AbortSignal.timeout(30000),
-                      },
-                    );
-                    if (!response.ok) throw new Error("联网搜索失败");
-                    const data = (await response.json()) as any;
-                    return {
-                      content: [
-                        {
-                          type: "text" as const,
-                          text: JSON.stringify(data.results),
-                        },
-                      ],
-                      details: {},
-                    };
-                  },
-                },
-              ]
-            : []),
-        ],
-        history: existing ? undefined : p.history,
-        autoCompaction: true,
-        redactSecrets: [p.searchKey ?? "", ...Object.values(secretValues)],
-        plugins: {
-          runtime: "cloud",
-          cwd,
-          dir: join(options.dir, "skills"),
-          skills,
-          mcp_servers: mcp,
-          secret: async (name) => secretValues[name] ?? null,
-          report: async (d, status, reasons) =>
-            emit({
-              type: "plugin",
-              id: d.id,
-              version: d.version,
-              hash: d.content_hash,
-              state: status,
-              reasons,
-            }),
-        },
-        onEvent: (event) => {
-          const e = event as any;
-          if (["tool_execution_start", "tool_execution_end"].includes(e.type))
-            emit({
-              type: "tool",
-              name: e.toolName,
-              state:
-                e.type === "tool_execution_start" ? "running" : "completed",
-            });
-        },
+        agentDir: join(options.dir, "pi"),
+        systemPrompt: p.run.system,
+        history: p.run.history,
+        tools: p.search_key ? [searchTool(p.search_key)] : [],
+        redactSecrets: [p.search_key ?? ""],
+        onTool: (t) => emit({ type: "tool", ...t }),
       });
-      state.agent = agent;
-      if (state.cancelled) throw new Error("CANCELLED");
-      const redact = (text: string) =>
-        [p.key, p.searchKey ?? "", ...Object.values(secretValues)]
-          .filter(Boolean)
-          .reduce((t, key) => t.replaceAll(key, "[已隐藏凭据]"), text);
-      await agent.prompt(p.question, (text) =>
-        emit({ type: "text", text: redact(text) }),
-      );
-      if (state.cancelled) throw new Error("CANCELLED");
-      if (agent.sessionPath)
-        await writeFile(manifest, JSON.stringify({ path: agent.sessionPath }), {
-          mode: 0o600,
-        });
-      emit({ type: "done", state: "completed" });
-    } catch {
+      if (state.cancelled) throw new Error(CANCELLED);
+      const text = await state.agent.prompt(p.run.text, (t) => emit({ type: "text", text: t }));
+      emit({ type: "done", state: "completed", text });
+    } catch (e) {
+      const cancelled = state.cancelled || (e instanceof Error && e.message === CANCELLED);
       emit({
         type: "done",
-        state: state.cancelled ? "cancelled" : "failed",
-        error: state.cancelled ? null : "模型或工具请求失败，请检查云端配置",
+        state: cancelled ? "cancelled" : "failed",
+        error: cancelled ? null : e instanceof Error && /模型|工具/.test(e.message) ? e.message : "模型请求失败，请稍后重试",
       });
     } finally {
       state.agent?.dispose();
-      active = undefined;
+      active.delete(p.run.run_id);
       reply.raw.end();
     }
   });
   app.addHook("onClose", async () => {
-    if (active) {
-      active.cancelled = true;
-      await active.agent?.abort();
+    for (const s of active.values()) {
+      s.cancelled = true;
+      await s.agent?.abort();
     }
   });
   return app;
 }
-if (
-  process.argv[1]?.endsWith("/runner.ts") ||
-  process.argv[1]?.endsWith("/runner.mjs")
-) {
-  let secrets: Record<string, string> = {};
-  if (process.env.T_AGNET_MCP_SECRET_FILE)
-    secrets = JSON.parse(
-      await readFile(process.env.T_AGNET_MCP_SECRET_FILE, "utf8"),
-    );
+
+if (process.argv[1]?.endsWith("/runner.ts") || process.argv[1]?.endsWith("/runner.mjs")) {
   const app = await createRunner({
-    token: process.env.T_AGNET_RUNNER_TOKEN ?? "",
-    dir: process.env.T_AGNET_RUNNER_DATA_DIR ?? "/data",
-    secrets,
+    token: process.env.PI_BOT_RUNNER_TOKEN ?? "",
+    dir: process.env.PI_BOT_RUNNER_DATA_DIR ?? "/data",
   });
-  await app.listen({
-    host: "0.0.0.0",
-    port: Number(process.env.T_AGNET_RUNNER_PORT ?? 8001),
-  });
-  for (const signal of ["SIGINT", "SIGTERM"] as const)
-    process.once(signal, () => void app.close());
+  await app.listen({ host: "0.0.0.0", port: Number(process.env.PI_BOT_RUNNER_PORT ?? 8001) });
+  for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => void app.close());
 }

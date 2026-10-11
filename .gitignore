@@ -1,4 +1,8 @@
 .ai-auto-collection.state.json
+.DS_Store
 
 node_modules/
 **/dist/
+.env
+vault.json
+*.vault.json

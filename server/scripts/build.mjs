@@ -1,15 +1,11 @@
 import { build } from "esbuild";
 import { resolve } from "node:path";
 const root = resolve(import.meta.dirname, "../..");
-const shared = {
-  name: "shared-agent",
+const workspace = {
+  name: "pi-bot-workspace",
   setup(build) {
-    build.onResolve({ filter: /^@t-agnet\/agent(?:\/plugins)?$/ }, (args) => ({
-      path: resolve(
-        root,
-        "packages/agent/src",
-        args.path.endsWith("/plugins") ? "plugins.ts" : "index.ts",
-      ),
+    build.onResolve({ filter: /^@pi-bot\/(agent|bot-face)$/ }, (args) => ({
+      path: resolve(root, "packages", args.path.split("/")[1], "src/index.ts"),
     }));
   },
 };
@@ -22,6 +18,6 @@ await build({
   format: "esm",
   target: "node24",
   packages: "external",
-  plugins: [shared],
+  plugins: [workspace],
   sourcemap: true,
 });

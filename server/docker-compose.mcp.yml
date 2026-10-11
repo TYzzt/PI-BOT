@@ -1,7 +1,0 @@
-# Optional cloud MCP secrets: a JSON object mapping secret_ref names to values.
-services:
-  runner:
-    environment:
-      T_AGNET_MCP_SECRET_FILE: /run/secrets/mcp.json
-    volumes:
-      - ${T_AGNET_MCP_SECRET_FILE:?set an absolute MCP secret file path}:/run/secrets/mcp.json:ro

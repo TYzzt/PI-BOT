@@ -1,699 +1,304 @@
-import test from "node:test";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
-import {
-  generateKeyPairSync,
-  sign,
-  randomUUID,
-  randomBytes,
-} from "node:crypto";
-import { mkdtemp, writeFile, rm, readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { Database } from "../src/db.js";
+import { randomUUID } from "node:crypto";
 import { createApp } from "../src/app.js";
-import { settings } from "../src/config.js";
-import { sha256, canonical, Vault } from "../src/security.js";
-import { createRunner, workspaceTools } from "../src/runner.js";
+import { settings, type Settings } from "../src/config.js";
+import { Database } from "../src/db.js";
 import { Worker } from "../src/worker.js";
-import { endpoint } from "../../desktop/tests/helpers.js";
-import { WebSocket } from "ws";
-const url = process.env.T_AGNET_TEST_DATABASE_URL;
-test(
-  "Node API, migration, device/task protocol, shared documents and Pi cloud worker",
-  { skip: !url, timeout: 120000 },
-  async (t) => {
-    const admin = new Database(url!),
-      name = `tagent_test_${randomUUID().replaceAll("-", "")}`;
-    await admin.pool.query(`CREATE DATABASE ${name}`);
-    const u = new URL(url!);
-    u.pathname = "/" + name;
-    const db = new Database(u.toString()),
-      dir = await mkdtemp(join(tmpdir(), "tagent-node-"));
-    const vaultFile = join(dir, "vault.json");
-    await writeFile(
-      vaultFile,
-      JSON.stringify({
-        active: "test",
-        keys: { test: randomBytes(32).toString("base64") },
-      }),
-    );
-    const s = settings({
-      T_AGNET_DATABASE_URL: u.toString(),
-      T_AGNET_ADMIN_PASSWORD: "test-password",
-      T_AGNET_JWT_SECRET: "test-jwt-secret-must-be-32-characters",
-      T_AGNET_SYNC_KEY_FILE: vaultFile,
-      T_AGNET_RUNNER_TOKEN: "test-runner-token-at-least-32-characters",
-    });
-    const app = await createApp(s, db);
-    await app.listen({ host: "127.0.0.1", port: 0 });
-    const base = app.listeningOrigin;
-    let token = "",
-      deviceId = "",
-      projectId = "",
-      taskId = "",
-      plan: any;
-    const key = generateKeyPairSync("ed25519");
-    const signed = (method: string, path: string, body = "") => {
-      const timestamp = String(Math.floor(Date.now() / 1000)),
-        nonce = randomUUID();
-      return {
-        "x-tagnet-device-id": deviceId,
-        "x-tagnet-timestamp": timestamp,
-        "x-tagnet-nonce": nonce,
-        "x-tagnet-signature": sign(
-          null,
-          Buffer.from(
-            `${timestamp}.${nonce}.${method}.${path}.${sha256(body)}`,
-          ),
-          key.privateKey,
-        ).toString("base64"),
-      };
-    };
-    async function call(
-      method: string,
-      path: string,
-      body?: any,
-      device = false,
-      expected = 200,
-    ) {
-      const payload = body === undefined ? "" : JSON.stringify(body),
-        r = await app.inject({
-          method: method as any,
-          url: path,
-          headers: {
-            ...(device
-              ? signed(method, path.split("?")[0], payload)
-              : token
-                ? { authorization: `Bearer ${token}` }
-                : {}),
-            ...(body === undefined
-              ? {}
-              : { "content-type": "application/json" }),
-          },
-          ...(body === undefined ? {} : { payload }),
-        });
-      assert.equal(r.statusCode, expected, `${method} ${path}: ${r.body}`);
-      return r.json();
-    }
-    try {
-      await t.test("health, login, validation and pairing", async () => {
-        await call("GET", "/health");
-        await call(
-          "POST",
-          "/auth/login",
-          { password: "incorrect" },
-          false,
-          401,
-        );
-        token = (
-          await call("POST", "/auth/login", { password: "test-password" })
-        ).access_token;
-        const code = (await call("POST", "/devices/pairing-codes"))
-            .pairing_code,
-          p = {
-            pairing_code: code,
-            public_key: key.publicKey
-              .export({ format: "der", type: "spki" })
-              .subarray(-32)
-              .toString("base64"),
-            label: "Mac",
-            capabilities: ["shared_v1", "plan"],
-          };
-        deviceId = (await call("POST", "/devices/pair", p)).device_id;
-        await call("POST", "/devices/pair", p, false, 400);
-        await call("POST", `/devices/${deviceId}/heartbeat`, undefined, true);
-        const payload = JSON.stringify({ display_name: "Test" }),
-          headers = signed("POST", "/projects", payload);
-        const one = await app.inject({
-          method: "POST",
-          url: "/projects",
-          headers: { ...headers, "content-type": "application/json" },
-          payload,
-        });
-        assert.equal(one.statusCode, 200, one.body);
-        projectId = one.json().project_id;
-        const replay = await app.inject({
-          method: "POST",
-          url: "/projects",
-          headers: { ...headers, "content-type": "application/json" },
-          payload,
-        });
-        assert.equal(replay.statusCode, 401);
-        await call(
-          "POST",
-          "/projects",
-          { display_name: "Test", source: "must-not-store" },
-          true,
-          422,
-        );
-        const id = randomUUID(),
-          first = await call(
-            "POST",
-            "/projects",
-            { display_name: "Retry", request_id: id },
-            true,
-          ),
-          second = await call(
-            "POST",
-            "/projects",
-            { display_name: "Retry", request_id: id },
-            true,
-          );
-        assert.equal(first.project_id, second.project_id);
-      });
-      await t.test(
-        "task plan hash, approval idempotency, execution and event cursor",
-        async () => {
-          const p = {
-              project_id: projectId,
-              requirement: "测试实现",
-              idempotency_key: randomUUID(),
-            },
-            created = await call("POST", "/tasks", p);
-          taskId = created.task_id;
-          assert.equal((await call("POST", "/tasks", p)).task_id, taskId);
-          await call(
-            "POST",
-            "/tasks",
-            { ...p, requirement: "其他" },
-            false,
-            409,
-          );
-          const cs = await call("GET", "/device/commands", undefined, true),
-            command = cs.find((c: any) => c.task_id === taskId);
-          await call(
-            "POST",
-            `/device/commands/${command.command_id}/ack`,
-            undefined,
-            true,
-          );
-          const body = {
-              goal: "测试",
-              scope: ["测试模块"],
-              non_goals: [],
-              modules: [],
-              steps: [{ step_id: "s1", title: "测试", description: "测试" }],
-              commands: [],
-              external_actions: [],
-              verification: ["测试通过"],
-              acceptance: ["完成测试"],
-              questions: [],
-            },
-            material = {
-              task_id: taskId,
-              version: 1,
-              project_id: projectId,
-              device_id: deviceId,
-              body,
-              workspace_fingerprint: "a".repeat(64),
-              config_snapshot_id: "test",
-            };
-          const publish = {
-            run_id: command.run_id,
-            version: 1,
-            content_hash: sha256(canonical(material)),
-            body,
-            workspace_fingerprint: material.workspace_fingerprint,
-            config_snapshot_id: "test",
-          };
-          await call(
-            "POST",
-            `/tasks/${taskId}/plans`,
-            { ...publish, content_hash: "0".repeat(64) },
-            true,
-            400,
-          );
-          plan = await call("POST", `/tasks/${taskId}/plans`, publish, true);
-          assert.equal(
-            (await call("POST", `/tasks/${taskId}/plans`, publish, true))
-              .plan_id,
-            plan.plan_id,
-          );
-          const approval = {
-              version: 1,
-              content_hash: plan.content_hash,
-              idempotency_key: randomUUID(),
-            },
-            a = await call("POST", `/plans/${plan.plan_id}/approve`, approval),
-            b = await call(
-              "POST",
-              `/device/plans/${plan.plan_id}/approve`,
-              { ...approval, idempotency_key: randomUUID() },
-              true,
-            );
-          assert.equal(a.run_id, b.run_id);
-          assert.equal(b.actor, "user");
-          const execute = (
-            await call("GET", "/device/commands", undefined, true)
-          ).find((c: any) => c.command_type === "execute");
-          await call(
-            "POST",
-            `/device/commands/${execute.command_id}/ack`,
-            undefined,
-            true,
-          );
-          const batch = {
-            events: [
-              {
-                event_id: randomUUID(),
-                producer_seq: 2,
-                task_id: taskId,
-                run_id: a.run_id,
-                type: "run.completed",
-                occurred_at: new Date().toISOString(),
-                payload: { summary: "完成", exit_code: 0, duration_ms: 0 },
-              },
-            ],
-          };
-          const result = await call("POST", "/device/events", batch, true);
-          assert.equal(result.accepted, 1);
-          assert.deepEqual(result.gaps, [{ expected: 1, received: 2 }]);
-          assert.equal(
-            (await call("POST", "/device/events", batch, true)).duplicates,
-            1,
-          );
-          assert.equal(
-            (await call("GET", `/tasks/${taskId}`)).status,
-            "completed",
-          );
-          const stored = await call("GET", `/events?task_id=${taskId}`);
-          assert.equal(
-            stored.events.find((e: any) => e.type === "run.completed").payload
-              .exit_code,
-            0,
-          );
-          assert.equal(
-            stored.events.find((e: any) => e.type === "run.completed").payload
-              .duration_ms,
-            0,
-          );
-          const page = await call("GET", "/events?after=0&limit=2");
-          assert.equal(page.events.length, 2);
-          assert.equal(page.has_more, true);
-          const next = await call("GET", `/events?after=${page.next_cursor}`);
-          assert.ok(
-            next.events.every((e: any) => e.server_cursor > page.next_cursor),
-          );
-        },
-      );
-      await t.test(
-        "shared model vault, cloud mirror, conversation upload and remote chat routing",
-        async () => {
-          const modelId = randomUUID(),
-            config = {
-              name: "Fixture",
-              base_url: "http://127.0.0.1:1/v1",
-              model_id: "fixture",
-              context_window: 32000,
-              max_tokens: 1000,
-              is_default: true,
-            };
-          const m = await call(
-            "PUT",
-            `/device/configs/models/${modelId}`,
-            {
-              expected_version: 0,
-              request_id: randomUUID(),
-              device_id: deviceId,
-              config,
-              api_key: "fixture-secret",
-            },
-            true,
-          );
-          assert.equal(m.has_key, true);
-          assert.ok(!JSON.stringify(m).includes("fixture-secret"));
-          assert.equal(
-            (
-              await call(
-                "GET",
-                `/device/configs/models/${modelId}/credential?version=1`,
-                undefined,
-                true,
-              )
-            ).api_key,
-            "fixture-secret",
-          );
-          assert.equal((await call("GET", "/cloud/models")).length, 1);
-          const id = randomUUID();
-          await call(
-            "PUT",
-            `/device/conversations/${id}`,
-            {
-              expected_version: 0,
-              request_id: randomUUID(),
-              device_id: deviceId,
-              title: "Local",
-              kind: "ask",
-              model_config_id: modelId,
-            },
-            true,
-          );
-          await call(
-            "POST",
-            `/device/conversations/${id}/messages`,
-            {
-              share_version: 1,
-              messages: [
-                {
-                  id: randomUUID(),
-                  run_id: randomUUID(),
-                  role: "user",
-                  content: "历史蓝鲸",
-                  status: "completed",
-                  revision: 1,
-                  sequence: 1,
-                },
-              ],
-            },
-            true,
-          );
-          assert.equal(
-            (await call("GET", `/conversations/${id}/messages`)).messages
-              .length,
-            1,
-          );
-          const run = await call("POST", `/conversations/${id}/messages`, {
-            request_id: randomUUID(),
-            text: "远程问答",
-          });
-          assert.equal(run.device_id, deviceId);
-          await call(
-            "POST",
-            `/device/chat-runs/${run.id}/ack`,
-            undefined,
-            true,
-          );
-          await call(
-            "POST",
-            `/device/chat-runs/${run.id}/result`,
-            { state: "completed", local_run_id: randomUUID() },
-            true,
-          );
-          assert.equal(
-            (await call("GET", `/chat-runs/${run.id}`)).state,
-            "completed",
-          );
-          assert.ok(
-            (await call("GET", "/device/shared/snapshot", undefined, true))
-              .documents.length,
-          );
-          assert.ok(
-            (await call("GET", "/device/shared/changes", undefined, true))
-              .changes.length,
-          );
-        },
-      );
-      await t.test(
-        "Skills/MCP validation, revisions, device application and conflicts",
-        async () => {
-          const id = randomUUID(),
-            p = {
-              expected_version: 0,
-              request_id: randomUUID(),
-              config: {
-                name: "fixture",
-                content: "测试技能",
-                runtime: "both",
-                enabled: true,
-              },
-            };
-          const skill = await call("PUT", `/configs/skills/${id}`, p);
-          assert.equal(skill.config.files.length, 0);
-          assert.equal(skill.config.requires.commands.length, 0);
-          assert.equal(
-            (await call("PUT", `/configs/skills/${id}`, p)).version,
-            1,
-          );
-          const legacy = {
-            expected_version: 0,
-            request_id: p.request_id,
-            config: {
-              name: "fixture",
-              description: "",
-              content: "测试技能",
-              files: [],
-              runtime: "both",
-              enabled: true,
-              requires: { commands: [], platforms: [], scripts: [], mcp: [] },
-              install_hint: null,
-            },
-          };
-          await db.tx((tx) =>
-            tx.rows("UPDATE shared_receipts SET digest=$1 WHERE id=$2", [
-              sha256(JSON.stringify(legacy)),
-              `skill:${p.request_id}`,
-            ]),
-          );
-          assert.equal(
-            (await call("PUT", `/configs/skills/${id}`, p)).version,
-            1,
-          );
-          await call(
-            "PUT",
-            `/configs/skills/${id}`,
-            { ...p, config: { ...p.config, content: "different" } },
-            false,
-            409,
-          );
-          await call(
-            "PUT",
-            `/configs/skills/${id}`,
-            { ...p, request_id: randomUUID() },
-            false,
-            409,
-          );
-          const applied = await call(
-            "POST",
-            `/device/configs/skills/${id}/applied`,
-            {
-              version: 1,
-              hash: skill.content_hash,
-              state: "available",
-              reasons: [],
-            },
-            true,
-          );
-          assert.equal(applied.devices[0].state, "available");
-          assert.equal(
-            (await call("GET", `/configs/skills/${id}/revisions`)).length,
-            1,
-          );
-          await call(
-            "PUT",
-            `/configs/skills/${randomUUID()}`,
-            {
-              ...p,
-              request_id: randomUUID(),
-              config: {
-                ...p.config,
-                name: "bad",
-                files: [{ path: "../secret", content: "bad" }],
-              },
-            },
-            false,
-            422,
-          );
-          await call(
-            "PUT",
-            `/configs/mcp-servers/${randomUUID()}`,
-            {
-              expected_version: 0,
-              request_id: randomUUID(),
-              config: {
-                name: "bad",
-                transport: "stdio",
-                command: "node",
-                env: [{ name: "API_KEY", value: "secret" }],
-              },
-            },
-            false,
-            422,
-          );
-        },
-      );
-      await t.test("WebSocket delivery and event replay", async () => {
-        const ws = new WebSocket(base.replace("http", "ws") + "/ws/events", {
-          headers: { authorization: `Bearer ${token}` },
-        });
-        const seen: any[] = [];
-        ws.on("message", (data) => seen.push(JSON.parse(data.toString())));
-        await new Promise<void>((resolve, reject) => {
-          ws.once("open", resolve);
-          ws.once("error", reject);
-        });
-        ws.send(JSON.stringify({ type: "subscribe", after: 0 }));
-        const until = Date.now() + 5000;
-        while (!seen.length && Date.now() < until)
-          await new Promise((r) => setTimeout(r, 20));
-        assert.ok(seen.some((e) => e.type === "event"));
-        ws.close();
-        await new Promise((r) => ws.once("close", r));
-        const ds = new WebSocket(base.replace("http", "ws") + "/ws/device", {
-          headers: signed("GET", "/ws/device"),
-        });
-        await new Promise<void>((resolve, reject) => {
-          ds.once("open", resolve);
-          ds.once("error", reject);
-        });
-        const pong = new Promise<any>((r) =>
-          ds.once("message", (data) => r(JSON.parse(data.toString()))),
-        );
-        ds.send(JSON.stringify({ type: "ping" }));
-        assert.equal((await pong).type, "pong");
-        ds.close();
-        await new Promise((r) => ds.once("close", r));
-      });
-      await t.test(
-        "real Pi cloud harness: history, snapshots, cancellation and credential isolation",
-        async () => {
-          const api = await endpoint(),
-            runner = await createRunner({
-              token: s.runnerToken!,
-              dir: join(dir, "runner"),
-            });
-          await runner.listen({ host: "127.0.0.1", port: 0 });
-          s.runnerUrl = runner.listeningOrigin;
-          const worker = new Worker(db, s);
-          try {
-            const modelId = randomUUID();
-            await call("PUT", `/cloud/models/${modelId}`, {
-              expected_version: 0,
-              request_id: randomUUID(),
-              config: {
-                name: "Pi",
-                base_url: api.url,
-                model_id: "fixture",
-                context_window: 32000,
-                max_tokens: 1000,
-              },
-              api_key: "fixture-secret",
-            });
-            const id = randomUUID();
-            await call("PUT", `/cloud/conversations/${id}`, {
-              expected_version: 0,
-              request_id: randomUUID(),
-              title: "Pi",
-              model_config_id: modelId,
-            });
-            const first = await call("POST", `/conversations/${id}/messages`, {
-              request_id: randomUUID(),
-              text: "记住蓝鲸",
-            });
-            assert.equal(await worker.runOnce(), true);
-            assert.equal(
-              (await call("GET", `/chat-runs/${first.id}`)).state,
-              "completed",
-            );
-            const next = await call(
-              "POST",
-              `/device/cloud/conversations/${id}/messages`,
-              { request_id: randomUUID(), text: "之前是什么？" },
-              true,
-            );
-            await worker.runOnce();
-            assert.equal(
-              (await call("GET", `/chat-runs/${next.id}`)).state,
-              "completed",
-            );
-            const page = await call("GET", `/conversations/${id}/messages`);
-            assert.match(page.messages.at(-1).content, /蓝鲸/);
-            const slow = await call("POST", `/conversations/${id}/messages`, {
-              request_id: randomUUID(),
-              text: "慢慢回复",
-            });
-            const running = worker.runOnce();
-            await new Promise((r) => setTimeout(r, 300));
-            await call("POST", `/chat-runs/${slow.id}/cancel`);
-            await running;
-            assert.equal(
-              (await call("GET", `/chat-runs/${slow.id}`)).state,
-              "cancelled",
-            );
-            const cloudState = (await call("GET", "/configs/skills"))[0].cloud;
-            assert.equal(cloudState.state, "available");
-            const tools = await workspaceTools(join(dir, "sandbox"));
-            await assert.rejects(() =>
-              tools[0].execute(
-                "test",
-                { path: "/etc/passwd" },
-                undefined,
-                undefined,
-                {} as any,
-              ),
-            );
-            const queued = await call("POST", `/conversations/${id}/messages`, {
-              request_id: randomUUID(),
-              text: "租约中断",
-            });
-            const other = new Worker(db, s);
-            const claims = await Promise.all([
-              worker.claim(),
-              other.claim(),
-              other.claim(),
-            ]);
-            assert.equal(claims.filter(Boolean).length, 1);
-            await db.tx(async (tx) => {
-              const r = await tx.get("shared_documents", queued.id);
-              r!.data.lease_until = new Date(0).toISOString();
-              await tx.save("shared_documents", r!);
-            });
-            assert.equal(await other.claim(), undefined);
-            assert.equal(
-              (await call("GET", `/chat-runs/${queued.id}`)).state,
-              "interrupted",
-            );
-            const resumed = await call(
-              "POST",
-              `/conversations/${id}/messages`,
-              { request_id: randomUUID(), text: "之前是什么？" },
-            );
-            await worker.runOnce();
-            assert.equal(
-              (await call("GET", `/chat-runs/${resumed.id}`)).state,
-              "completed",
-            );
-            assert.match(
-              (await call("GET", `/conversations/${id}/messages`)).messages.at(
-                -1,
-              ).content,
-              /蓝鲸/,
-            );
-            const secretRows = await db.tx((tx) =>
-              tx.rows("SELECT payload FROM events"),
-            );
-            assert.ok(!JSON.stringify(secretRows).includes("fixture-secret"));
-          } finally {
-            worker.stop();
-            await runner.close();
-            await api.close();
-          }
-        },
-      );
-      await t.test("Node fake device completes pairing, revision and approval demo", async () => {
-      const result = await promisify(execFile)(process.execPath, ["--import", import.meta.resolve("tsx"), new URL("../scripts/fake-device.ts", import.meta.url).pathname, "--url", base, "--demo"], { timeout: 15000, env: { ...process.env, T_AGNET_CLIENT_PASSWORD: "test-password" } });
-      assert.match(result.stdout, /演示完成/);
-    });
-    await t.test("approval expiry and queued cancellation", async () => {
-        const p = {
-            project_id: projectId,
-            requirement: "取消任务",
-            idempotency_key: randomUUID(),
-          },
-          r = await call("POST", "/tasks", p);
-        assert.equal(
-          (await call("POST", `/tasks/${r.task_id}/cancel`, {})).status,
-          "cancelled",
-        );
-        await call("POST", `/devices/${deviceId}/revoke`);
-        await call("GET", "/device/commands", undefined, true, 401);
-      });
-    } finally {
-      await app.close();
-      await admin.pool.query(`DROP DATABASE ${name} WITH (FORCE)`);
-      await admin.close();
-      await rm(dir, { recursive: true, force: true });
-    }
-  },
-);
+import { createRunner } from "../src/runner.js";
+import { SseUsage } from "../src/llm.js";
+import { deviceKeys, eventually, mockProvider, resetDatabase, socket, TEST_DB, tempDir, vaultFile } from "./helpers.js";
+
+const skip = !TEST_DB && "需要 PI_BOT_TEST_DATABASE_URL";
+let app: Awaited<ReturnType<typeof createApp>>, base: string, s: Settings;
+let provider: Awaited<ReturnType<typeof mockProvider>>, dir: ReturnType<typeof tempDir>;
+let runner: Awaited<ReturnType<typeof createRunner>>, worker: Worker, workerDb: Database, workerLoop: Promise<void>;
+const RUNNER_TOKEN = "r".repeat(40);
+
+async function api(method: string, path: string, opts: { token?: string; body?: unknown; headers?: Record<string, string> } = {}) {
+  const payload = opts.body === undefined ? undefined : JSON.stringify(opts.body);
+  const r = await fetch(base + path, {
+    method,
+    headers: {
+      ...(payload ? { "content-type": "application/json" } : {}),
+      ...(opts.token ? { authorization: `Bearer ${opts.token}` } : {}),
+      ...opts.headers,
+    },
+    body: payload,
+  });
+  const text = await r.text();
+  let json: any;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    json = text;
+  }
+  return { status: r.status, json };
+}
+
+before(async () => {
+  if (skip) return;
+  await resetDatabase(TEST_DB!);
+  dir = tempDir();
+  provider = await mockProvider();
+  runner = await createRunner({ token: RUNNER_TOKEN, dir: dir.path });
+  await runner.listen({ port: 0, host: "127.0.0.1" });
+  const runnerUrl = `http://127.0.0.1:${(runner.server.address() as any).port}`;
+  const env = {
+    PI_BOT_DATABASE_URL: TEST_DB,
+    PI_BOT_ADMIN_PASSWORD: "admin-password",
+    PI_BOT_JWT_SECRET: "j".repeat(40),
+    PI_BOT_VAULT_FILE: vaultFile(dir.path),
+    PI_BOT_RUNNER_TOKEN: RUNNER_TOKEN,
+    PI_BOT_RUNNER_URL: runnerUrl,
+    PI_BOT_MEMORY_THRESHOLD: "10",
+    PI_BOT_WORKER_POLL_SECONDS: "0.05",
+    PI_BOT_RPC_TIMEOUT_MS: "1500",
+  };
+  s = settings(env);
+  app = await createApp(s);
+  await app.listen({ port: 0, host: "127.0.0.1" });
+  base = `http://127.0.0.1:${(app.server.address() as any).port}`;
+  s = settings({ ...env, PI_BOT_INTERNAL_URL: base });
+  workerDb = new Database(TEST_DB!);
+  worker = new Worker(workerDb, s);
+});
+after(async () => {
+  if (skip) return;
+  worker?.stop();
+  await workerLoop;
+  await workerDb?.close();
+  await app?.close();
+  await runner?.close();
+  await provider?.close();
+  dir?.cleanup();
+});
+
+const state: Record<string, any> = {};
+
+test("admin bootstraps from env, creates users and models; users cannot reach admin API", { skip }, async () => {
+  const bad = await api("POST", "/auth/login", { body: { username: "admin", password: "wrong" } });
+  assert.equal(bad.status, 401);
+  const admin = await api("POST", "/auth/login", { body: { username: "admin", password: "admin-password" } });
+  assert.equal(admin.status, 200);
+  assert.equal(admin.json.user.role, "admin");
+  state.admin = admin.json.access_token;
+
+  const created = await api("POST", "/admin/api/users", { token: state.admin, body: { username: "alice", password: "alice-password", display_name: "Alice" } });
+  assert.equal(created.status, 200, JSON.stringify(created.json));
+  const dup = await api("POST", "/admin/api/users", { token: state.admin, body: { username: "ALICE", password: "alice-password" } });
+  assert.equal(dup.status, 409);
+  const alice = await api("POST", "/auth/login", { body: { username: "alice", password: "alice-password" } });
+  state.alice = alice.json.access_token;
+  state.aliceId = alice.json.user.id;
+  assert.equal((await api("GET", "/admin/api/users", { token: state.alice })).status, 403);
+
+  const noModel = await api("POST", "/bots", { token: state.alice, body: { name: "早到的" } });
+  const early = await api("POST", `/bots/${noModel.json.id}/messages`, { token: state.alice, body: { text: "hi", request_id: randomUUID() } });
+  assert.equal(early.status, 503);
+  await api("DELETE", `/bots/${noModel.json.id}`, { token: state.alice });
+
+  const model = await api("POST", "/admin/api/models", {
+    token: state.admin,
+    body: { name: "测试模型", base_url: provider.url, provider_model: "upstream-model", api_key: "sk-provider-secret", context_window: 32000, max_tokens: 1000 },
+  });
+  assert.equal(model.status, 200, JSON.stringify(model.json));
+  assert.equal(model.json.is_default, true, "first model becomes default");
+  assert.equal(JSON.stringify(model.json).includes("sk-provider-secret"), false);
+  state.model = model.json.id;
+  const tested = await api("POST", `/admin/api/models/${state.model}/test`, { token: state.admin });
+  assert.equal(tested.json.ok, true, JSON.stringify(tested.json));
+  assert.equal(provider.requests.at(-1)!.headers.authorization, "Bearer sk-provider-secret");
+  const models = await api("GET", "/models", { token: state.alice });
+  assert.deepEqual(models.json.map((m: any) => m.name), ["测试模型"]);
+  assert.equal("base_url" in models.json[0], false, "users never see provider details");
+});
+
+test("bots are per user with unique library slugs and a default avatar", { skip }, async () => {
+  const a = await api("POST", "/bots", { token: state.alice, body: { name: "Research Bot", persona: "帮我整理资料" } });
+  assert.equal(a.status, 200, JSON.stringify(a.json));
+  assert.equal(a.json.slug, "research-bot");
+  assert.ok(a.json.avatar.shape && a.json.avatar.color);
+  const b = await api("POST", "/bots", { token: state.alice, body: { name: "Research Bot", avatar: { shape: "bean", color: "mint" } } });
+  assert.equal(b.json.slug, "research-bot-2");
+  const c = await api("POST", "/bots", { token: state.alice, body: { name: "小助手" } });
+  assert.match(c.json.slug, /^bot(-\d+)?$/);
+  const renamed = await api("PATCH", `/bots/${b.json.id}`, { token: state.alice, body: { name: "Notes" } });
+  assert.equal(renamed.json.slug, "research-bot-2", "library folder never moves");
+  const admin = await api("GET", `/bots/${a.json.id}`, { token: state.admin });
+  assert.equal(admin.status, 404, "bots are private to their owner");
+  state.bot = a.json.id;
+  state.bot2 = c.json.id;
+  const list = await api("GET", "/bots", { token: state.alice });
+  assert.equal(list.json.bots.length, 3);
+  assert.equal(list.json.mac.online, false);
+});
+
+test("the model proxy injects the provider key, rewrites the model and records usage", { skip }, async () => {
+  const keys = deviceKeys();
+  const reg = await api("POST", "/devices/register", { token: state.alice, body: { public_key: keys.publicKey, label: "Alice 的 MacBook" } });
+  assert.equal(reg.status, 200, JSON.stringify(reg.json));
+  keys.setId(reg.json.device.id);
+  state.keys = keys;
+  const body = JSON.stringify({ bot_id: state.bot });
+  const token = await api("POST", "/device/llm-token", { body: { bot_id: state.bot }, headers: keys.headers("POST", "/device/llm-token", body) });
+  assert.equal(token.status, 200, JSON.stringify(token.json));
+  const replay = await api("POST", "/device/llm-token", { body: { bot_id: state.bot }, headers: keys.headers("POST", "/device/llm-token", "{}") });
+  assert.equal(replay.status, 401, "signature covers the body");
+  const r = await fetch(`${base}/llm/v1/chat/completions`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token.json.token}`, "content-type": "application/json" },
+    body: JSON.stringify({ model: state.model, stream: true, stream_options: { include_usage: true }, messages: [{ role: "user", content: "你好" }] }),
+  });
+  assert.equal(r.status, 200);
+  const sse = await r.text();
+  assert.match(sse, /"content":"好"/);
+  assert.match(sse, /"prompt_tokens":42/);
+  const forwarded = provider.requests.at(-1)!;
+  assert.equal(forwarded.body.model, "upstream-model");
+  assert.equal(forwarded.headers.authorization, "Bearer sk-provider-secret");
+  const userToken = await fetch(`${base}/llm/v1/chat/completions`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${state.alice}`, "content-type": "application/json" },
+    body: JSON.stringify({ model: state.model, messages: [] }),
+  });
+  assert.equal(userToken.status, 401, "user tokens cannot call the proxy");
+  const usage = await eventually(async () => {
+    const u = await api("GET", "/admin/api/usage", { token: state.admin });
+    return u.json.by_user.find((x: any) => x.username === "alice" && x.input_tokens >= 42) && u.json;
+  });
+  assert.ok(usage.by_model.length);
+});
+
+test("Mac online: runs execute on the Mac with tools, approvals and file RPC", { skip }, async () => {
+  const mac = socket(base.replace("http", "ws") + "/ws/device", state.keys.headers("GET", "/ws/device"));
+  await mac.next((m) => m.type === "hello");
+  const events = socket(base.replace("http", "ws") + "/ws/events", { authorization: `Bearer ${state.alice}` });
+  await events.next((m) => m.type === "hello" && m.mac_online === true);
+  assert.equal((await api("GET", "/me", { token: state.alice })).json.mac.online, true);
+
+  const requestId = randomUUID();
+  const posted = await api("POST", `/bots/${state.bot}/messages`, { token: state.alice, body: { text: "整理一下桌面", request_id: requestId } });
+  assert.equal(posted.status, 200, JSON.stringify(posted.json));
+  assert.equal(posted.json.run.executor, "mac");
+  const again = await api("POST", `/bots/${state.bot}/messages`, { token: state.alice, body: { text: "整理一下桌面", request_id: requestId } });
+  assert.equal(again.json.run.id, posted.json.run.id, "request_id is idempotent");
+  const busy = await api("POST", `/bots/${state.bot}/messages`, { token: state.alice, body: { text: "另一件事", request_id: randomUUID() } });
+  assert.equal(busy.status, 409);
+
+  const { run } = await mac.next((m) => m.type === "run");
+  assert.equal(run.bot.slug, "research-bot");
+  assert.match(run.system, /~\/pi-bot\/research-bot/);
+  assert.match(run.system, /帮我整理资料/);
+  assert.equal(run.text, "整理一下桌面");
+  const runId = run.run_id;
+  mac.send({ type: "run_event", run_id: runId, event: { kind: "started" } });
+  mac.send({ type: "run_event", run_id: runId, event: { kind: "tool", id: "t1", name: "list_files", state: "running", summary: "." } });
+  mac.send({ type: "run_event", run_id: runId, event: { kind: "text", text: "正在查看" } });
+  const delta = await events.next((m) => m.event?.type === "delta");
+  assert.equal(delta.event.content, "正在查看");
+  mac.send({ type: "run_event", run_id: runId, event: { kind: "approval", request_id: "q1", path: "/Users/alice/Desktop", reason: "需要整理桌面" } });
+  const created = await mac.next((m) => m.type === "approval_created");
+  const detail = await eventually(async () => {
+    const b = await api("GET", `/bots/${state.bot}`, { token: state.alice });
+    return b.json.pending_approvals?.length && b.json;
+  });
+  assert.equal(detail.latest_run.status, "waiting_approval");
+  assert.equal(detail.pending_approvals[0].path, "/Users/alice/Desktop");
+  const decided = await api("POST", `/approvals/${created.approval_id}`, { token: state.alice, body: { decision: "approve" } });
+  assert.equal(decided.json.status, "approved");
+  const decision = await mac.next((m) => m.type === "approval");
+  assert.equal(decision.decision, "approve");
+  assert.equal((await api("POST", `/approvals/${created.approval_id}`, { token: state.alice, body: { decision: "reject" } })).status, 409);
+
+  const listing = api("GET", `/bots/${state.bot}/files?path=notes`, { token: state.alice });
+  const rpc = await mac.next((m) => m.type === "rpc");
+  assert.equal(rpc.method, "files.list");
+  assert.deepEqual(rpc.params, { slug: "research-bot", path: "notes" });
+  mac.send({ type: "rpc_result", id: rpc.id, ok: true, result: { entries: [{ name: "a.md", type: "file", size: 3 }] } });
+  assert.deepEqual((await listing).json.entries[0].name, "a.md");
+  const slow = await api("GET", `/bots/${state.bot}/files/content?path=a.md`, { token: state.alice });
+  assert.equal(slow.status, 504);
+
+  mac.send({ type: "run_event", run_id: runId, event: { kind: "tool", id: "t1", name: "list_files", state: "completed" } });
+  mac.send({ type: "run_event", run_id: runId, event: { kind: "done", state: "completed", text: "桌面已整理好。" } });
+  const page = await eventually(async () => {
+    const p = await api("GET", `/bots/${state.bot}/messages`, { token: state.alice });
+    return p.json.messages.at(-1).status === "completed" && p.json;
+  });
+  const reply = page.messages.at(-1);
+  assert.equal(reply.content, "桌面已整理好。");
+  assert.equal(reply.executor, "mac");
+  assert.deepEqual(reply.tools.map((t: any) => [t.name, t.state]), [["list_files", "completed"]]);
+
+  await api("POST", `/bots/${state.bot}/messages`, { token: state.alice, body: { text: "再做一件事", request_id: randomUUID() } });
+  const second = await mac.next((m) => m.type === "run");
+  mac.send({ type: "run_event", run_id: second.run.run_id, event: { kind: "started" } });
+  const cancelled = await api("POST", `/runs/${second.run.run_id}/cancel`, { token: state.alice });
+  assert.equal(cancelled.status, 200);
+  await mac.next((m) => m.type === "cancel" && m.run_id === second.run.run_id);
+
+  mac.close();
+  await events.next((m) => m.event?.type === "presence" && m.event.online === false);
+  const failed = await eventually(async () => {
+    const b = await api("GET", `/bots/${state.bot}`, { token: state.alice });
+    return b.json.latest_run.status !== "running" && b.json.latest_run;
+  });
+  assert.equal(failed.status, "cancelled", "cancel requested before the Mac dropped");
+  const offline = await api("GET", `/bots/${state.bot}/files`, { token: state.alice });
+  assert.equal(offline.status, 503);
+  events.close();
+});
+
+test("Mac offline: runs fall back to the cloud runner through the proxy, with memory", { skip }, async () => {
+  workerLoop = worker.runForever();
+  const send = async (text: string) => {
+    const r = await api("POST", `/bots/${state.bot2}/messages`, { token: state.alice, body: { text, request_id: randomUUID() } });
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    assert.equal(r.json.run.executor, "cloud");
+    return eventually(async () => {
+      const p = await api("GET", `/bots/${state.bot2}/messages`, { token: state.alice });
+      const last = p.json.messages.at(-1);
+      return last.status !== "running" && last;
+    }, 20000);
+  };
+  const first = await send("记住蓝鲸");
+  assert.equal(first.status, "completed", JSON.stringify(first));
+  assert.equal(first.content, "好的，我记住了蓝鲸。");
+  const forwarded = provider.requests.at(-1)!.body;
+  assert.equal(forwarded.model, "upstream-model");
+  assert.match(forwarded.messages[0].content, /Mac 当前离线/);
+  assert.equal(forwarded.tools?.length ?? 0, 0, "cloud runs have no file or shell tools");
+  const second = await send("之前说了什么？");
+  assert.equal(second.content, "你之前说的是蓝鲸。");
+
+  for (let i = 0; i < 5; i++) await send(`第 ${i} 件事`);
+  const memory = await eventually(async () => {
+    const r = await workerDb.tx((tx) => tx.get("bot_memories", state.bot2));
+    return r?.summary && r;
+  }, 20000);
+  assert.equal(memory.summary, "用户喜欢蓝鲸。");
+  const after = await send("之前说了什么？");
+  assert.equal(after.content, "你之前说的是蓝鲸。", "memory summary reaches the prompt");
+});
+
+test("admin can disable users and revoke devices", { skip }, async () => {
+  const devices = await api("GET", "/admin/api/devices", { token: state.admin });
+  const d = devices.json.find((x: any) => x.username === "alice" && !x.revoked_at);
+  const revoked = await api("POST", `/admin/api/devices/${d.id}/revoke`, { token: state.admin });
+  assert.ok(revoked.json.revoked_at);
+  const signed = await api("GET", "/me", { headers: state.keys.headers("GET", "/me") });
+  assert.equal(signed.status, 401);
+  await api("PATCH", `/admin/api/users/${state.aliceId}`, { token: state.admin, body: { disabled: true } });
+  assert.equal((await api("GET", "/me", { token: state.alice })).status, 401);
+  const overview = await api("GET", "/admin/api/overview", { token: state.admin });
+  assert.equal(overview.json.users, 2);
+});
+
+test("SSE usage parser keeps the last usage block across chunk boundaries", () => {
+  const p = new SseUsage();
+  const line = `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 7, completion_tokens: 2 } })}\n\n`;
+  p.push(line.slice(0, 20));
+  p.push(line.slice(20));
+  assert.deepEqual(p.usage, { input: 7, output: 2 });
+});

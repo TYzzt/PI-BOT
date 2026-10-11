@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "defaults": { "shape": "blob", "color": "orange", "scheme": "light", "mood": "idle" },
+  "shapes": {
+    "blob": {
+      "label": "圆团",
+      "points": [[0, -0.85], [0.45, -0.75], [0.72, -0.38], [0.86, 0.12], [0.88, 0.55], [0.55, 0.8], [0, 0.84], [-0.55, 0.8], [-0.88, 0.55], [-0.86, 0.12], [-0.72, -0.38], [-0.45, -0.75]],
+      "face": { "y": 0.02, "gap": 0.42, "eye": 0.11 }
+    },
+    "pebble": {
+      "label": "石子",
+      "points": [[0, -0.62], [0.6, -0.56], [0.92, -0.16], [0.88, 0.34], [0.5, 0.64], [0, 0.7], [-0.5, 0.64], [-0.88, 0.34], [-0.92, -0.16], [-0.6, -0.56]],
+      "face": { "y": 0.02, "gap": 0.46, "eye": 0.1 }
+    },
+    "bean": {
+      "label": "豆子",
+      "points": [[-0.15, -0.82], [0.42, -0.8], [0.8, -0.42], [0.84, 0.12], [0.6, 0.62], [0.08, 0.82], [-0.48, 0.7], [-0.82, 0.3], [-0.7, -0.1], [-0.6, -0.5]],
+      "face": { "y": -0.04, "gap": 0.4, "eye": 0.1 }
+    },
+    "egg": {
+      "label": "蛋蛋",
+      "points": [[0, -0.92], [0.45, -0.75], [0.7, -0.3], [0.76, 0.2], [0.6, 0.62], [0, 0.84], [-0.6, 0.62], [-0.76, 0.2], [-0.7, -0.3], [-0.45, -0.75]],
+      "face": { "y": 0.06, "gap": 0.38, "eye": 0.1 }
+    },
+    "squircle": {
+      "label": "方糖",
+      "points": [[0, -0.8], [0.6, -0.78], [0.78, -0.6], [0.82, 0], [0.78, 0.6], [0.6, 0.78], [0, 0.8], [-0.6, 0.78], [-0.78, 0.6], [-0.82, 0], [-0.78, -0.6], [-0.6, -0.78]],
+      "face": { "y": 0, "gap": 0.44, "eye": 0.11 }
+    },
+    "cloud": {
+      "label": "云朵",
+      "points": [[0, -0.64], [0.32, -0.88], [0.6, -0.66], [0.88, -0.48], [0.92, -0.02], [0.82, 0.45], [0.45, 0.74], [0, 0.76], [-0.45, 0.74], [-0.82, 0.45], [-0.92, -0.02], [-0.88, -0.48], [-0.6, -0.66], [-0.32, -0.88]],
+      "face": { "y": 0.04, "gap": 0.44, "eye": 0.1 }
+    },
+    "drop": {
+      "label": "水滴",
+      "points": [[0, -0.95], [0.3, -0.6], [0.68, -0.15], [0.78, 0.3], [0.55, 0.72], [0, 0.86], [-0.55, 0.72], [-0.78, 0.3], [-0.68, -0.15], [-0.3, -0.6]],
+      "face": { "y": 0.14, "gap": 0.4, "eye": 0.1 }
+    },
+    "bell": {
+      "label": "小铃",
+      "points": [[0, -0.86], [0.5, -0.76], [0.78, -0.35], [0.84, 0.2], [0.86, 0.72], [0.5, 0.62], [0.25, 0.78], [0, 0.66], [-0.25, 0.78], [-0.5, 0.62], [-0.86, 0.72], [-0.84, 0.2], [-0.78, -0.35], [-0.5, -0.76]],
+      "face": { "y": -0.04, "gap": 0.42, "eye": 0.11 }
+    }
+  },
+  "colors": {
+    "orange": { "label": "橘子", "light": ["#FFA463", "#F4692A"], "dark": ["#E9773A", "#B24A17"], "ink": "#2B1A12", "cheek": "#FF6F7D" },
+    "coral": { "label": "珊瑚", "light": ["#FF968C", "#EF5350"], "dark": ["#E0675F", "#A8352F"], "ink": "#2B1414", "cheek": "#FF5C7A" },
+    "pink": { "label": "樱粉", "light": ["#FFB3D4", "#F06BA8"], "dark": ["#E07AAE", "#A8406F"], "ink": "#2E1422", "cheek": "#FF4F8B" },
+    "grape": { "label": "葡萄", "light": ["#C0A8FF", "#7C5CF0"], "dark": ["#8F74E6", "#4F33B0"], "ink": "#1B1233", "cheek": "#FF7AB6" },
+    "sky": { "label": "晴空", "light": ["#9AD2FF", "#3E95F5"], "dark": ["#5DA6E8", "#22609F"], "ink": "#0F1C2E", "cheek": "#FF7D9A" },
+    "mint": { "label": "薄荷", "light": ["#9CEBCF", "#2FBF8F"], "dark": ["#5CC7A2", "#1C7E5D"], "ink": "#0F2A21", "cheek": "#FF7D8F" },
+    "lime": { "label": "青柠", "light": ["#D2F28A", "#86C93A"], "dark": ["#9FCB4F", "#557F1E"], "ink": "#1D2A0C", "cheek": "#FF7D7D" },
+    "lemon": { "label": "柠檬", "light": ["#FFE58A", "#F5B921"], "dark": ["#E5BE45", "#A87A10"], "ink": "#2E2208", "cheek": "#FF7D6B" },
+    "cocoa": { "label": "可可", "light": ["#D2AC90", "#8A5A3C"], "dark": ["#9E7559", "#5A3722"], "ink": "#22140B", "cheek": "#FF8A8A" },
+    "ink": { "label": "墨色", "light": ["#62666F", "#23252B"], "dark": ["#454852", "#121317"], "ink": "#F5F5F7", "cheek": "#FF7D9A" }
+  },
+  "moods": {
+    "idle": { "label": "待命", "eyes": "open", "mouth": "smile", "arms": "down", "effect": "none" },
+    "happy": { "label": "开心", "eyes": "happy", "mouth": "open", "arms": "wave", "effect": "sparkle" },
+    "thinking": { "label": "思考", "eyes": "open", "mouth": "flat", "arms": "think", "effect": "dots" },
+    "working": { "label": "工作", "eyes": "focus", "mouth": "smile", "arms": "type", "effect": "none" },
+    "searching": { "label": "搜索", "eyes": "open", "mouth": "o", "arms": "down", "effect": "none" },
+    "waiting": { "label": "等待确认", "eyes": "open", "mouth": "flat", "arms": "down", "effect": "question" },
+    "celebrate": { "label": "完成", "eyes": "wink", "mouth": "open", "arms": "up", "effect": "confetti" },
+    "error": { "label": "出错", "eyes": "small", "mouth": "frown", "arms": "down", "effect": "alert" },
+    "sleeping": { "label": "睡觉", "eyes": "closed", "mouth": "frown", "arms": "hidden", "effect": "zzz" }
+  },
+  "confetti": ["#FF6B6B", "#FFD166", "#06D6A0", "#4CC9F0", "#B388FF", "#FF9F1C", "#F15BB5"]
+}

@@ -1,274 +1,134 @@
-
 CREATE TABLE users (
-	user_id UUID NOT NULL,
-	password_hash TEXT NOT NULL,
-	singleton BOOLEAN NOT NULL,
-	created_at TIMESTAMP WITH TIME ZONE NOT NULL,
-	PRIMARY KEY (user_id),
-	UNIQUE (singleton)
-)
-
-;
-
-CREATE TABLE pairing_codes (
-	pairing_code_id UUID NOT NULL,
-	code_hash TEXT NOT NULL,
-	expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
-	used_at TIMESTAMP WITH TIME ZONE,
-	created_at TIMESTAMP WITH TIME ZONE NOT NULL,
-	PRIMARY KEY (pairing_code_id),
-	UNIQUE (code_hash)
-)
-
-;
+  user_id uuid PRIMARY KEY,
+  username text NOT NULL UNIQUE CHECK (username ~ '^[A-Za-z0-9_.@-]{1,64}$'),
+  display_name text NOT NULL DEFAULT '',
+  password_hash text NOT NULL,
+  role text NOT NULL CHECK (role IN ('admin', 'user')),
+  disabled boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
 
 CREATE TABLE devices (
-	device_id UUID NOT NULL,
-	public_key TEXT NOT NULL,
-	label TEXT NOT NULL,
-	capabilities JSONB NOT NULL,
-	last_seen_at TIMESTAMP WITH TIME ZONE,
-	revoked_at TIMESTAMP WITH TIME ZONE,
-	created_at TIMESTAMP WITH TIME ZONE NOT NULL,
-	PRIMARY KEY (device_id)
-)
-
-;
-
-CREATE TABLE shared_receipts (
-	id TEXT NOT NULL,
-	digest TEXT NOT NULL,
-	result JSONB NOT NULL,
-	PRIMARY KEY (id)
-)
-
-;
+  device_id uuid PRIMARY KEY,
+  user_id uuid NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  public_key text NOT NULL,
+  label text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  last_seen_at timestamptz,
+  revoked_at timestamptz
+);
+-- Each user binds exactly one Mac as the harness computer.
+CREATE UNIQUE INDEX devices_one_active ON devices(user_id) WHERE revoked_at IS NULL;
 
 CREATE TABLE device_nonces (
-	device_id UUID NOT NULL,
-	nonce TEXT NOT NULL,
-	expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
-	PRIMARY KEY (device_id, nonce),
-	FOREIGN KEY(device_id) REFERENCES devices (device_id)
-)
+  device_id uuid NOT NULL REFERENCES devices(device_id) ON DELETE CASCADE,
+  nonce text NOT NULL,
+  expires_at timestamptz NOT NULL,
+  PRIMARY KEY (device_id, nonce)
+);
+CREATE INDEX device_nonces_expiry ON device_nonces(expires_at);
 
-;
+CREATE TABLE models (
+  model_id uuid PRIMARY KEY,
+  name text NOT NULL,
+  base_url text NOT NULL,
+  provider_model text NOT NULL,
+  context_window integer NOT NULL CHECK (context_window >= 1024),
+  max_tokens integer NOT NULL CHECK (max_tokens >= 16 AND max_tokens < context_window),
+  secret jsonb NOT NULL,
+  enabled boolean NOT NULL DEFAULT true,
+  is_default boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX models_one_default ON models(is_default) WHERE is_default;
 
-CREATE TABLE projects (
-	project_id UUID NOT NULL,
-	device_id UUID NOT NULL,
-	display_name TEXT NOT NULL,
-	availability TEXT NOT NULL,
-	created_at TIMESTAMP WITH TIME ZONE NOT NULL,
-	updated_at TIMESTAMP WITH TIME ZONE NOT NULL,
-	PRIMARY KEY (project_id),
-	CONSTRAINT projects_availability_check CHECK (availability IN ('available', 'unavailable')),
-	FOREIGN KEY(device_id) REFERENCES devices (device_id)
-)
+CREATE TABLE bots (
+  bot_id uuid PRIMARY KEY,
+  user_id uuid NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  name text NOT NULL,
+  slug text NOT NULL CHECK (slug ~ '^[a-z0-9][a-z0-9-]{0,62}$'),
+  persona text NOT NULL DEFAULT '',
+  model_id uuid REFERENCES models(model_id) ON DELETE SET NULL,
+  avatar jsonb NOT NULL,
+  next_seq bigint NOT NULL DEFAULT 1,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  last_active_at timestamptz NOT NULL DEFAULT now(),
+  archived_at timestamptz
+);
+-- Library folder names stay reserved after archive so files are never mixed.
+CREATE UNIQUE INDEX bots_slug ON bots(user_id, slug);
+CREATE INDEX bots_user ON bots(user_id, archived_at);
 
-;
-CREATE INDEX ix_projects_device_id ON projects (device_id);
+CREATE TABLE bot_runs (
+  run_id uuid PRIMARY KEY,
+  bot_id uuid NOT NULL REFERENCES bots(bot_id) ON DELETE CASCADE,
+  user_id uuid NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  request_id text NOT NULL,
+  executor text NOT NULL CHECK (executor IN ('mac', 'cloud')),
+  device_id uuid REFERENCES devices(device_id) ON DELETE SET NULL,
+  status text NOT NULL CHECK (status IN ('queued', 'running', 'waiting_approval', 'completed', 'failed', 'cancelled')),
+  error text,
+  cancel_requested boolean NOT NULL DEFAULT false,
+  user_message_id uuid NOT NULL,
+  assistant_message_id uuid NOT NULL,
+  worker_id uuid,
+  lease_until timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  started_at timestamptz,
+  finished_at timestamptz,
+  UNIQUE (bot_id, request_id)
+);
+-- A bot works on one message at a time.
+CREATE UNIQUE INDEX bot_runs_one_active ON bot_runs(bot_id) WHERE status IN ('queued', 'running', 'waiting_approval');
+CREATE INDEX bot_runs_cloud_queue ON bot_runs(created_at) WHERE executor = 'cloud' AND status = 'queued';
 
-CREATE TABLE device_event_sequences (
-	device_id UUID NOT NULL,
-	last_seq BIGINT NOT NULL,
-	PRIMARY KEY (device_id),
-	FOREIGN KEY(device_id) REFERENCES devices (device_id)
-)
+CREATE TABLE bot_messages (
+  message_id uuid PRIMARY KEY,
+  bot_id uuid NOT NULL REFERENCES bots(bot_id) ON DELETE CASCADE,
+  run_id uuid REFERENCES bot_runs(run_id) ON DELETE SET NULL,
+  seq bigint NOT NULL,
+  role text NOT NULL CHECK (role IN ('user', 'assistant')),
+  content text NOT NULL DEFAULT '',
+  status text NOT NULL CHECK (status IN ('completed', 'running', 'failed', 'cancelled')),
+  executor text CHECK (executor IN ('mac', 'cloud')),
+  tools jsonb NOT NULL DEFAULT '[]',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (bot_id, seq)
+);
 
-;
-
-CREATE TABLE shared_documents (
-	id UUID NOT NULL,
-	position BIGINT GENERATED BY DEFAULT AS IDENTITY,
-	kind TEXT NOT NULL,
-	device_id UUID,
-	version INTEGER NOT NULL,
-	data JSONB NOT NULL,
-	PRIMARY KEY (id),
-	FOREIGN KEY(device_id) REFERENCES devices (device_id)
-)
-
-;
-CREATE INDEX ix_shared_documents_device_id ON shared_documents (device_id);
-
-CREATE TABLE shared_changes (
-	cursor BIGINT GENERATED BY DEFAULT AS IDENTITY,
-	device_id UUID,
-	kind TEXT NOT NULL,
-	entity_id UUID NOT NULL,
-	version INTEGER NOT NULL,
-	PRIMARY KEY (cursor),
-	FOREIGN KEY(device_id) REFERENCES devices (device_id)
-)
-
-;
-CREATE INDEX ix_shared_changes_device_id ON shared_changes (device_id);
-
-CREATE TABLE tasks (
-	task_id UUID NOT NULL,
-	project_id UUID NOT NULL,
-	target_device_id UUID NOT NULL,
-	requirement TEXT NOT NULL,
-	status TEXT NOT NULL,
-	cancel_requested_at TIMESTAMP WITH TIME ZONE,
-	idempotency_key TEXT NOT NULL,
-	latest_plan_id UUID,
-	created_at TIMESTAMP WITH TIME ZONE NOT NULL,
-	updated_at TIMESTAMP WITH TIME ZONE NOT NULL,
-	PRIMARY KEY (task_id),
-	CONSTRAINT tasks_status_check CHECK (status IN ('queued', 'waiting_for_device', 'planning', 'awaiting_review', 'approved', 'running', 'waiting_for_input', 'waiting_for_local_action', 'needs_replan', 'interrupted', 'completed', 'failed', 'cancelled', 'rejected')),
-	FOREIGN KEY(project_id) REFERENCES projects (project_id),
-	FOREIGN KEY(target_device_id) REFERENCES devices (device_id),
-	UNIQUE (idempotency_key)
-)
-
-;
-CREATE INDEX ix_tasks_project_id ON tasks (project_id);
-CREATE INDEX ix_tasks_target_device_id ON tasks (target_device_id);
-
-CREATE TABLE shared_revisions (
-	id BIGINT GENERATED BY DEFAULT AS IDENTITY,
-	document_id UUID NOT NULL,
-	version INTEGER NOT NULL,
-	data JSONB NOT NULL,
-	PRIMARY KEY (id),
-	UNIQUE (document_id, version),
-	FOREIGN KEY(document_id) REFERENCES shared_documents (id)
-)
-
-;
-
-CREATE TABLE plans (
-	plan_id UUID NOT NULL,
-	task_id UUID NOT NULL,
-	version INTEGER NOT NULL,
-	content_hash TEXT NOT NULL,
-	body JSONB NOT NULL,
-	workspace_fingerprint TEXT NOT NULL,
-	config_snapshot_id TEXT NOT NULL,
-	device_id UUID NOT NULL,
-	project_id UUID NOT NULL,
-	created_at TIMESTAMP WITH TIME ZONE NOT NULL,
-	superseded_at TIMESTAMP WITH TIME ZONE,
-	PRIMARY KEY (plan_id),
-	CONSTRAINT plans_task_version_key UNIQUE (task_id, version),
-	FOREIGN KEY(task_id) REFERENCES tasks (task_id),
-	FOREIGN KEY(device_id) REFERENCES devices (device_id),
-	FOREIGN KEY(project_id) REFERENCES projects (project_id)
-)
-
-;
-CREATE INDEX ix_plans_task_id ON plans (task_id);
-
-CREATE TABLE events (
-	event_id UUID NOT NULL,
-	server_cursor BIGINT GENERATED ALWAYS AS IDENTITY,
-	task_id UUID,
-	run_id UUID,
-	producer_id TEXT NOT NULL,
-	producer_seq BIGINT,
-	type TEXT NOT NULL,
-	schema_version INTEGER NOT NULL,
-	occurred_at TIMESTAMP WITH TIME ZONE NOT NULL,
-	recorded_at TIMESTAMP WITH TIME ZONE NOT NULL,
-	payload JSONB NOT NULL,
-	PRIMARY KEY (event_id),
-	UNIQUE (server_cursor),
-	FOREIGN KEY(task_id) REFERENCES tasks (task_id)
-)
-
-;
-CREATE INDEX ix_events_task_id ON events (task_id);
-
-CREATE TABLE plan_feedback (
-	feedback_id UUID NOT NULL,
-	task_id UUID NOT NULL,
-	plan_id UUID NOT NULL,
-	run_id UUID NOT NULL,
-	feedback TEXT NOT NULL,
-	actor TEXT DEFAULT 'user' NOT NULL,
-	idempotency_key TEXT NOT NULL,
-	created_at TIMESTAMP WITH TIME ZONE NOT NULL,
-	PRIMARY KEY (feedback_id),
-	CONSTRAINT plan_feedback_actor_check CHECK (actor IN ('user', 'device')),
-	FOREIGN KEY(task_id) REFERENCES tasks (task_id),
-	FOREIGN KEY(plan_id) REFERENCES plans (plan_id),
-	UNIQUE (idempotency_key)
-)
-
-;
-CREATE INDEX ix_plan_feedback_task_id ON plan_feedback (task_id);
+CREATE TABLE bot_memories (
+  bot_id uuid PRIMARY KEY REFERENCES bots(bot_id) ON DELETE CASCADE,
+  summary text NOT NULL DEFAULT '',
+  through_seq bigint NOT NULL DEFAULT 0,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
 
 CREATE TABLE approvals (
-	approval_id UUID NOT NULL,
-	plan_id UUID NOT NULL,
-	task_id UUID NOT NULL,
-	version INTEGER NOT NULL,
-	content_hash TEXT NOT NULL,
-	device_id UUID NOT NULL,
-	project_id UUID NOT NULL,
-	status TEXT NOT NULL,
-	actor TEXT DEFAULT 'user' NOT NULL,
-	expires_at TIMESTAMP WITH TIME ZONE,
-	idempotency_key TEXT NOT NULL,
-	created_at TIMESTAMP WITH TIME ZONE NOT NULL,
-	PRIMARY KEY (approval_id),
-	CONSTRAINT approvals_status_check CHECK (status IN ('recorded', 'rejected', 'expired')),
-	CONSTRAINT approvals_actor_check CHECK (actor IN ('user', 'device')),
-	FOREIGN KEY(plan_id) REFERENCES plans (plan_id),
-	FOREIGN KEY(task_id) REFERENCES tasks (task_id),
-	FOREIGN KEY(device_id) REFERENCES devices (device_id),
-	FOREIGN KEY(project_id) REFERENCES projects (project_id),
-	UNIQUE (idempotency_key)
-)
+  approval_id uuid PRIMARY KEY,
+  run_id uuid NOT NULL REFERENCES bot_runs(run_id) ON DELETE CASCADE,
+  bot_id uuid NOT NULL REFERENCES bots(bot_id) ON DELETE CASCADE,
+  user_id uuid NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  kind text NOT NULL CHECK (kind IN ('outside_access')),
+  detail jsonb NOT NULL,
+  status text NOT NULL CHECK (status IN ('pending', 'approved', 'rejected', 'expired')),
+  expires_at timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  decided_at timestamptz
+);
+CREATE INDEX approvals_run ON approvals(run_id);
 
-;
-CREATE INDEX ix_approvals_task_id ON approvals (task_id);
-CREATE UNIQUE INDEX approvals_active_plan ON approvals (plan_id) WHERE status IN ('recorded', 'rejected');
-
-CREATE TABLE runs (
-	run_id UUID NOT NULL,
-	task_id UUID NOT NULL,
-	phase TEXT NOT NULL,
-	attempt INTEGER NOT NULL,
-	approval_id UUID,
-	state TEXT NOT NULL,
-	created_at TIMESTAMP WITH TIME ZONE NOT NULL,
-	updated_at TIMESTAMP WITH TIME ZONE NOT NULL,
-	PRIMARY KEY (run_id),
-	CONSTRAINT runs_state_check CHECK (state IN ('queued', 'running', 'waiting_for_input', 'waiting_for_local_action', 'needs_replan', 'interrupted', 'completed', 'failed', 'cancelled', 'expired')),
-	CONSTRAINT runs_phase_check CHECK (phase IN ('plan', 'execute')),
-	FOREIGN KEY(task_id) REFERENCES tasks (task_id),
-	FOREIGN KEY(approval_id) REFERENCES approvals (approval_id)
-)
-
-;
-CREATE INDEX ix_runs_task_id ON runs (task_id);
-
-CREATE TABLE commands (
-	command_id UUID NOT NULL,
-	device_id UUID NOT NULL,
-	task_id UUID NOT NULL,
-	run_id UUID,
-	type TEXT NOT NULL,
-	payload JSONB NOT NULL,
-	status TEXT NOT NULL,
-	expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
-	created_at TIMESTAMP WITH TIME ZONE NOT NULL,
-	delivered_at TIMESTAMP WITH TIME ZONE,
-	acked_at TIMESTAMP WITH TIME ZONE,
-	PRIMARY KEY (command_id),
-	CONSTRAINT commands_type_check CHECK (type IN ('plan_request', 'plan_revise', 'execute', 'cancel')),
-	CONSTRAINT commands_status_check CHECK (status IN ('pending', 'delivered', 'acked', 'expired', 'superseded')),
-	FOREIGN KEY(device_id) REFERENCES devices (device_id),
-	FOREIGN KEY(task_id) REFERENCES tasks (task_id),
-	FOREIGN KEY(run_id) REFERENCES runs (run_id)
-)
-
-;
-CREATE INDEX commands_device_status ON commands (device_id, status);
-CREATE INDEX ix_commands_task_id ON commands (task_id);
-CREATE UNIQUE INDEX devices_active_public_key ON devices(public_key) WHERE revoked_at IS NULL;
-CREATE INDEX device_nonces_expires_at ON device_nonces(expires_at);
-CREATE INDEX shared_documents_cloud_runs ON shared_documents(kind) WHERE device_id IS NULL AND kind = 'chat_run';
+CREATE TABLE usage_logs (
+  usage_id bigserial PRIMARY KEY,
+  user_id uuid REFERENCES users(user_id) ON DELETE SET NULL,
+  bot_id uuid REFERENCES bots(bot_id) ON DELETE SET NULL,
+  model_id uuid REFERENCES models(model_id) ON DELETE SET NULL,
+  source text NOT NULL CHECK (source IN ('mac', 'cloud', 'memory', 'test')),
+  input_tokens integer NOT NULL DEFAULT 0,
+  output_tokens integer NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX usage_logs_time ON usage_logs(created_at);

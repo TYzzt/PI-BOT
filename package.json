@@ -1,21 +1,22 @@
 {
-  "name": "t-agnet",
+  "name": "pi-bot",
   "private": true,
   "type": "module",
   "workspaces": [
     "packages/*",
     "server",
+    "admin",
     "desktop",
     "desktop/apps/*",
     "desktop/packages/*"
   ],
   "scripts": {
-    "typecheck": "tsc --noEmit && npm run typecheck --workspace=t-agnet-desktop",
-    "test": "node --import tsx --test server/tests/*.test.ts packages/agent/tests/*.test.ts",
-    "build": "npm run build --workspace=@t-agnet/server",
-    "start": "npm run start --workspace=@t-agnet/server",
-    "desktop:dev": "npm run dev --workspace=t-agnet-desktop",
-    "test:shared": "node --import tsx server/scripts/check-shared.ts"
+    "typecheck": "tsc --noEmit && npm run typecheck --workspace=pi-bot-desktop && npm run typecheck --workspace=@pi-bot/admin",
+    "test": "node --import tsx --test server/tests/*.test.ts packages/agent/tests/*.test.ts packages/bot-face/tests/*.test.ts",
+    "build": "npm run build --workspace=@pi-bot/admin && npm run build --workspace=@pi-bot/server",
+    "start": "npm run start --workspace=@pi-bot/server",
+    "admin:dev": "npm run dev --workspace=@pi-bot/admin",
+    "desktop:dev": "npm run dev --workspace=pi-bot-desktop"
   },
   "devDependencies": {
     "typescript": "7.0.2",

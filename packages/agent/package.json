@@ -1,5 +1,12 @@
 {
-  "name": "@t-agnet/agent", "version": "0.1.0", "private": true, "type": "module",
-  "exports": {".": "./src/index.ts", "./plugins": "./src/plugins.ts"},
-  "dependencies": {"@earendil-works/pi-ai": "0.87.1", "@earendil-works/pi-coding-agent": "0.87.1", "@modelcontextprotocol/sdk": "^1.0.0", "typebox": "1.3.27"}
+  "name": "@pi-bot/agent",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": {
+    "@earendil-works/pi-ai": "0.87.1",
+    "@earendil-works/pi-coding-agent": "0.87.1",
+    "typebox": "1.3.27"
+  }
 }

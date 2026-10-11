@@ -13,25 +13,37 @@ const integer = (
     .parse(value ?? fallback);
 export function settings(env = process.env) {
   return {
-    databaseUrl: z.string().min(1).parse(env.T_AGNET_DATABASE_URL),
-    adminPassword: z.string().min(8).parse(env.T_AGNET_ADMIN_PASSWORD),
-    jwtSecret: z.string().min(32).parse(env.T_AGNET_JWT_SECRET),
-    jwtTtl: integer(env.T_AGNET_JWT_TTL_SECONDS, 3600, 60, 86400),
-    presenceTtl: integer(env.T_AGNET_PRESENCE_TTL_SECONDS, 60, 5, 3600),
-    pairingTtl: integer(env.T_AGNET_PAIRING_TTL_SECONDS, 600, 30, 3600),
-    signatureSkew: integer(env.T_AGNET_SIGNATURE_SKEW_SECONDS, 300, 30, 3600),
-    approvalTtl: integer(env.T_AGNET_APPROVAL_TTL_SECONDS, 900, 60, 86400),
-    commandTtl: integer(env.T_AGNET_COMMAND_TTL_SECONDS, 86400, 60, 604800),
-    leaseSeconds: integer(env.T_AGNET_WORKER_LEASE_SECONDS, 60, 15, 3600),
+    databaseUrl: z.string().min(1).parse(env.PI_BOT_DATABASE_URL),
+    adminUsername: z
+      .string()
+      .min(1)
+      .max(64)
+      .parse(env.PI_BOT_ADMIN_USERNAME ?? "admin"),
+    /** Only needed to create the first administrator. */
+    adminPassword: z.string().min(8).optional().parse(env.PI_BOT_ADMIN_PASSWORD || undefined),
+    jwtSecret: z.string().min(32).parse(env.PI_BOT_JWT_SECRET),
+    jwtTtl: integer(env.PI_BOT_JWT_TTL_SECONDS, 7 * 86400, 60, 30 * 86400),
+    llmTokenTtl: integer(env.PI_BOT_LLM_TOKEN_TTL_SECONDS, 900, 60, 86400),
+    signatureSkew: integer(env.PI_BOT_SIGNATURE_SKEW_SECONDS, 300, 30, 3600),
+    approvalTtl: integer(env.PI_BOT_APPROVAL_TTL_SECONDS, 900, 60, 86400),
+    rpcTimeoutMs: integer(env.PI_BOT_RPC_TIMEOUT_MS, 10000, 1000, 60000),
+    leaseSeconds: integer(env.PI_BOT_WORKER_LEASE_SECONDS, 60, 15, 3600),
     pollSeconds: z.coerce
       .number()
       .positive()
       .max(60)
-      .parse(env.T_AGNET_WORKER_POLL_SECONDS ?? 1),
-    vaultFile: env.T_AGNET_SYNC_KEY_FILE,
-    runnerUrl: env.T_AGNET_RUNNER_URL ?? "http://runner:8001",
-    runnerToken: env.T_AGNET_RUNNER_TOKEN,
-    tavilyKey: env.T_AGNET_TAVILY_API_KEY,
+      .parse(env.PI_BOT_WORKER_POLL_SECONDS ?? 1),
+    historyLimit: integer(env.PI_BOT_HISTORY_LIMIT, 40, 4, 400),
+    memoryThreshold: integer(env.PI_BOT_MEMORY_THRESHOLD, 60, 10, 2000),
+    vaultFile: env.PI_BOT_VAULT_FILE,
+    internalUrl: (env.PI_BOT_INTERNAL_URL ?? "http://api:8000").replace(
+      /\/+$/,
+      "",
+    ),
+    runnerUrl: env.PI_BOT_RUNNER_URL ?? "http://runner:8001",
+    runnerToken: env.PI_BOT_RUNNER_TOKEN,
+    tavilyKey: env.PI_BOT_TAVILY_API_KEY,
+    adminDir: env.PI_BOT_ADMIN_DIR,
   };
 }
 export type Settings = ReturnType<typeof settings>;

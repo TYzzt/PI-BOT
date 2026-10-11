@@ -1,14 +1,16 @@
+# 本地完整栈：Postgres + API（含 /admin 管理后台）+ Worker + Runner。
+# 先生成模型密钥加密文件：node --import tsx server/scripts/vault-key.ts "$PWD/server/vault.json"
 services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: tagent
-      POSTGRES_PASSWORD: tagent
-      POSTGRES_DB: tagent
+      POSTGRES_USER: pibot
+      POSTGRES_PASSWORD: pibot
+      POSTGRES_DB: pibot
     ports: ["127.0.0.1:5432:5432"]
     volumes: ["pgdata:/var/lib/postgresql/data"]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tagent -d tagent"]
+      test: ["CMD-SHELL", "pg_isready -U pibot -d pibot"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -17,15 +19,13 @@ services:
       context: ..
       dockerfile: server/Dockerfile
     environment: &server-env
-      T_AGNET_DATABASE_URL: postgresql://tagent:tagent@postgres:5432/tagent
-      T_AGNET_ADMIN_PASSWORD: ${T_AGNET_ADMIN_PASSWORD:?set T_AGNET_ADMIN_PASSWORD}
-      T_AGNET_JWT_SECRET: ${T_AGNET_JWT_SECRET:?set T_AGNET_JWT_SECRET}
-      T_AGNET_JWT_TTL_SECONDS: ${T_AGNET_JWT_TTL_SECONDS:-3600}
-      T_AGNET_PRESENCE_TTL_SECONDS: ${T_AGNET_PRESENCE_TTL_SECONDS:-60}
-      T_AGNET_PAIRING_TTL_SECONDS: ${T_AGNET_PAIRING_TTL_SECONDS:-600}
-      T_AGNET_SIGNATURE_SKEW_SECONDS: ${T_AGNET_SIGNATURE_SKEW_SECONDS:-300}
-      T_AGNET_APPROVAL_TTL_SECONDS: ${T_AGNET_APPROVAL_TTL_SECONDS:-900}
-      T_AGNET_COMMAND_TTL_SECONDS: ${T_AGNET_COMMAND_TTL_SECONDS:-86400}
+      PI_BOT_DATABASE_URL: postgresql://pibot:pibot@postgres:5432/pibot
+      PI_BOT_ADMIN_USERNAME: ${PI_BOT_ADMIN_USERNAME:-admin}
+      PI_BOT_ADMIN_PASSWORD: ${PI_BOT_ADMIN_PASSWORD:?set PI_BOT_ADMIN_PASSWORD}
+      PI_BOT_JWT_SECRET: ${PI_BOT_JWT_SECRET:?set PI_BOT_JWT_SECRET (>= 32 chars)}
+      PI_BOT_VAULT_FILE: /run/secrets/pibot-vault.json
+      PI_BOT_APPROVAL_TTL_SECONDS: ${PI_BOT_APPROVAL_TTL_SECONDS:-900}
+    volumes: ["./vault.json:/run/secrets/pibot-vault.json:ro"]
     ports: ["8000:8000"]
     depends_on:
       postgres: {condition: service_healthy}
@@ -42,11 +42,11 @@ services:
     command: ["node", "server/dist/worker.mjs"]
     environment:
       <<: *server-env
-      T_AGNET_RUNNER_URL: http://runner:8001
-      T_AGNET_RUNNER_TOKEN: ${T_AGNET_RUNNER_TOKEN:?set a random runner token of at least 32 characters}
-      T_AGNET_TAVILY_API_KEY: ${T_AGNET_TAVILY_API_KEY:-}
-      T_AGNET_WORKER_LEASE_SECONDS: ${T_AGNET_WORKER_LEASE_SECONDS:-60}
-      T_AGNET_WORKER_POLL_SECONDS: ${T_AGNET_WORKER_POLL_SECONDS:-1}
+      PI_BOT_INTERNAL_URL: http://api:8000
+      PI_BOT_RUNNER_URL: http://runner:8001
+      PI_BOT_RUNNER_TOKEN: ${PI_BOT_RUNNER_TOKEN:?set a random runner token of at least 32 characters}
+      PI_BOT_TAVILY_API_KEY: ${PI_BOT_TAVILY_API_KEY:-}
+    volumes: ["./vault.json:/run/secrets/pibot-vault.json:ro"]
     depends_on:
       api: {condition: service_healthy}
       runner: {condition: service_healthy}
@@ -57,18 +57,18 @@ services:
       dockerfile: server/Dockerfile
     command: ["node", "server/dist/runner.mjs"]
     environment:
-      T_AGNET_RUNNER_TOKEN: ${T_AGNET_RUNNER_TOKEN:?set T_AGNET_RUNNER_TOKEN}
-      T_AGNET_RUNNER_DATA_DIR: /data
+      PI_BOT_RUNNER_TOKEN: ${PI_BOT_RUNNER_TOKEN:?set PI_BOT_RUNNER_TOKEN}
+      PI_BOT_RUNNER_DATA_DIR: /data
     volumes: ["runnerdata:/data"]
     read_only: true
     tmpfs: ["/tmp:rw,nosuid,nodev"]
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
     pids_limit: 128
-    mem_limit: 2g
-    cpus: 2
+    mem_limit: 1g
+    cpus: 1
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8001/health',{headers:{Authorization:'Bearer '+process.env.T_AGNET_RUNNER_TOKEN}}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 5s
       timeout: 5s
       retries: 12
