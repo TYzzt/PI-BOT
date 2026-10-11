@@ -2,19 +2,19 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
-    alias(libs.plugins.ksp)
 }
 
 android {
-    namespace = "dev.tagent.android"
+    namespace = "dev.pibot.android"
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "dev.tagent.android"
+        applicationId = "dev.pibot.android"
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
+        buildConfigField("String", "DEFAULT_SERVER_URL", "\"https://aicloud-app.lenovo.com.cn/pibot\"")
     }
 
     buildTypes {
@@ -32,6 +32,38 @@ android {
         compose = true
         buildConfig = true
     }
+
+    testOptions {
+        unitTests.all { it.systemProperty("botFaceSpec", botFaceSpec.asFile.absolutePath) }
+    }
+}
+
+/** The character spec is shared with the TypeScript renderer; the app bundles a copy at build time. */
+val botFaceSpec: RegularFile = rootProject.layout.projectDirectory.file("../packages/bot-face/spec.json")
+
+abstract class CopyBotFaceSpec : DefaultTask() {
+    @get:InputFile
+    abstract val spec: RegularFileProperty
+
+    @get:OutputDirectory
+    abstract val outputDir: DirectoryProperty
+
+    @TaskAction
+    fun copy() {
+        val dir = outputDir.get().asFile.resolve("bot-face")
+        dir.mkdirs()
+        spec.get().asFile.copyTo(dir.resolve("spec.json"), overwrite = true)
+    }
+}
+
+val copyBotFaceSpec = tasks.register<CopyBotFaceSpec>("copyBotFaceSpec") {
+    spec.set(botFaceSpec)
+}
+
+androidComponents {
+    onVariants { variant ->
+        variant.sources.assets?.addGeneratedSourceDirectory(copyBotFaceSpec, CopyBotFaceSpec::outputDir)
+    }
 }
 
 dependencies {
@@ -46,16 +78,11 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.navigation.compose)
-    implementation(libs.androidx.room.runtime)
-    implementation(libs.androidx.room.ktx)
-    ksp(libs.androidx.room.compiler)
-    implementation(libs.androidx.work)
-    implementation(libs.androidx.datastore)
     implementation(libs.androidx.security.crypto)
     implementation(libs.okhttp)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
     testImplementation(libs.junit)
     testImplementation(libs.okhttp.mockwebserver)
-    testImplementation(libs.kotlinx.serialization.json)
+    testImplementation(libs.kotlinx.coroutines.test)
 }

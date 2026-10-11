@@ -1,0 +1,163 @@
+package dev.pibot.android
+
+import dev.pibot.android.data.ApiException
+import dev.pibot.android.data.BotInput
+import dev.pibot.android.data.PiBotApi
+import dev.pibot.android.data.PiBotRepository
+import dev.pibot.android.data.Session
+import dev.pibot.android.data.SessionStorage
+import dev.pibot.android.data.errorMessage
+import dev.pibot.android.face.Avatar
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
+import okhttp3.OkHttpClient
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Test
+
+private class MemoryStorage : SessionStorage {
+    var session: Session? = null
+    var last: String? = null
+    override fun load() = session
+    override fun save(session: Session) { this.session = session; last = session.serverUrl }
+    override fun clear() { session = null }
+    override fun lastServerUrl() = last
+}
+
+private const val USER = """{"id":"u1","username":"bob","display_name":"Bob","role":"user","disabled":false,"created_at":"2026-10-11T08:00:00Z"}"""
+private const val BOT = """{"id":"b1","name":"研究助理","slug":"research","persona":"","model_id":null,
+  "avatar":{"shape":"blob","color":"orange","scheme":"light"},"created_at":"2026-10-11T08:00:00Z","updated_at":"2026-10-11T08:00:00Z",
+  "last_active_at":"2026-10-11T08:00:00Z","latest_run":null,"last_message":null,"pending_approvals":[]}"""
+private const val RUN = """{"id":"r1","bot_id":"b1","status":"running","executor":"mac","error":null,"user_message_id":"m1","assistant_message_id":"m2","created_at":"2026-10-11T08:01:00Z","finished_at":null}"""
+private fun msg(id: String, seq: Int, role: String, content: String, status: String) =
+    """{"id":"$id","bot_id":"b1","run_id":"r1","seq":$seq,"role":"$role","content":"$content","status":"$status","executor":"mac","tools":[],"created_at":"2026-10-11T08:01:00Z","updated_at":"2026-10-11T08:01:00Z"}"""
+
+class RepositoryTest {
+    private lateinit var server: MockWebServer
+    private lateinit var storage: MemoryStorage
+    private lateinit var repo: PiBotRepository
+    private val http = OkHttpClient()
+
+    @Before
+    fun setUp() {
+        server = MockWebServer()
+        server.start()
+        storage = MemoryStorage()
+        repo = PiBotRepository(PiBotApi(http), http, storage, CoroutineScope(SupervisorJob() + Dispatchers.Unconfined), allowCleartext = true, io = Dispatchers.Unconfined)
+    }
+
+    @After
+    fun tearDown() = server.shutdown()
+
+    private fun respond(code: Int, body: String) = server.enqueue(MockResponse().setResponseCode(code).setHeader("content-type", "application/json").setBody(body))
+    private fun base() = server.url("/pibot").toString()
+
+    private fun login() = runBlocking {
+        respond(200, """{"access_token":"tok","expires_in":3600,"user":$USER}""")
+        repo.login(base(), " bob ", "secret")
+        server.takeRequest()
+    }
+
+    @Test
+    fun loginStoresTheSessionUnderThePathPrefix() = runBlocking {
+        val request = login()
+        assertEquals("/pibot/auth/login", request.requestUrl!!.encodedPath)
+        assertEquals("""{"username":"bob","password":"secret"}""", request.body.readUtf8())
+        val session = repo.session.first()!!
+        assertEquals("tok", session.token)
+        assertEquals("bob", session.user.username)
+        assertEquals(base().trimEnd('/'), storage.lastServerUrl())
+    }
+
+    @Test
+    fun wrongPasswordShowsTheServerMessage() = runBlocking {
+        respond(401, """{"detail":"用户名或密码错误"}""")
+        val e = assertThrows(ApiException::class.java) { runBlocking { repo.login(base(), "bob", "nope") } }
+        assertEquals("用户名或密码错误", e.message)
+        assertNull(repo.session.first())
+    }
+
+    @Test
+    fun botsMessagesAndSending() = runBlocking {
+        login()
+        respond(200, """{"bots":[$BOT],"mac":{"online":true,"device":{"id":"d1","label":"Bob 的 Mac","online":true}}}""")
+        repo.refreshBots()
+        assertEquals("Bearer tok", server.takeRequest().getHeader("Authorization"))
+        assertEquals("研究助理", repo.bots.value!!.single().name)
+        assertTrue(repo.mac.value.online)
+        assertEquals("Bob 的 Mac", repo.mac.value.device?.label)
+
+        respond(200, """{"messages":[${msg("m0", 1, "user", "早", "completed")}],"has_more":true}""")
+        repo.loadTail("b1")
+        assertEquals("limit=50", server.takeRequest().requestUrl!!.encodedQuery)
+        assertTrue(repo.timeline("b1").first().hasMore)
+
+        respond(200, """{"run":$RUN,"messages":[${msg("m1", 2, "user", "写周报", "completed")},${msg("m2", 3, "assistant", "", "running")}]}""")
+        repo.send("b1", "写周报")
+        val sent = Json.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
+        assertEquals("写周报", sent["text"]!!.jsonPrimitive.content)
+        assertTrue(sent["request_id"]!!.jsonPrimitive.content.length >= 8)
+        assertEquals("running", repo.bots.value!!.single().latestRun?.status)
+        assertEquals(listOf("m0", "m1", "m2"), repo.timeline("b1").first().messages.map { it.id })
+
+        repo.handleEvent(Json.parseToJsonElement("""{"type":"delta","bot_id":"b1","message_id":"m2","content":"本周"}""") as JsonObject)
+        assertEquals("本周", repo.timeline("b1").first().messages.last().content)
+
+        respond(200, """{"messages":[${msg("m9", 1, "user", "更早", "completed")}],"has_more":false}""")
+        repo.loadMore("b1")
+        assertEquals("1", server.takeRequest().requestUrl!!.queryParameter("before"))
+        assertEquals(false, repo.timeline("b1").first().hasMore)
+    }
+
+    @Test
+    fun botEditsAlwaysSendTheModelSoItCanBeCleared() = runBlocking {
+        login()
+        respond(200, BOT)
+        repo.updateBot("b1", BotInput("研究助理", "", null, Avatar("cloud", "mint", "dark")))
+        val request = server.takeRequest()
+        assertEquals("PATCH", request.method)
+        val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+        assertTrue(body.containsKey("model_id"))
+        assertEquals("cloud", body["avatar"]!!.jsonObject["shape"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun libraryPathsAreQueryEncodedAndOfflineIsExplained() = runBlocking {
+        login()
+        respond(200, """{"path":"报告","entries":[{"name":"周报.md","type":"file","size":12,"modified":"2026-10-11T08:00:00Z"}]}""")
+        val list = repo.files("b1", "报告")
+        assertEquals("报告", server.takeRequest().requestUrl!!.queryParameter("path"))
+        assertEquals("周报.md", list.entries.single().name)
+        respond(503, "")
+        val e = assertThrows(ApiException::class.java) { runBlocking { repo.files("b1", "") } }
+        assertEquals("Mac 离线，资料库不可用", e.message)
+    }
+
+    @Test
+    fun anExpiredSessionSignsOut() = runBlocking {
+        login()
+        respond(401, """{"detail":"登录已过期"}""")
+        assertThrows(ApiException::class.java) { runBlocking { repo.refreshBots() } }
+        assertNull(repo.session.first())
+        assertNull(storage.session)
+    }
+
+    @Test
+    fun errorMessagesFallBackToStatus() {
+        assertEquals("请求失败（500）", errorMessage(500, "<html>"))
+        assertEquals("Bot 不存在", errorMessage(404, """{"detail":"Bot 不存在"}"""))
+    }
+}

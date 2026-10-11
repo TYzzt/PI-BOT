@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "tagent-android"
+rootProject.name = "pi-bot-android"
 include(":app")
