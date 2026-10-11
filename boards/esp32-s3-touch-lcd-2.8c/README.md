@@ -1,25 +1,25 @@
-# T-AGNET buddy · ESP32-S3-Touch-LCD-2.8C
+# Pi Bot buddy · ESP32-S3-Touch-LCD-2.8C
 
-480×480 屏幕上的动画小人，通过 USB UART 跟随 **T-AGNET 本地问答与编程智能体**。硬件为 Waveshare ESP32-S3-Touch-LCD-2.8C：16MB Flash、8MB OPI PSRAM、ST7701 LCD、GT911 触摸。
+480×480 屏幕上的动画小人，通过 USB UART 跟随 **Pi Bot for Mac** 上正在运行的 Bot。硬件为 Waveshare ESP32-S3-Touch-LCD-2.8C：16MB Flash、8MB OPI PSRAM、ST7701 LCD、GT911 触摸。
 
 ![八种动作的源码预览](preview/moods.png)
 
-小人使用原创几何绘制，风格参考 GrokBot 的简洁轮廓与双眼表情。没有下载或复用 xAI 角色素材，不需要图片资源或动画视频。预览由实际 C++ 动画几何生成，图片展示固定时间的一帧，实际设备会持续运动。
+小人使用原创几何绘制，风格参考 GrokBot 的简洁轮廓与双眼表情。没有下载或复用 xAI 角色素材，不需要图片资源或动画视频。预览由实际 C++ 动画几何生成，图片展示固定时间的一帧，实际设备会持续运动。板上的小人暂未对齐 `packages/bot-face` 的角色规格，只跟随表情状态。
 
 ## 动作与真实状态
 
-| T-AGNET 状态 | 小人表现 |
+| Pi Bot 表情（`bot.mood`） | 小人表现 |
 |---|---|
-| 无任务 | 呼吸、眨眼、左右看 |
-| 模型生成、规划 | 歪头思考、浮动思考点 |
-| 读取文件、列目录、浏览器工具 | 眼神搜索、放大镜 |
-| 写文件、运行命令等工具 | 身体律动、敲键盘 |
-| 等待计划审批、补充输入、本地操作 | 等待表情 |
-| 任务成功完成 | 弹跳、笑眼、彩色粒子 |
-| 任务失败 | 摇晃、叉眼、感叹号 |
+| 没有 Bot 在 Mac 上运行 | 呼吸、眨眼、左右看 |
+| `thinking`：模型生成中 | 歪头思考、浮动思考点 |
+| `searching`：读取文件、列目录、搜索 | 眼神搜索、放大镜 |
+| `working`：写文件、运行命令等工具 | 身体律动、敲键盘 |
+| `waiting`：等待你批准访问资料库以外的位置 | 等待表情 |
+| `celebrate`：本次运行完成 | 弹跳、笑眼、彩色粒子 |
+| `error`：本次运行失败 | 摇晃、叉眼、感叹号 |
 | 空闲超过一分钟 | 闭眼呼吸、飘动 Z |
 
-只有完整任务失败才进入失败状态，不会因某个已失败的旧工具污染新任务。规划完成后若正在等待审批，会进入等待状态。取消任务回到待机。
+多个 Bot 同时运行时显示最需要关注的状态：等待批准 > 写入/命令 > 读取/搜索 > 思考。完成和失败只保持几秒，且不会盖住其他仍在运行的 Bot。取消运行回到待机。
 
 ## 当前使用
 
@@ -29,15 +29,15 @@
 ./run-bridge.sh
 ```
 
-桥接程序通过现有私有 Unix socket 和 `ipc-token` 订阅 T-AGNET 事件，仅调用 `snapshot` 与 `codingGet` 只读接口。板子只收到状态名，不收到聊天文本、工具参数或模型密钥。桥接不启动模型任务，也不修改 desktop/server 源码。
+桥接程序通过 Pi Bot 本地服务的私有 Unix socket 和 `ipc-token` 订阅事件，只读取 `bot.mood` 事件并每 2 秒调用一次只读的 `status`。板子只收到状态名，不收到消息、工具参数或令牌。桥接不发起运行，也不修改 desktop/server 源码。
 
-- 保持 T-AGNET 本地服务和桥接程序运行。
+- 保持 Pi Bot for Mac 和桥接程序运行。
 - 按 `Ctrl+C` 停止桥接，运行上述命令即可恢复。
 - 串口默认 `/dev/cu.usbmodem5B910686821`；可通过 `--port` 指定。
-- 自定义服务目录通过 `--data-dir` 或 `T_AGNET_DATA_DIR` 指定。
+- 自定义服务目录通过 `--data-dir` 或 `PI_BOT_DATA_DIR` 指定。
 - USB 或本地服务断开后自动重连；板子 12 秒未收到心跳显示等待。
 - 不自动安装登录启动项；重新启动电脑后需再次运行桥接。
-- 当前跟随本地问答和编程任务；独立云端 Worker 的任务暂未接入。
+- 只跟随在 Mac 上执行的运行；Mac 离线时云端回复的运行不会显示在板上。
 
 ## 板上操作
 
@@ -80,7 +80,7 @@ macOS Apple Silicon，在本目录执行：
 
 - `demo/BoardDemo/BoardDemo.ino`：板端 UI、状态机、串口控制。
 - `demo/BoardDemo/PetAnimation.cpp`：角色几何、表情和动画。
-- `agent_bridge.py`：T-AGNET 实时事件桥接。
+- `agent_bridge.py`：Pi Bot 实时事件桥接。
 - `examples/BasicDemo.ino`：第一版硬件测试应用，替换主 `.ino` 后可配合现有驱动编译。
 - `preview/`：源码几何预览与截图。
 - `tests/`：状态映射与实机验证。

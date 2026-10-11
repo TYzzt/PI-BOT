@@ -18,14 +18,14 @@ npm run desktop:dev
 
 `npm run dev` 先构建 Swift Keychain helper、本地服务和 UI，再启动独立服务进程和 Electron。修改源码后重新执行。
 
-登录页默认服务器为 `PI_BOT_SERVER_URL`，未设置时为 `https://aicloud-app.lenovo.com.cn/pibot`。本地开发可以填 `http://localhost:8787`（只有 localhost 允许 HTTP）。
+登录页默认服务器为 `PI_BOT_SERVER_URL`，未设置时为 `https://aicloud-app.lenovo.com.cn/pibot`。本地开发可以填 `http://localhost:8000`（只有 localhost 允许 HTTP）。
 
 ## 使用
 
 1. 用管理员创建的账号登录。登录即把这台 Mac 绑定为该账号的设备；在另一台 Mac 登录会替换它。
 2. 「新建 Bot」：取名、写人设、选模型（默认跟随管理员设置的默认模型）、挑造型和颜色。资料库文件夹按名字生成，改名不会移动文件夹。
 3. 在时间线里给 Bot 发消息。每个 Bot 只有一条连续的时间线，较早的对话由云端压缩为长期记忆。
-4. Bot 工作时，侧栏里它的表情会变化：思考、工作、搜索、等你批准、完成庆祝；7 天没动静会睡着。
+4. Bot 工作时，侧栏里它的表情会变化：思考、工作、搜索、等你批准、完成庆祝；3 天没动静会睡着，并显示睡了几天。
 5. 「在 Finder 中打开资料库」直接看 Bot 产出的文件。手机在 Mac 在线时也能浏览这些文件。
 
 ## Bot 的工具

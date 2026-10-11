@@ -282,6 +282,44 @@ test("Mac offline: runs fall back to the cloud runner through the proxy, with me
   assert.equal(after.content, "你之前说的是蓝鲸。", "memory summary reaches the prompt");
 });
 
+test("users only see their own bots and Mac; a Mac dropping mid-run fails the run", { skip }, async () => {
+  await api("POST", "/admin/api/users", { token: state.admin, body: { username: "bob", password: "bob-password" } });
+  const bob = (await api("POST", "/auth/login", { body: { username: "bob", password: "bob-password" } })).json.access_token;
+  const mac = socket(base.replace("http", "ws") + "/ws/device", state.keys.headers("GET", "/ws/device"));
+  await mac.next((m) => m.type === "hello");
+  const bobEvents = socket(base.replace("http", "ws") + "/ws/events", { authorization: `Bearer ${bob}` });
+  assert.equal((await bobEvents.next((m) => m.type === "hello")).mac_online, false, "presence is per user");
+  assert.deepEqual((await api("GET", "/bots", { token: bob })).json.bots, []);
+  for (const [method, path] of [
+    ["GET", `/bots/${state.bot}`],
+    ["GET", `/bots/${state.bot}/messages`],
+    ["GET", `/bots/${state.bot}/files`],
+    ["PATCH", `/bots/${state.bot}`],
+  ] as const) {
+    const r = await api(method, path, { token: bob, body: method === "PATCH" ? { name: "偷来的" } : undefined });
+    assert.equal(r.status, 404, `${method} ${path}`);
+  }
+  const posted = await api("POST", `/bots/${state.bot}/messages`, { token: bob, body: { text: "hi", request_id: randomUUID() } });
+  assert.equal(posted.status, 404);
+
+  const mine = await api("POST", `/bots/${state.bot}/messages`, { token: state.alice, body: { text: "长任务", request_id: randomUUID() } });
+  assert.equal(mine.json.run.executor, "mac");
+  assert.equal((await api("POST", `/runs/${mine.json.run.id}/cancel`, { token: bob })).status, 404);
+  const { run } = await mac.next((m) => m.type === "run");
+  mac.send({ type: "run_event", run_id: run.run_id, event: { kind: "started" } });
+  mac.send({ type: "run_event", run_id: run.run_id, event: { kind: "text", text: "做到一半" } });
+  await eventually(async () => (await api("GET", `/bots/${state.bot}`, { token: state.alice })).json.latest_run.status === "running");
+  mac.close();
+  const failed = await eventually(async () => {
+    const b = await api("GET", `/bots/${state.bot}`, { token: state.alice });
+    return b.json.latest_run.status === "failed" && b.json.latest_run;
+  });
+  assert.equal(failed.error, "Mac 已离线，可重新发送（将在云端运行）");
+  const page = await api("GET", `/bots/${state.bot}/messages`, { token: state.alice });
+  assert.equal(page.json.messages.at(-1).content, "做到一半", "partial text is kept");
+  bobEvents.close();
+});
+
 test("admin can disable users and revoke devices", { skip }, async () => {
   const devices = await api("GET", "/admin/api/devices", { token: state.admin });
   const d = devices.json.find((x: any) => x.username === "alice" && !x.revoked_at);
@@ -292,7 +330,7 @@ test("admin can disable users and revoke devices", { skip }, async () => {
   await api("PATCH", `/admin/api/users/${state.aliceId}`, { token: state.admin, body: { disabled: true } });
   assert.equal((await api("GET", "/me", { token: state.alice })).status, 401);
   const overview = await api("GET", "/admin/api/overview", { token: state.admin });
-  assert.equal(overview.json.users, 2);
+  assert.equal(overview.json.users, 3);
 });
 
 test("SSE usage parser keeps the last usage block across chunk boundaries", () => {

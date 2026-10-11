@@ -1,54 +1,50 @@
-# T-AGNET server
+# Pi Bot server
 
-服务端使用 Node.js 24、TypeScript、Fastify 和 PostgreSQL 16。API、队列 Worker 和隔离的 Pi Runner 分别运行；Mac 与 Runner 复用 `packages/agent`，Mac harness 始终在本机执行。
-
-HTTP、WebSocket、设备 Ed25519 签名、任务审批、共享消息与配置接口沿用 `openapi.json`。旧 PostgreSQL 数据和 vault 文件可直接迁移，启动自动升级 Alembic 0001–0005 对应数据库，不需要 Python。升级前备份数据库和 vault；回滚应用时恢复备份。
+Node.js 24 + TypeScript + Fastify 5 + PostgreSQL 16。包含 API（含管理后台 `/admin/` 和模型代理 `/llm/v1`）、Worker（Mac 离线时的云端运行、长期记忆压缩）和 Runner（隔离执行 Pi agent）。整体设计见 [ARCHITECTURE.md](ARCHITECTURE.md)，需求与验收见 [REQUIREMENTS.md](REQUIREMENTS.md)。
 
 ## 本地开发
 
-在仓库根目录安装依赖并构建：
+在仓库根目录：
 
 ```sh
-npm install
-cp server/.env.example server/.env
-# 设置管理员密码、JWT 密钥和独立的 Runner token（至少 32 字符）
-npm run build
-npm run dev --workspace=@t-agnet/server
+npm ci
+cp server/.env.example server/.env      # 改管理员口令、JWT 密钥、Runner token
+node --import tsx server/scripts/vault-key.ts "$PWD/server/vault.json"   # 模型 Key 加密文件，路径填进 PI_BOT_VAULT_FILE
+(cd server && docker compose up postgres -d)
+npm run build                            # 构建 admin 和 server
+npm run dev --workspace=@pi-bot/server   # API，默认 http://127.0.0.1:8000
 ```
 
-数据库可用 `cd server && docker compose up postgres -d` 启动。云端问答还需要 vault、Runner 和 Worker，分别在三个终端运行：
+首次启动时，如果库里还没有管理员，就用 `PI_BOT_ADMIN_USERNAME` / `PI_BOT_ADMIN_PASSWORD` 创建一个。打开 `http://127.0.0.1:8000/admin/` 登录后：
+
+1. 「模型」添加一个 OpenAI 兼容模型（地址、服务商模型名、API Key），点「测试」确认连通；第一个模型自动成为默认模型。
+2. 「用户」创建普通用户。没有注册入口。
+3. 用户在 Mac 或手机上用这个账号登录。
+
+Mac 离线时的云端回复需要 Worker 和 Runner，各开一个终端：
 
 ```sh
-node --import tsx server/scripts/vault-key.ts /absolute/path/sync-vault.json
-npm run runner --workspace=@t-agnet/server
-npm run worker --workspace=@t-agnet/server
+npm run build --workspace=@pi-bot/server
+npm run runner --workspace=@pi-bot/server
+npm run worker --workspace=@pi-bot/server
 ```
 
-在 `.env` 设置 `T_AGNET_SYNC_KEY_FILE`，Worker 的 `T_AGNET_RUNNER_URL` 默认指向本机 Runner。Runner 不读取数据库或 vault。直接运行 Runner 适合开发；云端 shell 的隔离边界由部署容器提供。
+`PI_BOT_TAVILY_API_KEY` 不填时云端回复不联网。所有环境变量见 [.env.example](.env.example)。
 
-## 容器部署
+管理后台开发：`npm run admin:dev`（Vite 把接口代理到 `PI_BOT_SERVER`，默认 `http://127.0.0.1:8000`）。
 
-```sh
-cd server
-export T_AGNET_SYNC_KEY_FILE=/absolute/path/sync-vault.json
-docker compose -f docker-compose.yml -f docker-compose.sync.yml up --build -d
-```
+## 部署
 
-镜像从仓库根目录构建。API 暴露 8000，Runner 仅供内部 Worker 调用；PostgreSQL 本地端口绑定 127.0.0.1。Runner 使用独立持久卷保存会话和工作区，非 root、只读根文件系统、无额外 capabilities。生产入口使用 HTTPS/WSS。
+- 单机：`cd server && docker compose up --build -d`（需要先生成 `server/vault.json`，并在环境里设置 `PI_BOT_ADMIN_PASSWORD`、`PI_BOT_JWT_SECRET`、`PI_BOT_RUNNER_TOKEN`）。
+- 集群：[deploy/pibot.yaml](deploy/pibot.yaml)。入口 `https://aicloud-app.lenovo.com.cn/pibot`，后台 `/pibot/admin/`；镜像由 GitHub Actions 推到 `registry.cn-beijing.aliyuncs.com/liuhx/pi-bot-server:latest`。应用前修改 `pibot` Secret 里的口令，并创建 `pibot-vault` Secret（见清单顶部注释）。
 
-云端 MCP secret 配置见 [CONFIGS.md](../CONFIGS.md)，Pi 生命周期与执行边界见 [CLOUD-CHAT.md](../CLOUD-CHAT.md)。所有环境变量见 `.env.example`；旧 `postgresql+psycopg://` URL 仍兼容。
+API 只能单副本：Mac 的长连接、在线状态和资料库 RPC 都在进程内存里。Worker 可以多副本。Runner 只供 Worker 在内网调用。生产入口必须是 HTTPS/WSS。
 
 ## 检查
 
 ```sh
-npm run typecheck
-T_AGNET_TEST_DATABASE_URL=postgresql://tagent:tagent@127.0.0.1:5432/tagent npm test
-npm run test:shared
-T_AGNET_TEST_FILE=tests/cloud-e2e.test.ts node --import tsx server/scripts/check-shared.ts
-T_AGNET_TEST_FILE=tests/cloud-chat-e2e.test.ts node --import tsx server/scripts/check-shared.ts
-T_AGNET_TEST_FILE=tests/configs-e2e.test.ts node --import tsx server/scripts/check-shared.ts
+npm run typecheck                                   # 仓库根目录，覆盖 server/admin/desktop/packages
+PI_BOT_TEST_DATABASE_URL=postgresql://pibot:pibot@127.0.0.1:5432/pibot npm test
 ```
 
-集成测试创建独立临时数据库；`check-shared.ts` 自动启动临时 PostgreSQL 和 API，云端问答测试另外启动 Runner/Worker。模拟设备：`node --import tsx server/scripts/fake-device.ts --demo`。客户端：`node --import tsx server/scripts/shared-client.ts`，密码交互输入。
-
-`openapi.json` 是路由、输入验证和客户端契约的共同来源，修改后运行 `node --import tsx server/scripts/export-openapi.ts`。旧 PHASE 文档保留历史验收记录，不代表当前运行架构。
+集成测试会清空测试库，请用专门的数据库。接口契约导出在 `openapi.json`，修改路由后运行 `npm run openapi --workspace=@pi-bot/server`。

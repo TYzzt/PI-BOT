@@ -13,7 +13,7 @@ static const char *captions[] = {"Ready when you are", "Thinking it through", "M
 
 static void update_labels() {
   lv_label_set_text(state_label, captions[static_cast<unsigned>(state)]);
-  lv_label_set_text(mode_label, demo ? "DEMO / tap to explore" : host_seen ? "LIVE / T-AGNET" : "LIVE / disconnected");
+  lv_label_set_text(mode_label, demo ? "DEMO / tap to explore" : host_seen ? "LIVE / Pi Bot" : "LIVE / disconnected");
   lv_label_set_text(mode_button_label, demo ? "Go live" : "Demo");
 }
 static void set_state(PetState next, const char *source) {
@@ -76,7 +76,7 @@ static lv_obj_t *button(lv_obj_t *screen, int x, const char *caption, lv_event_c
 }
 void setup() {
   Serial.begin(115200);delay(200);
-  Serial.println("T-AGNET AgentPet boot");
+  Serial.println("Pi Bot AgentPet boot");
   I2C_Init();delay(120);
   Wire.beginTransmission(TCA9554_ADDRESS);
   if(Wire.endTransmission()!=0) {Serial.println("PET ERROR TCA9554 missing");while(true) delay(1000);}
@@ -88,7 +88,7 @@ void setup() {
   lv_obj_t *screen=lv_scr_act();lv_obj_clean(screen);
   lv_obj_set_style_bg_color(screen,lv_color_hex(0xF5F3EF),0);
   lv_obj_set_style_text_color(screen,lv_color_hex(0x343840),0);
-  lv_obj_t *title=lv_label_create(screen);lv_label_set_text(title,"T-AGNET buddy");lv_obj_align(title,LV_ALIGN_TOP_MID,0,18);
+  lv_obj_t *title=lv_label_create(screen);lv_label_set_text(title,"Pi Bot buddy");lv_obj_align(title,LV_ALIGN_TOP_MID,0,18);
   mode_label=lv_label_create(screen);lv_obj_set_style_text_font(mode_label,&lv_font_montserrat_14,0);lv_obj_set_style_text_color(mode_label,lv_color_hex(0x82868B),0);lv_obj_align(mode_label,LV_ALIGN_TOP_MID,0,45);
   pet_init(screen);
   state_label=lv_label_create(screen);lv_obj_align(state_label,LV_ALIGN_TOP_MID,0,388);

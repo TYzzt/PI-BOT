@@ -23,7 +23,7 @@ export function settings(env = process.env) {
     adminPassword: z.string().min(8).optional().parse(env.PI_BOT_ADMIN_PASSWORD || undefined),
     jwtSecret: z.string().min(32).parse(env.PI_BOT_JWT_SECRET),
     jwtTtl: integer(env.PI_BOT_JWT_TTL_SECONDS, 7 * 86400, 60, 30 * 86400),
-    llmTokenTtl: integer(env.PI_BOT_LLM_TOKEN_TTL_SECONDS, 900, 60, 86400),
+    llmTokenTtl: integer(env.PI_BOT_LLM_TOKEN_TTL_SECONDS, 900, 900, 86400),
     signatureSkew: integer(env.PI_BOT_SIGNATURE_SKEW_SECONDS, 300, 30, 3600),
     approvalTtl: integer(env.PI_BOT_APPROVAL_TTL_SECONDS, 900, 60, 86400),
     rpcTimeoutMs: integer(env.PI_BOT_RPC_TIMEOUT_MS, 10000, 1000, 60000),

@@ -26,7 +26,7 @@ static void update_status(lv_timer_t *timer) {
 void setup() {
   Serial.begin(115200);
   delay(200);
-  Serial.println("T-AGNET BoardDemo boot");
+  Serial.println("Pi Bot BoardDemo boot");
   I2C_Init();
   delay(120);
   Wire.beginTransmission(TCA9554_ADDRESS);
@@ -47,7 +47,7 @@ void setup() {
   lv_obj_set_style_text_color(screen, lv_color_hex(0xE6EDF7), 0);
 
   lv_obj_t *title = lv_label_create(screen);
-  lv_label_set_text(title, "T-AGNET | ESP32-S3");
+  lv_label_set_text(title, "Pi Bot | ESP32-S3");
   lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 30);
   lv_obj_t *subtitle = lv_label_create(screen);
   lv_label_set_text(subtitle, "480 x 480  /  Touch demo");

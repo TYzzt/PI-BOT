@@ -1,505 +1,154 @@
-> 当前实现：服务端已迁移到 Node.js 24 + Fastify；云端 Worker/Runner 和 Mac 本地 harness 复用 `packages/agent`（Pi），分别在云端和端侧执行。Skills/MCP 已接入运行。部署与迁移见 [server/README.md](../server/README.md)；下文旧阶段技术描述保留作历史记录。
+# Pi Bot 整体架构
 
-# 个人智能体：架构与需求 v1
+> 本文在 `desktop/`、`server/`、`android/` 三处内容一致，修改时三份一起改。各端的具体需求在各自的 `REQUIREMENTS.md`。
 
-日期：2026-09-24。状态：可用于拆分开发任务的设计稿，尚未实现或验证。文中框架能力以官方资料为依据，其余为本项目的设计决策；开发时固定具体版本并完成兼容性验证。
+Pi Bot 是多用户的个人 Bot 平台。每个用户有若干个 Bot，每个 Bot 有名字、人设、形象和一条连续的时间线；用户的 Mac 是 Bot 干活的电脑（harness），手机用来随时和 Bot 说话、批准请求、看 Bot 的资料库。
 
-## 1. 目标与范围
-
-为单个用户开发 macOS 客户端、Android 客户端和云端服务。macOS 使用 Pi 执行本地编程、问答和浏览器操作；云端使用 DeepAgents 承接通用问答。手机可选本地项目，请求 Mac 生成计划，审阅后授权执行；三端展示同一份共享聊天、计划及执行状态。
-
-首版支持一名用户、一台 Mac、一个 Android 客户端；数据模型保留 device_id。云端不是第三个独立前端，三端互通指 Mac、Android、云端存储和 agent。若以后增加 Web 客户端，复用相同 API。
-
-源码、diff、原始终端日志、浏览器内容及 Pi 完整上下文默认保留 Mac。共享聊天采用公开消息与本地详情分离的设计；默认不把代码附件或执行轨迹上传。模型服务商是另一条数据边界：本地 Pi 使用远程模型时，模型仍可能接收到代码；这不等于代码存储于本项目云端。完全禁止代码离开电脑需另配本地模型。
-
-## 2. 技术选型
-
-| 层 | 选型 | 目的 |
-|---|---|---|
-| macOS UI | Electron + React + TypeScript + Vite；Electron Forge 打包 | 与 Pi 的 TS 生态衔接，开发聊天、计划、配置、代码 diff 与终端界面 |
-| macOS 运行服务 | 独立 Node.js LTS 服务 + Pi coding-agent SDK | 将任务生命周期与窗口分离；使用 SDK，不解析终端输出 |
-| macOS 启动管理 | 用户级 launchd LaunchAgent | 用户登录后启动；窗口关闭仍运行；不以 root 守护进程启动 |
-| 本地存储 | SQLite + Pi 原生会话文件 + 本地附件目录 | SQLite 管任务/事件/配置；Pi 文件保存私有模型上下文 |
-| 本地凭据 | 应用数据目录 `secrets.json`（0600） | 本机保存设备私钥、API key 副本和 MCP secrets；模型 API key 的权威副本在云端保险库 |
-| 终端 | Node child_process；交互程序使用 node-pty；UI 使用 xterm.js | 普通命令与 PTY 分开处理，支持流式输出、超时和取消 |
-| MCP | 官方 TypeScript MCP SDK + 自建 Pi 工具适配层 | 统一 stdio / Streamable HTTP 连接与工具策略 |
-| Chrome | Chrome DevTools MCP | 操作真实 Chrome 的页面、表单和标签页 |
-| Android | Kotlin + Jetpack Compose + ViewModel + Coroutines/StateFlow | Android 原生客户端，聚焦聊天、任务审阅、配置和通知 |
-| Android 数据/网络 | Room + DataStore + OkHttp + WorkManager | 本地缓存、网络事件、离线 outbox、重连同步 |
-| 云端 | Python + FastAPI + DeepAgents / LangGraph | API 与云端 agent；Pi 不在云端代跑本地代码 |
-| 云端存储 | PostgreSQL + LangGraph PostgreSQL checkpoint | 共享消息、任务、配置、持久队列、事件与 agent 检查点 |
-| 部署 | 本地 Docker Compose（API + PostgreSQL）；正式环境 Kubernetes | 入口和 HTTPS 由集群 Ingress 承担。不引入 Kafka 或 Redis 作为必需依赖 |
-| 协议 | HTTPS REST + WebSocket，OpenAPI + JSON Schema | CRUD、命令、事件回放，跨 TS/Kotlin/Python 的类型契约 |
-
-### 为什么桌面选 Electron
-
-本项目的复杂度主要在 Node/Pi、子进程、CLI 环境、MCP 和富文本任务界面。Electron 让 UI 与本地业务代码使用同一语言；进程独立后，常驻服务也不依赖窗口。代价是包体积和 UI 进程内存较高。
-
-Tauri 2 可行，但同样需要 Node sidecar 承载 Pi，会再增加 Rust/sidecar 打包边界，首版收益有限。SwiftUI 原生体验好，但需要 Swift 与 Node 的桥接，暂不选择。这里没有假设 Electron 原生提供了持久任务或三端同步，这些由本项目实现。
-
-Android 只做安卓，因此选 Compose；不为尚未提出的 iOS 需求引入 Flutter 或 React Native。Android 不运行 Pi、不执行本地 MCP 服务，它是操作和同步客户端。
-
-## 3. 总体架构
-
-```mermaid
-flowchart TB
-  subgraph Android[Android 手机]
-    A[Compose UI：聊天 / 项目 / 计划审阅 / 配置]
-    AR[Room 缓存与待发送队列]
-    A <--> AR
-  end
-  subgraph Cloud[云端]
-    API[FastAPI：认证 / 任务 / 配置 / 事件同步]
-    PG[(PostgreSQL：共享状态 / 事件 / 持久队列)]
-    CW[独立 Worker：DeepAgents]
-    API <--> PG
-    CW <--> PG
-  end
-  subgraph Mac[macOS]
-    UI[Electron + React]
-    DA[Node 常驻服务：任务与同步]
-    DB[(SQLite / 私有会话 / 本地成果)]
-    PI[Pi SDK：独立任务进程]
-    GUARD[工具与模式策略]
-    CLI[文件 / Git / Shell / PTY]
-    MCP[MCP 客户端适配器]
-    CH[Chrome DevTools MCP → Chrome]
-    UI <--> DA
-    DA <--> DB
-    DA <--> PI
-    PI --> GUARD
-    GUARD --> CLI
-    GUARD --> MCP
-    MCP --> CH
-  end
-  A <-->|HTTPS / WSS| API
-  DA <-->|Mac 主动出站 WSS：任务 / 计划 / 状态| API
+```
+                         ┌──────────────── Pi Bot 云端（单副本 API） ─────────────────┐
+  浏览器 ── /admin ─────▶│ Fastify API                                                │
+  （管理员）              │   REST：/auth /me /bots /runs /approvals /models ...      │
+                         │   /admin/api   用户、模型、设备、用量                       │
+  Android ── HTTPS ─────▶│   /ws/events   给手机推送变更（用户令牌）                   │
+          ◀── WSS ───────│   /ws/device   Mac 的长连接（设备签名）                     │
+                         │   /llm/v1      OpenAI 兼容模型代理（短期令牌）              │
+  Mac ───── 签名 HTTPS ─▶│   内存 Hub：在线 Mac、事件订阅、文件 RPC                    │
+      ◀──── WSS ─────────│                                                           │
+                         │ Worker ── Runner（Mac 离线时在云端运行，仅对话 + 联网搜索）  │
+                         │ PostgreSQL 16（LISTEN/NOTIFY pibot_changes）               │
+                         └──────────────────────────┬────────────────────────────────┘
+                                                    │ 服务商 API Key 只在这里
+                                                    ▼
+                                         OpenAI 兼容的模型服务
 ```
 
-Mac 不开放公网监听端口。Electron 通过受限 preload IPC 调用主进程，主进程通过用户目录内的 Unix domain socket 连接 Node 服务；socket 设置当前用户访问权限并执行握手认证。服务随安装包附带固定 Node runtime，不要求用户先装 Node，也不借用 Electron 主进程承载长任务。
+## 概念
 
-本地任务默认不经过 DeepAgents 推理：手机指定 project_id/device_id 后，云端代码直接路由到 Mac。DeepAgents 只处理选择“云端”的问题，或经用户确认后提交本地任务；不直接持有 Mac 任意 shell 接口。
-
-## 4. 运行模式与工具边界
-
-产品一级模式为“问答”“编程”“浏览器操作”；编程内部拆为 Plan 和 Execute。执行位置为另一维度：云端 / 此 Mac。云端首版只开放问答和已配置云工具。
-
-| 模式 | 工具能力 | 行为 |
-|---|---|---|
-| Ask：问答 | 默认纯问答；选择项目时可使用指定只读文件工具 | 不改文件、不运行任意 shell、不调用具有写入能力的 MCP |
-| Plan：编程规划 | 文件读取、搜索、受控 Git 状态查询、结构化计划工具 | 分析项目并生成计划，不执行测试/安装/构建脚本、不改项目 |
-| Execute：编程执行 | Pi 编辑工具 + shell/PTY + 已启用 MCP | 只接受已批准且校验有效的计划，执行改动与验证 |
-| Browser：浏览器操作 | 用户选定的 Chrome 工具 | 导航、点击、输入、页面读取；动作模式在 UI 明示 |
-
-问答和 Plan 模式通过工具注册与执行器约束，不只写提示词。移除任意 bash、脚本、页面 JS evaluate 和有副作用 MCP；只读 Git 查询也使用固定参数执行器并禁用可触发外部程序的选项。未知 MCP 工具默认不进入只读模式，不能只信任工具自报的 readOnly 注解。
-
-上述“只读”指用户项目和外部系统不被修改；应用仍需写 SQLite、会话缓存和计划记录。Plan 的自定义工具 update_plan 只写应用状态。
-
-执行模式可以调用当前 macOS 用户有权执行的 CLI，包括 git、python、node、uv、npm、brew、docker 等，尊重项目与任务授权范围。它不自动获得 root、TCC、系统完整性保护的豁免。sudo 和系统权限弹窗只能走明确的本机交互，手机收到 waiting_for_local_action；不上传密码。授权完整 shell 后，不宣称仅靠路径规则能隔离整个主机。
-
-## 5. 手机发起编程任务的完整流程
-
-```mermaid
-sequenceDiagram
-  participant P as Android
-  participant S as 云端任务服务
-  participant M as Mac 服务
-  participant H as Pi
-  P->>S: 选择项目，提交需求与幂等键
-  S->>S: 持久化任务
-  S->>M: 请求生成计划
-  M->>M: 校验项目与设备，登记命令
-  M->>H: Plan 工具集，读取本地项目
-  H->>M: 结构化 Plan v1
-  M->>S: 计划正文、版本、摘要哈希与项目快照指纹
-  S->>P: 展示计划，等待审阅
-  P->>S: 批准 v1 并执行
-  S->>M: 带签发记录的授权命令
-  M->>M: 校验计划/配置版本、工作区状态及重复执行
-  M->>H: Execute 工具集，执行已批准计划
-  loop 执行中
-    H->>M: 步骤、命令结果、本地成果
-    M->>S: 可同步进度与摘要
-    S->>P: 更新任务卡片
-  end
-  M->>S: 完成状态、测试摘要、本地成果引用
-  S->>P: 完成，可在 Mac 查看 diff
-```
-
-### Plan 内容
-
-- 目标、范围、明确不做的内容。
-- 现状摘要；预期影响模块，不要求复制源码。
-- 带稳定 step_id 的步骤及依赖。
-- 预期命令类别、外部动作、需要的工具能力。
-- 验证方式、验收条件、已知风险与待回答问题。
-- plan_version、内容 hash、project_id、device_id、配置快照 ID。
-- 本机保存工作区快照指纹，包括 HEAD、dirty/untracked 状态与相关文件；云端只同步不含源码的指纹。
-
-用户可“批准并执行”“要求修改”“拒绝”“取消”。修改意见由本地 Pi 生成新版本；已批准内容不能原地覆盖。授权绑定计划版本、hash、执行设备、项目、配置快照和有效期。执行前工作区变化则停止并显示变化摘要，重新生成/确认计划；同一个计划不能被重复批准后重复运行。
-
-默认直接在用户选择的本地工作区执行，每个工作区同一时刻只允许一个写任务。启动前记录已有未提交改动，禁止自动 reset/覆盖用户修改。独立 worktree 可作为后续可选模式，不能在首版悄悄改变用户工作区语义。
-
-执行期间范围实质扩大、增加关键外部动作或更换权限配置时生成新计划版本并暂停。普通步骤细化不改变已批准范围。计划审批控制启动与权限范围，不代表程序能形式化证明任意 shell 完全遵守自然语言计划。
-
-## 6. 功能需求
-
-### 6.1 Mac 项目与设备
-
-- 添加/移除项目、选择真实目录、显示 Git 状态、选择默认模型和项目配置。
-- 分配 project_id；云端只保存显示名称、设备、可用状态与必要元数据。真实路径在 Mac 绑定，不接受手机下发任意 cwd。
-- 常驻菜单栏显示服务、云连接、运行任务；区分关闭窗口、退出 UI、停止后台服务。
-- 支持登录启动、重连、版本检查、导出诊断信息。退出 UI 不停任务；停止服务需处理运行中任务。
-- 首版优先 Apple Silicon；Intel 为后续构建目标，运行能力保持相同。
-
-### 6.2 模型配置
-
-- CRUD provider、API 类型、base_url、model_id、推理强度、上下文配置和连接测试。
-- 可分别指定本地 Ask、Plan、Execute 和云端问答模型；不硬编码某个模型品牌。
-- 配置条目标明运行环境 local/cloud/both；同一 provider ID 经适配器分别映射到 Pi 与 LangChain。
-- 模型能力校验：工具调用、图片、推理参数；Pi 可用不保证 DeepAgents 的提供商适配也可用。
-- 元数据三端同步；密钥默认本地/云端分别配置，客户端显示已配置/缺失，不回传明文。
-- 不通过模型代理转发本地代码：Mac 直接连接选定模型服务商。
-
-### 6.3 Skills 配置
-
-- 列表、启停、内容查看与编辑、版本记录；支持 SKILL.md 及引用文件组成的包。
-- 作用域 global/project；执行环境 mac/cloud/both；支持 local_only 标记。
-- 普通可共享 skill 包上传云端，手机可查看/编辑，Mac 拉取；内容按 hash 定址，运行绑定确定版本。
-- 技能说明与实际依赖分开：脚本路径、系统命令、平台限制、MCP 依赖由 manifest 声明并验证。
-- 含项目源码或本机私密资料的技能设为 local_only；手机仍可看到名称、版本、状态。
-- 同步不代表自动执行安装脚本。缺依赖时显示不可用原因，不自动执行远端同步来的任意安装命令。
-- 同一 skill 在两套 harness 的行为必须分别验证；格式共享不代表行为完全相同。
-
-### 6.4 MCP 配置
-
-- 支持 stdio 与 Streamable HTTP；CRUD 名称、命令/参数、URL、超时、环境变量引用、工具启停。
-- 显示连接状态、工具清单、错误原因、运行环境和权限能力。
-- 本地 Node 服务使用官方 MCP 客户端，将工具 schema 与结果映射为 Pi 工具；处理命名冲突、图片、错误、取消、重连和输出截断。
-- 云端 DeepAgents 使用 Python/LangChain 侧 MCP 适配；只加载 cloud/both 且在云端具备依赖和凭据的条目。
-- 配置分成共享模板、设备绑定、secret 引用。macOS command/path 不直接复制到 Linux 云端；缺绑定显示 unavailable。
-- Chrome MCP 默认 mac_only，手机可配置和查看状态，不在手机运行。
-- 配置更新显示 desired_version/applied_version，生效失败保留上一可用版本。进行中的任务固定配置，新任务使用新配置。
-- 首版只映射 MCP tools；resources/prompts/OAuth 的完整管理放后续，UI 不假装已经支持。
-
-### 6.5 本地命令和编程
-
-- 支持工作目录、环境变量、PATH、超时、stdout/stderr、退出码、长任务和取消。
-- 配置用户默认 shell、Homebrew 和语言版本管理器路径；提供环境诊断，不能假设 GUI/launchd 的 PATH 与终端一致。
-- 普通命令使用非交互执行；确有交互需求时使用 PTY。凭据输入本机处理；不将密码传入共享聊天。
-- 取消 agent 时同时管理其工具进程组；受控服务进程登记 process_id。对自行脱离进程组的外部程序，不承诺取消自动回滚全部副作用。
-- 读取/搜索/编辑代码，执行构建和测试，输出变更摘要与测试通过/失败数；Mac 显示原始 diff 和日志。
-- 同工作区写任务排队，不让两个任务同时改同一个目录。
-- task-step 状态由执行服务维护；模型说“完成”不能代替验证结果。没有执行测试时必须显示“未验证”。
-
-### 6.6 Chrome 操作
-
-- 通过 Chrome DevTools MCP 提供页面读取、标签页选择、导航、点击、输入和必要截图。
-- 默认使用独立自动化 Chrome profile；用户可显式选择连接现有 Chrome 会话，按 Chrome 当前版本要求启用连接和授权。
-- 不承诺任意登录会话都能无提示接入；连接失败展示具体操作指引。
-- 浏览器控制按会话或 profile 加锁，避免两个任务交叉点击。
-- Chrome 调试接口留在本机；手机发操作任务，由 Mac 执行并返回摘要。
-- 页面内容、cookie、截图默认不上传同步服务。验证码、登录、系统弹窗转为等待本机操作；不尝试绕过。
-- 明确 Browser 操作与 Ask/Plan 的边界；Ask/Plan 不开放任意点击、表单提交或 JS 执行。
-
-### 6.7 Android 客户端
-
-- 会话列表、聊天、流式回答、历史加载和搜索；选择执行位置。
-- 项目列表与 Mac 在线状态；项目离线仍可提交计划请求并查看排队状态。
-- 计划详情、版本比较、修改意见、批准并执行、拒绝与取消。
-- 任务进度、步骤状态、测试摘要、等待输入、失败重试；本地成果显示“在 Mac 查看”。
-- 模型、Skills、MCP 配置查看与编辑，展示配置是否已应用到目标执行端。
-- 本地 Room 缓存；前台 WSS 实时更新；后台使用 WorkManager 做最终同步，不依赖永久后台 WebSocket。
-- 推送为可选加速：有 Google Play 服务时可接 FCM；无推送首版通过应用内刷新和后台同步，不能承诺秒级后台通知。
-- 离线可保存消息草稿和待发请求。审批必须在线获取服务端确认，不显示虚假的“已批准”；重连后需重新校验计划版本。
-
-### 6.8 云端问答
-
-- 手机和 Mac 均可选择“云端问答”，由 DeepAgents Worker 执行。
-- 接入联网查询、已配置 cloud MCP、可共享 skills；模型按云端配置使用。
-- API 请求仅创建 run；独立 worker 执行，用户关闭手机不影响任务。
-- LangGraph checkpoint 保存云端会话执行状态，事件映射为统一客户端协议。
-- 云端无本地项目目录访问权；代码问题需转本地 Pi，或由用户显式提供可共享材料。
-
-## 7. 三端同步规则
-
-| 数据 | Mac | 云端 | Android |
-|---|---|---|---|
-| 共享用户消息与回复 | 缓存 | 权威存储 | 缓存 |
-| Pi 私有会话/原始工具结果 | 权威存储 | 不存储 | 不存储 |
-| Plan 与版本 | 本地产生、缓存 | 权威审批记录与共享副本 | 展示、审阅 |
-| 本地执行事实 | 权威事件源 | 保存投影 | 展示投影 |
-| 源码/diff/终端原始日志 | 本地 | 默认不存储 | 默认不存储 |
-| 项目元数据 | 含真实路径 | 仅 ID/显示信息/设备 | 显示信息 |
-| 共享 skill 包 | 下载与本地版本 | 版本存储 | 查看与编辑 |
-| 模型/MCP 配置模板 | 缓存与设备绑定 | 权威版本 | 查看与编辑 |
-| 密钥/cookie/机器路径绑定 | 本机保存 | 仅云端自己的秘密与绑定 | 不获取本机秘密 |
-
-### 共享聊天与私有代码
-
-不直接将 Pi JSONL 上传。设计 public message 与 local detail 两条轨道：用户需求、可分享的回复、计划、进度摘要进入共享轨道，文件读取、工具参数、代码块、diff 和完整日志进入本地轨道。
-
-普通问答的公开回复可逐段同步；项目任务的公开计划/摘要经本地输出策略检查后发布，不转发包含源码的原始 token 流。检测到代码块或敏感信息时保留本地详情占位，用户可手动分享。
-
-不能保证靠代码块正则或一次模型摘要就做到绝对零源码泄漏；如果需要严格不出站策略，共享通道仅允许用户确认的文本和固定字段状态。首版提供“摘要共享”默认值及“严格本地内容”项目选项。用户在手机主动输入的代码天然进入共享通道，UI 明示此点。
-
-### 谁拥有状态
-
-- 云端拥有账户、设备登记、任务请求、共享消息、审批与配置版本。
-- Mac 拥有本地工作区、Pi 会话、进程和本地执行事实；云端收到事件后更新投影。
-- 云端 Worker 拥有云端 run 的执行事实。
-- Android 仅缓存和提交命令，不自行宣告任务完成。
-- 同一个 conversation_id 下可有多个 run；每个 run 固定 harness 和执行地点。Pi 与 DeepAgents 不互换内部 session，只通过可分享消息和 handoff 摘要衔接。
-- 连续消息进入同一执行端的对应会话。切换执行端必须由用户选择；只传共享历史，不自动带上私有代码上下文。
-
-## 8. 数据与协议
-
-建议核心实体：
-
-```text
-Device(device_id, public_key, label, last_seen, capabilities, revoked_at)
-Project(project_id, device_id, display_name, availability)
-LocalProjectBinding(project_id, absolute_path, workspace_fingerprint)
-Conversation(conversation_id, title, default_target, revision)
-Message(message_id, conversation_id, run_id, role, visibility, content, revision)
-Task(task_id, conversation_id, project_id, target_device_id, status)
-Run(run_id, task_id, harness, phase, attempt, config_snapshot_id, state)
-Plan(plan_id, task_id, version, content_hash, steps, workspace_fingerprint)
-Approval(approval_id, plan_id, version, content_hash, device_id, expires_at, status)
-ConfigRevision(config_id, kind, version, scope, execution_target, hash)
-Command(command_id, idempotency_key, device_id, payload, status, expires_at)
-Event(event_id, aggregate_id, run_id, producer_id, producer_seq,
-      server_cursor, type, schema_version, occurred_at, payload)
-Artifact(artifact_id, run_id, visibility, location, summary)
-```
-
-原始 Pi session_id 与 DeepAgents thread_id 属于 adapter 私有映射，不作为三端主键。每个计划步骤有 step_id；每次重试使用新 run_id/attempt 并保留关联。
-
-建议公共事件：
-
-```text
-message.created / message.delta / message.finalized
-task.created / task.waiting_for_device
-run.started / run.waiting_for_input / run.interrupted
-plan.published / plan.superseded
-approval.recorded / approval.rejected
-step.started / step.updated / step.completed / step.failed
-tool.started / tool.finished              # 共享投影仅含名称、状态、摘要
-artifact.available                       # 可为 local_only 引用
-run.completed / run.failed / run.cancelled
-config.changed / config.applied / config.apply_failed
-device.presence_changed
-```
-
-REST 示例：创建会话/消息/任务、获取项目与计划、批准指定计划、请求取消、按 cursor 获取事件、读取和提交配置版本。WSS 用于实时事件与设备命令，所有关键命令先持久化再投递。
-
-### 幂等、顺序与恢复
-
-- 使用至少一次投递，按 event_id / command_id 去重；不声称端到端 exactly-once。
-- 本机 SQLite outbox 在网络中断时持久化事件，服务端 ack 后再回收；Android 同理保存待发送消息。
-- server_cursor 用于增量回放；producer_seq 用于识别来源内部缺口。不能按客户端时间戳决定最终顺序。
-- Postgres 事务内写状态与事件，设备命令使用持久队列、确认和过期时间；断网不会丢任务。
-- 同一工作区执行由本地服务锁控制，远程命令不能绕过。配置乐观锁 expected_version；冲突返回差异，不默默覆盖。
-- 移除配置使用 tombstone；新版本先验证再激活；运行中配置不被静默替换。
-- 重连先交换快照与 cursor，再追增量。客户端遇到不识别的事件保留记录并提示升级，不改变执行事实。
-
-## 9. 任务状态与故障语义
-
-规划阶段：queued → waiting_for_device / planning → awaiting_review → approved。
-
-执行阶段：queued → running → completed / failed / cancelled；可以进入 waiting_for_input、waiting_for_local_action、interrupted、needs_replan。
-
-设备连接状态与任务状态分别存储：网络断了不代表本机任务失败。UI 显示最后同步时间和“状态可能过期”。
-
-| 情况 | 必须行为 |
+| 概念 | 说明 |
 |---|---|
-| 手机离线或关闭 | 已开始任务继续；重新打开补齐共享事件 |
-| Mac 与云端断网 | 已批准本地任务可继续并缓存事件；远程取消显示待送达 |
-| Mac 睡眠/关机 | 不承诺继续运行或自动唤醒；云端任务独立继续 |
-| UI 关闭 | Node 服务与任务继续 |
-| Mac 服务或 Pi 崩溃 | 标记 interrupted，检查存活进程和工作区；不盲目重跑最后一条 shell |
-| 重复下发执行命令 | 返回原 run_id，不创建第二次执行 |
-| 计划审批后源码变化 | 执行前校验失败，进入 needs_replan |
-| 配置更新中有任务运行 | 固定当前快照，新任务使用新版本 |
-| 云端 Worker 崩溃 | 从 checkpoint 恢复前核对工具副作用；通过调用记录避免无脑重复 |
+| 用户 | 管理员在后台创建，没有注册入口。角色为 `admin` 或 `user`，可被禁用 |
+| Mac 设备 | 每个用户最多一台。Mac 登录时生成 Ed25519 密钥并绑定，新绑定会吊销旧设备 |
+| Bot | 属于一个用户：名字、人设、模型（为空则跟随默认模型）、形象（造型/颜色/深浅色）、资料库 `slug`。改名不改 `slug`；归档不删 Mac 上的文件 |
+| 时间线 | 每个 Bot 一条，消息按 `seq` 递增。没有「会话」或「项目」 |
+| 运行（run） | 一条用户消息触发一次运行，执行者是 `mac` 或 `cloud`。同一个 Bot 同时只能有一个运行 |
+| 长期记忆 | 时间线超过阈值后，Worker 把较早的消息压缩成摘要（`bot_memories`），运行时作为系统提示的一部分 |
+| 审批 | Mac 上的 Bot 想访问资料库以外的路径时创建，用户在 Mac 或手机上批准/拒绝，默认 15 分钟过期 |
+| 模型 | 管理员配置的 OpenAI 兼容模型（地址、服务商模型名、API Key、上下文长度），其中一个是默认模型 |
 
-“暂停”不承诺能冻结任意 CLI。首版提供 agent 步骤边界暂停和取消：取消尝试中止受管进程，展示已发生改动，不自动回滚。只有清楚可恢复的工具才允许自动重试。
+## 组成
 
-## 10. 安装、权限与运行管理
-
-- Mac 以 Developer ID 签名、公证的安装包直装为目标，不以 Mac App Store sandbox 为首版发行前提。
-- 签名覆盖 Electron、Node runtime、原生模块与辅助程序；应用升级先协调 daemon 和任务，不在运行中替换二进制。
-- 使用用户级 LaunchAgent；其运行依赖用户会话，不承诺注销后或系统睡眠中继续。
-- 首次配对由 Mac 显示一次性配对信息，云端绑定设备凭据；支持撤销与重新配对。
-- TLS、设备身份、命令签名/完整性验证与短期授权防止把公网 API 变成任意 shell 入口。服务端仍是信任边界，首版不宣称端到端加密。
-- Electron renderer 启用 contextIsolation、sandbox，关闭 nodeIntegration；仅暴露白名单 IPC。MCP 和 shell 都在 daemon，不由网页 JS 直接执行。
-- Full Disk Access、文件权限、Chrome 连接或系统自动化权限根据实际操作请求并解释；首版不做整个 macOS GUI 的通用鼠标控制。
-- 日志默认移除凭据；云端诊断不接收原始代码和本地工具完整参数。记录模型用量、运行耗时和失败原因以便优化。
-
-## 11. 首版页面
-
-Mac：会话列表；聊天与模式选择；项目选择；任务/Plan 卡片；本地 diff/终端详情；模型、Skills、MCP、设备同步设置；后台状态菜单。
-
-Android：会话列表；server/本地聊天；项目和在线状态；Plan 审阅；执行进度；配置管理；设备与同步状态。首版不做手机代码编辑器和终端。
-
-## 12. 验收标准
-
-以下数值是开发目标，不是框架的性能保证。
-
-| 编号 | 测试与通过标准 |
+| 目录 | 内容 |
 |---|---|
-| A01 | Mac 注册项目后，Android 看见其名称、设备和在线状态；服务端没有真实源码 |
-| A02 | 手机提交需求，Pi 产出带版本的 Plan；审批前测试仓库内容与状态无变化 |
-| A03 | Ask/Plan 中尝试任意 shell、写文件和有副作用 MCP，执行器拒绝 |
-| A04 | 两次点击同一计划的批准，只有一个执行 run；篡改 hash 或过期审批被拒绝 |
-| A05 | 审批后本机改动相关文件，执行进入 needs_replan，不能静默继续 |
-| A06 | 关闭 Electron 窗口乃至 UI 进程后，手机仍可向已运行 daemon 请求规划 |
-| A07 | Mac 断网 10 分钟，本地事件恢复后补齐，不重复聊天、不重执行命令 |
-| A08 | 手机离线时显示缓存及更新时间；重新联网正确回放状态，不伪造审批成功 |
-| A09 | 一个编程任务完成后，手机显示步骤和测试摘要；diff 与完整日志只在 Mac |
-| A10 | 检查项目任务的同步请求，无源码附件、完整工具结果、API key、cookie；严格模式只允许既定字段及用户确认文本 |
-| A11 | 修改共享 skill/MCP 配置，其他端显示新版本；Mac 缺依赖时明确失败且不自动运行安装脚本 |
-| A12 | Chrome 打开测试页面、点击与输入成功；浏览器锁避免两个任务串操作 |
-| A13 | Mac 不在线时，DeepAgents 云端问答仍可完成；本地任务保持等待 |
-| A14 | 强制终止 Pi 后，不把未知命令结果当成功，也不自动重复有副作用命令 |
-| A15 | 前台在线正常网络下，共享状态更新目标 p95 ≤ 2 秒；事件重放无缺失 |
+| `server/` | Fastify API、Worker、Runner、数据库迁移、部署清单 |
+| `admin/` | 管理后台（Vite + React），构建后由 API 在 `/admin/` 提供 |
+| `desktop/` | Pi Bot for Mac：Electron + 本地服务 + React UI |
+| `android/` | Pi Bot Android：Kotlin + Jetpack Compose |
+| `packages/agent` | 基于 Pi SDK 的 Bot agent（`createBotAgent`），Mac 和云端 Runner 共用 |
+| `packages/bot-face` | 角色规格 `spec.json`、动画引擎、Canvas 渲染器；Android 有一份 Compose 移植 |
+| `boards/` | ESP32 桌面小屏，跟随 Mac 上 Bot 的表情 |
 
-## 13. 开发顺序
+## 云端
 
-1. 技术验证：固定 Pi SDK/Node 版本；验证自定义工具、计划模式、MCP 桥、Chrome、launchd 与打包签名。优先确认模式隔离和 SDK 生命周期。
-2. Mac 单机闭环：项目 → Plan → 审批 → Execute → diff/测试，建立 SQLite、事件和模型配置。
-3. 云端控制层与 Mac 接入：认证配对、项目目录、任务/审批、Postgres 事件日志、设备 WSS；Mac 端完成设备配对、项目共享、云端计划请求 → 本地规划 → 手机或 Mac 审批（先到先得）→ 本地执行，并以脱敏事件和 outbox 回放同步进度。配置版本同步顺延到第 6 步。
-4. Android 闭环：项目 → 计划 → 批准执行 → 查看进度；Room 与断线回放一起实现。
-5. DeepAgents 云端问答：独立 worker、持久化、公共消息适配与位置切换。
-6. 配置包同步、Chrome 体验、异常恢复与安装升级打磨；逐项通过验收标准。
+### 进程
 
-首版不引入多层 agent 总指挥、自动多机迁移、自动代码上传、手机端编译、多用户权限系统或依赖复杂消息基础设施。仍实现幂等、持久事件和审批版本，因为这些直接决定手机遥控能否可信。
+- **API**（`server/src/main.ts`）：REST、WebSocket、模型代理、管理后台静态文件。**必须单副本**：Mac 的 `/ws/device` 连接、在线状态和文件 RPC 都在进程内存里（`hub.ts`）。数据库变更通过 `NOTIFY pibot_changes` 广播，API 收到后推送给该用户的订阅者。
+- **Worker**（`server/src/worker.ts`）：认领 `executor='cloud'` 的运行，签发代理令牌后交给 Runner 执行；带租约，Worker 崩溃后超时的运行标为失败。同时负责长期记忆压缩。
+- **Runner**（`server/src/runner.ts`）：无数据库、无 vault，只接受带 `PI_BOT_RUNNER_TOKEN` 的请求，用 `createBotAgent` 跑一次运行；工具只有 `web_search`（配置了 Tavily 时）。容器只读根文件系统、去掉全部 capabilities。
 
-## 14. 官方资料与核实范围
+### 数据
 
-- [Pi SDK](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/sdk.md)：嵌入 Node/Bun、会话、事件、steer/abort 等。
-- [Pi Extensions](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md)：注册工具、拦截工具调用与扩展生命周期；扩展本身不是 OS 沙箱。
-- [Electron 进程模型](https://www.electronjs.org/docs/latest/tutorial/process-model)、[安全配置](https://www.electronjs.org/docs/latest/tutorial/security)：UI 与特权执行边界。
-- [Electron Forge macOS 签名](https://www.electronforge.io/guides/code-signing/code-signing-macos)：发行签名、公证。
-- [Apple launchd 文档](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html)：后台进程管理；具体安装方式需按目标系统验证。
-- [Android Compose](https://developer.android.com/compose)、[离线优先架构](https://developer.android.com/topic/architecture/data-layer/offline-first)：UI、Room、WorkManager 同步模式。
-- [MCP SDK](https://modelcontextprotocol.io/docs/sdk)：官方客户端 SDK；Pi 适配和配置产品层由本项目实现。
-- [Chrome DevTools MCP](https://github.com/ChromeDevTools/chrome-devtools-mcp)、[连接已有 Chrome](https://developer.chrome.com/docs/devtools/agents/use-cases/auto-connect)：浏览器连接与操作。
-- [DeepAgents 概览](https://docs.langchain.com/oss/python/deepagents/overview)、[人工干预](https://docs.langchain.com/oss/python/deepagents/human-in-the-loop)：云端 harness 与执行干预。
+一份基线迁移 `server/migrations/0001-baseline.sql`：`users`、`devices`、`device_nonces`、`models`、`bots`、`bot_runs`、`bot_messages`、`bot_memories`、`approvals`、`usage_logs`。模型 API Key 用 vault 文件（`PI_BOT_VAULT_FILE`，`scripts/vault-key.ts` 生成，可轮换）加密后入库。
 
-三端事件协议、任务审批、配置版本、离线恢复和数据分流为本方案提出的工程设计，不是以上任一框架开箱即用的完整功能。
+### 鉴权
 
-## 共享会话与模型同步实现补充
+| 模式 | 凭据 | 用于 |
+|---|---|---|
+| `user` | `Authorization: Bearer <JWT>`，默认 7 天 | 手机、管理后台 |
+| `admin` | 同上，且角色为 `admin` | `/admin/api/*` |
+| `device` | Ed25519 签名头 `x-pibot-device-id / timestamp / nonce / signature` | Mac |
+| `actor` | `user` 或 `device` 任一 | Bot、消息、审批等 Mac 和手机共用的接口 |
+| `llm` | 模型代理令牌（JWT，`src=mac` 或 `cloud`） | `/llm/v1/*` |
 
-Mac 是本地会话的唯一执行设备；云端保存共享用户消息、完整助手回答及版本，远程问答通过持久化 chat_run 队列交给所属 Mac。读代码直接回答，不触发编程审批。新会话在配对后默认共享，旧会话手动选择；不传输 Pi 会话、源码目录、diff 或原始工具输出。
+设备签名内容为 `${ts}.${nonce}.${METHOD}.${path}.${sha256(body)}`，时间偏差 ≤300 秒，nonce 不可重放。用户被禁用或设备被吊销后，相应请求立即 401，WebSocket 以 4401 关闭。
 
-所有模型配置与 API Key 自动同步到可信云端，API Key 采用独立主密钥的 AES-256-GCM 加密；只有绑定设备能下载到本机凭据文件。使用 expected_version、desired/applied 版本和显式冲突解决。Android 通过 JWT 读取共享记录、发送问题（已实现），不获得密钥查询权限。详细规则与冻结接口见项目根目录 SYNC.md 及 server/openapi.json。
+### 模型代理
 
+`/llm/v1/chat/completions` 与 OpenAI 兼容。请求里的 `model` 是 Pi Bot 模型 ID，代理换成服务商模型名、注入服务商 API Key 后转发，流式透传，并从响应里解析 token 用量写入 `usage_logs`。Mac 用 `POST /device/llm-token` 换取令牌（默认 15 分钟，运行中每 10 分钟刷新）；Worker 为每次云端运行签发覆盖运行时长的令牌。用户令牌不能调用代理，客户端永远拿不到服务商地址和 Key。
 
-```mermaid
-flowchart LR
-    Client[独立客户端 / Android] -->|JWT · REST / WSS 通知| API[云端 FastAPI]
-    API --> DB[(PostgreSQL
-共享历史 / 请求队列 / 配置版本)]
-    API --> Vault[AES-256-GCM
-独立主密钥文件]
-    Mac[Mac Node 服务] -->|设备签名 · HTTPS
-快照 / cursor / 回执| API
-    UI[Electron] -->|受控 IPC| Mac
-    Mac --> Local[(SQLite
-消息修订 / 同步状态 / 执行映射)]
-    Mac --> Secrets[本机 secrets.json]
-    Mac --> Pi[Pi Ask / 只读代码问答]
-    Pi --> Context[本机项目与 Pi 会话]
+### 实时事件
+
+- `/ws/events?token=`：连接后先收到 `{type:'hello', mac_online}`，之后是 `{type:'event', event}`，`event.type` 为 `delta`（流式文本）、`bot`（某个 Bot 变了，重新拉详情）、`bots`（列表变了）、`presence`（Mac 上下线）。
+- `/ws/device`：握手带设备签名。云端下发 `run`、`cancel`、`approval`、`approval_created`、`rpc`，以及与手机相同的变更事件；Mac 回传 `run_event` 和 `rpc_result`。同一用户的新连接会以 4409 关闭旧连接。
+
+## 运行路由
+
+用户发消息（`POST /bots/:id/messages`，带 `request_id` 幂等）时，API 在同一事务里写入用户消息、空的助手消息和运行：
+
+- **Mac 在线**：`executor='mac'`，事务提交后经 `/ws/device` 下发 `run`，内容包括 Bot 信息、模型、系统提示（人设 + 长期记忆 + 资料库位置）、最近的历史和本条消息。如果下发时 Mac 刚好掉线，运行改为云端执行。
+- **Mac 离线**：`executor='cloud'`，Worker 认领后交给 Runner。系统提示会告诉模型 Mac 离线、看不到资料库。
+
+Mac 回传的 `run_event`：`started`、`text`（完整文本，API 每秒最多落库一次并推送 `delta`）、`tool`（工具名、状态、一行摘要）、`approval`、`done`。
+
+- **停止**：`POST /runs/:id/cancel`。Mac 运行转发 `cancel` 给 Mac；排队中的云端运行直接取消，执行中的由 Worker 检测后中止 Runner。
+- **Mac 中途掉线**：它的运行全部标为失败，保留已生成的文本，提示「Mac 已离线，可重新发送（将在云端运行）」。API 重启后，残留的 Mac 运行同样标为失败。
+- **审批**：Mac 发 `approval` → API 创建审批、运行变为 `waiting_approval`、回 `approval_created` → 用户 `POST /approvals/:id` → API 把决定下发给 Mac → 运行继续。过期或重复决定返回 409。
+- **资料库浏览**：`GET /bots/:id/files?path=`、`/files/content?path=` 经 `rpc` 转给 Mac，Mac 离线返回 503，超时返回 504。
+
+## Mac 端
+
+```
+┌──────────── Electron (Pi Bot.app) ────────────┐
+│ UI (React + @pi-bot/bot-face)                 │
+│   │ window.agent.call / subscribe             │
+│ main.ts ── Unix socket RPC (IPC token) ──┐    │
+└──────────────────────────────────────────┼────┘
+                                           ▼
+┌──────── 本地服务 (packages/service) ───────────┐
+│ Application  账号、设备身份、CloudSocket         │──WSS──▶ /ws/device
+│ Executor     每个 run 一个 Pi agent            │──HTTPS─▶ /llm/v1/chat/completions
+│ library.ts   资料库沙箱与工具                   │
+└──────────────────── ~/pi-bot/<slug>/ ─────────┘
 ```
 
-这部分是同步阶段的交付范围。Android 应用、DeepAgents 云端问答和 Skills/MCP 配置同步已在后续阶段实现（见后续各节）；Skills/MCP 的运行接入、Chrome 和 launchd 仍属于后续设计。完整部署与验收状态见根目录 SYNC.md、VALIDATION-SYNC.md、CLOUD-CHAT.md 和 CONFIGS.md。
+- **Electron 主进程**（`apps/desktop/src/main.ts`）：窗口、菜单、在 Finder 中打开资料库。打包应用里由它拉起本地服务，开发时由 `scripts/dev.mjs` 单独拉起。主进程只转发 RPC，不持有令牌。
+- **本地服务**（`packages/service/src/server.ts`）：`/tmp/pi-bot-<uid>-<hash>/service.sock` 上的 JSON 行协议，先用数据目录里的 `ipc-token` 认证。方法和事件类型在 `packages/protocol`。
+- **登录**：`POST /auth/login` 拿用户令牌 → 本地生成 Ed25519 密钥 → `POST /devices/register` 绑定 → 丢弃用户令牌。之后所有云端请求都用设备签名，Mac 和手机调用同一套 `actor` 接口。私钥在钥匙串（`dev.pi-bot.device`），开发模式下在 0600 的 `secrets.json`。收到 401 或 4401 进入 `revoked`，需要重新登录；4409 后至少等 5 秒再重连。
+- **Executor**：`libraryDir(root, slug)` 创建资料库（拒绝符号链接作资料库本身）→ `createBotAgent` 用历史作种子建立内存会话，工具来自 `libraryTools(new Sandbox(dir))` → 回传 `run_event`（文本 150ms 节流）。取消时中止 agent 并结束命令的整个进程组。
+- **工具**：`list_files`、`read_file`、`search_files`、`write_file`、`edit_file`、`run_command`（zsh，默认 2 分钟超时，输出保留尾部 30KB）、`request_outside_access`。
+- **沙箱**：`Sandbox` 维护允许的根目录（初始只有资料库）。路径展开 `~`、相对路径以资料库为基准，再对最近的已存在祖先取 realpath，符号链接和尚未创建的文件都逃不出允许的根。`request_outside_access` 批准后只对当前运行有效；拒绝授权 `/` 和整个家目录。`run_command` 只限制工作目录，命令本身不做隔离。
+- **文件预览**：`files.list` / `files.read` RPC 只读资料库内的内容（文本 ≤512KB，图片 ≤4MB）。
+- **本地事件**：`account`、`bots` / `bot` / `delta`（云端转发）、`activity` 与 `bot.mood`（本机正在执行的工具和表情，`boards/` 的桥接程序也订阅它）。
+- **本地存储**：没有数据库。`account.json` 存服务器地址、用户、设备 ID 和设备名；消息、记忆、审批都在云端。
 
-## DeepAgents 云端问答实现补充
+## Android 端
 
-云端问答是第三种执行位置：会话、消息和 chat_run 仍存放在共享文档表，`device_id` 为空表示由云端 Worker 执行，因此 Android 的会话列表、消息分页和 `/ws/events` 刷新逻辑直接复用。Worker 是与 API 同镜像的独立进程，用 `SELECT ... FOR UPDATE SKIP LOCKED` 领取排队的云端 run，写入租约并定期续租，租约过期的 run 标为 interrupted，不自动重跑。
+- 单 Activity + Compose Navigation：登录、Bot 网格、新建/编辑 Bot、时间线、资料库浏览、设置。
+- `PiBotApi`（OkHttp + kotlinx.serialization）调用与 Mac 相同的 REST 接口；`PiBotRepository` 用 StateFlow 保存会话、Bot 列表、Mac 状态和各 Bot 的时间线，没有本地数据库。
+- 应用在前台时连接 `/ws/events`：`delta` 直接合并进时间线，`bot` 事件 200ms 内合并成一次刷新，断线按 1、2、4…30 秒退避重连，重连后补拉列表和已打开的时间线；4401 或 401 退出登录。
+- 会话（服务器地址、用户、令牌）存在 EncryptedSharedPreferences。服务器地址必须是 HTTPS；debug 构建允许局域网和模拟器地址用 HTTP。
+- 消息按 `seq` 分页（每页 50 条），滚到顶部加载更早的消息。
 
-执行使用 DeepAgents `create_deep_agent`：OpenAI 兼容模型、可选 Tavily 搜索、DeepAgents 自带的规划与虚拟文件（仅存在于 agent 状态，没有 shell，不访问任何 Mac 的代码）。多轮上下文存放在 LangGraph Postgres checkpoint，线程为"会话:代次"；取消、失败或中断后换新代次，并用共享消息历史重建。流式输出每秒最多写一次累计快照，取消在下一次快照或续租时生效。
+## 角色
 
-云端模型是独立的配置文档，密钥使用同一 vault 加密。"复制到云端"由服务端在内部解密再加密，密钥不经过客户端；Worker 只在内存中解密。"转到云端继续"从已共享的 Mac 会话复制最近的共享消息（上限 40 条 / 60000 字）新建云端会话，原会话不变，不支持同一会话来回切换。本阶段不含云端 MCP、Skills、多用户和推送。
+`packages/bot-face/spec.json` 是唯一的角色规格：8 种造型、10 种颜色（浅/深两套渐变）、9 种表情（待命、开心、思考、工作、搜索、等待、庆祝、出错、睡觉）。
 
-```mermaid
-flowchart LR
-    Android -->|JWT REST| API[FastAPI]
-    MacUI[Electron] -->|IPC| MacSvc[Mac 服务]
-    MacSvc -->|设备签名 REST /device/cloud| API
-    API --> PG[(PostgreSQL
-shared_documents device_id 为空)]
-    Worker[DeepAgents Worker] -->|领取 queued 云端 run / 租约| PG
-    Worker --> Model[OpenAI 兼容模型]
-    Worker --> Tavily[Tavily 搜索]
-    Worker --> CP[(LangGraph checkpoint)]
-    API -->|/ws/events 变更通知| Android
-```
+- `engine.ts`：与绘制无关的状态机（弹簧、眨眼、视线、`bounce` / `burst` / `spin`、粒子），用 Mulberry32 随机数，可在 Node 里测试；尊重「减少动态效果」。
+- `render.ts`：Canvas 2D 渲染，`react.tsx` 提供 `<BotFace>`，Mac 端和管理后台使用。
+- `status.ts`：运行状态 → 表情。运行中按工具区分思考/搜索/工作，等待审批为 `waiting`，刚完成或失败短暂庆祝/出错，3 天无活动睡觉并显示天数。
+- Android 的 `face/` 是逐行移植：构建时把 `spec.json` 复制进 assets，单元测试用同一份规格和同一组随机数参考值校验两端一致。
 
-部署、配置、接口和验收记录见根目录 CLOUD-CHAT.md。
+## 部署
 
-## Skills 与 MCP 配置同步实现补充（A11）
+- 本地完整栈：`server/docker-compose.yml`（Postgres、API、Worker、Runner）。
+- 集群：`server/deploy/pibot.yaml`（命名空间 `n-88`，入口 `https://aicloud-app.lenovo.com.cn/pibot`，管理后台在 `/pibot/admin/`）。镜像 `registry.cn-beijing.aliyuncs.com/liuhx/pi-bot-server`。需要先创建 `pibot` 与 `pibot-vault` 两个 Secret。
+- API 单副本；Worker 可多副本（`FOR UPDATE SKIP LOCKED` 认领）；Runner 只在内网可达。
 
-Skill 包和 MCP 服务配置是全局共享文档（`kind` 为 `skill` / `mcp_server`，`device_id` 为空），带版本号和 revision，用 `expected_version` 检测并发修改。Mac 和 Android 都可以编辑；secret 只以引用名出现在配置中，值保存在各台 Mac 的 `secrets.json`。
+## 验收
 
-Mac 每 5 秒拉取配置包，只做静态依赖检查：在 PATH 与常见 Homebrew 目录中查找可执行文件、核对平台、包内脚本、依赖的 MCP 和本机 secret。检查不启动任何进程，安装提示只展示，包内脚本以 0644 权限写入本地目录。检查结果按设备回报：可用时 `applied_version` 前进；不可用时保留上一可用版本，并列出原因码。手机和 Mac 都能看到每台设备的"最新版本 / 生效版本 / 原因"。
-
-本阶段不把 Skills 加载进 Pi，不连接或启动 MCP，云端 Worker 也不加载这些配置；运行环境为"仅云端"的条目标注"云端暂未加载"。
-
-```mermaid
-flowchart LR
-    Android -->|"JWT PUT expected_version"| API[FastAPI]
-    MacUI[Electron] -->|IPC| MacSvc[Mac 服务]
-    MacSvc -->|"设备签名 PUT"| API
-    API --> PG[(PostgreSQL shared_documents)]
-    API -->|"skill.changed / mcp_server.changed"| Android
-    MacSvc -->|"拉取 /device/configs/bundle"| API
-    MacSvc --> Check[静态依赖检查 不启动进程]
-    Check -->|"applied: 状态与原因"| API
-```
-
-数据模型、原因码、接口和验收步骤见根目录 CONFIGS.md。
-
-## Chrome 操作与 Jev 实现补充（A12）
-
-Mac 服务启动一个独立自动化 profile 的 Chrome（`<数据目录>/chrome-profile`，与日常 Chrome 分开），通过 CDP 控制：用 `--remote-debugging-port=0` 启动，从 `DevToolsActivePort` 读端口，再由 `playwright-core` 的 `connectOverCDP` 连接；服务重启后会先尝试接回已在运行的自动化 Chrome。6.6 节原定用 Chrome DevTools MCP，这一阶段改为服务内直接走 CDP，因为 MCP 客户端尚未接入；调试端口只监听 127.0.0.1。Chrome 路径默认是 `/Applications/Google Chrome.app`，可用环境变量 `TAGNET_CHROME` 覆盖。
-
-浏览器工具只在已批准计划的执行阶段注册，读代码和规划阶段看不到：
-
-| 工具 | 说明 |
-| --- | --- |
-| `browser_open(url)` | 只允许 http/https |
-| `browser_snapshot()` | 列出可交互元素，编号为「快照号.元素号」，附当前值和页面文字节选；密码框只标 `password`，不带值 |
-| `browser_click(ref)` / `browser_type(ref, text)` | 只接受最新一次快照的编号；输入会替换内容，不自动回车 |
-| `browser_press(key)` | 只允许回车、Tab、Esc、方向键等少数按键 |
-| `browser_task(goal, inputs?, maxSteps?)` | 配置了 Jev 才注册，见下文 |
-
-执行前检查：编号必须来自最新快照；页面跳转或刷新后旧编号失效；元素位置相对快照移动超过 40 像素要求重新快照；元素须可见、可用，并用 `elementFromPoint` 确认没有被遮挡。目标是密码框、名称含付款、删除、提交订单、转账一类字样，或页面出现验证码时，工具不执行，把任务置为 `waiting_for_local_action`，由用户在自动化 Chrome 里手动处理。
-
-浏览器锁：每个 profile 一把锁，任务第一次调用浏览器工具时获取，运行结束、取消或失败时释放。同一任务可重入；其他任务排队，60 秒内没拿到就报"浏览器正被任务 X 使用"。换持有者时清空上一次快照，新任务不能沿用旧编号。
-
-Jev（TypeSafe 的决策模型）：在设置页"Jev 浏览器决策"填 Base URL（默认 `https://api.typesafe.ai`）、模型（默认 `jev-latest`）和 API Key 后即启用，key 存在本机 `secrets.json`，配置只存本机，不同步到云端。`browser_task` 每一步先快照，再向 `POST {Base URL}/v1/systemone` 发一个请求，包含三个问题：下一步操作（choice，选项是本页可执行的动作）、目标是否达成（noul）、是否卡住（noul）。
-
-- 选项只由执行器生成：点击某元素、在某输入框输入 `inputs` 中的第几段、在下拉框选某项、滚动、等待、结束、放弃。Jev 不生成文字，返回未列出的选项直接报错。密码框不会出现在选项里。
-- 达成或卡住的概率不低于 0.85 即停止；另有步数上限（默认 15，最多 40）和 90 秒时间上限。每一步仍走上面的执行前检查，敏感操作同样暂停任务。
-- 结束时把每一步的操作、概率和最终快照交回 Pi，由 Pi 核对结果。
-- 发送给 TypeSafe 的内容：目标、`inputs`、页面标题、网址、元素列表、页面文字节选（最多 3000 字）和最近几步记录。不发送 cookie 和截图。
-
-```mermaid
-flowchart LR
-    Pi["Pi 执行阶段"] --> Tools["browser_* 工具"]
-    Pi --> Task["browser_task"]
-    Task -->|"state + questions"| Jev["TypeSafe Jev"]
-    Tools --> Lock["profile 锁"]
-    Task --> Lock
-    Lock --> Guard["执行前检查 与 敏感操作暂停"]
-    Guard -->|CDP| Chrome["自动化 Chrome"]
-```
-
-验收：
-
-1. 自动化测试 `desktop/tests/browser.test.ts` 用本地测试页面和无头 Chromium 覆盖打开、快照、点击、输入（确认没有自动回车）、旧快照、元素移动、遮挡、密码框、付款按钮、验证码，以及两个任务争用锁；另有一个用假模型走完"规划、批准、执行"的用例，确认 Pi 在执行阶段打开测试页并完成输入和点击，结束后锁已释放。
-2. `desktop/tests/jev-task.test.ts` 用假的 Jev 服务覆盖：目标达成、卡住、步数上限、Jev 返回未列出的选项、Jev 选中付款按钮时暂停，以及设置的保存、测试和删除。
-3. 真 key 手动验证：`TYPESAFE_API_KEY=... node_modules/node/bin/node --import tsx work/jev-live.ts`（`work/` 不入库），在测试页上完成"输入并搜索"。
-4. Mac 上：设置页配置 Jev 并测试连接；新建一个需要打开网页的编程任务，批准后观察自动化 Chrome 被打开并完成操作；同时另一个任务要用浏览器时，设置页"自动化浏览器"显示当前占用任务，第二个任务排队。
+1. 管理员用环境变量里的口令登录后台，创建用户、添加模型并测试连通；普通用户访问后台接口返回 403，看不到模型地址和 Key。
+2. 用户在 Mac 登录，新建 Bot，`~/pi-bot/<slug>/` 出现；让 Bot 写文件，Finder 和手机资料库里都能看到。
+3. Bot 申请访问 `~/Desktop`：手机和 Mac 都出现审批卡片，任一端批准后运行继续，下一次运行需要重新申请。
+4. Mac 退出后，手机发消息由云端回复（无资料库、可联网搜索）；运行中的 Mac 掉线时该运行失败并提示可重发。
+5. 时间线超过阈值后长期记忆生效，较早提过的事情仍能被回答。
+6. 两个用户的 Bot、消息、文件、审批、Mac 在线状态互不可见。
+7. 管理员禁用用户或吊销设备后，对应客户端立即被登出。

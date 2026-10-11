@@ -1,20 +1,41 @@
-> 当前实现：服务端已迁移到 Node.js 24 + Fastify；云端 Worker/Runner 和 Mac 本地 harness 复用 `packages/agent`（Pi），分别在云端和端侧执行。Skills/MCP 已接入运行。部署与迁移见 [server/README.md](server/README.md)；下文旧阶段技术描述保留作历史记录。
+# Pi Bot
 
-# T-AGNET
+多用户的个人 Bot 平台。每个 Bot 有自己的名字、人设、形象和一条连续的时间线，会记住你们聊过的事；你的 Mac 是 Bot 们干活的电脑，手机随时可以和 Bot 说话、批准请求、看它们产出的文件。
 
-个人跨端智能体项目。当前已实现 Mac 本地问答/编程、云端任务控制、共享聊天、模型与密钥同步及远程续聊；Android 可查看共享聊天并继续提问；Pi 云端问答在 Mac 离线时也能回答，并支持把共享会话转到云端继续；Skills 与 MCP 配置可在手机和 Mac 上编辑，Mac 与云端复用同一个加载器运行 Skills/MCP，检查依赖并显示不可用原因，不自动安装。
+- **云端**：管理员在后台创建用户、配置模型和 Key；所有模型调用都经云端代理，客户端拿不到 Key。Mac 离线时，Bot 在云端回复（只能对话和联网搜索）。
+- **Mac**：登录即绑定为你的 harness。每个 Bot 的资料库是 `~/pi-bot/<slug>/`，Bot 在里面读写文件、执行命令；要碰资料库以外的路径必须先经你批准。
+- **手机**：Bot 网格、时间线、审批、资料库浏览、新建和编辑 Bot。
+- **角色**：一份共享的角色规格（8 种造型、10 种颜色、9 种表情），表情跟着 Bot 的运行状态变化。
 
-- 同步部署与使用说明：[SYNC.md](SYNC.md)
-- 云端问答（Worker 部署、Tavily、使用与验收）：[CLOUD-CHAT.md](CLOUD-CHAT.md)
-- 共享 Skills 与 MCP 配置（依赖检查、不自动安装、验收）：[CONFIGS.md](CONFIGS.md)
-- Chrome 操作与 Jev 决策（执行阶段浏览器工具、profile 锁、敏感操作暂停，A12）：见整体架构文档末尾「Chrome 操作与 Jev 实现补充（A12）」
+| 目录 | 技术栈 | 说明 |
+|---|---|---|
+| [server](server/README.md) | Node.js 24 + Fastify + PostgreSQL | API、管理后台、模型代理、Worker、Runner |
+| [admin](admin) | Vite + React | 管理后台，由 API 在 `/admin/` 提供 |
+| [desktop](desktop/README.md) | Electron + React + Pi SDK | Pi Bot for Mac |
+| [android](android/README.md) | Kotlin + Jetpack Compose | Pi Bot Android |
+| [packages/agent](packages/agent) | Pi SDK | Mac 和云端共用的 Bot agent |
+| [packages/bot-face](packages/bot-face) | TypeScript Canvas | 角色规格、动画引擎、渲染器 |
+| [boards](boards/esp32-s3-touch-lcd-2.8c/README.md) | ESP32-S3 + LVGL | 跟随 Bot 表情的桌面小屏 |
 
-| 目录 | 框架 | 本端需求 | 整体架构 |
-|---|---|---|---|
-| desktop（端侧） | Electron + React + Node.js + Pi SDK | [本端需求](desktop/REQUIREMENTS.md) | [整体架构与完整需求](desktop/ARCHITECTURE.md) |
-| server（云端） | Node.js + Fastify + Pi + PostgreSQL | [本端需求](server/REQUIREMENTS.md) | [整体架构与完整需求](server/ARCHITECTURE.md) |
-| android（手机端） | Kotlin + Jetpack Compose | [本端需求](android/REQUIREMENTS.md) | [整体架构与完整需求](android/ARCHITECTURE.md) |
+整体架构见 [ARCHITECTURE.md](server/ARCHITECTURE.md)（`server/`、`desktop/`、`android/` 三处内容一致），各端需求见各自的 `REQUIREMENTS.md`。
 
-三个目录内的整体架构文档内容一致，均包含总体架构图、计划审批流程图、数据与同步规则及验收标准。后续架构变更须同步更新这三份；各端具体实现需求维护在REQUIREMENTS.md。
+## 快速开始
 
-建议顺序：Mac 单机闭环 → 云端任务与同步 → Android 审阅 → Pi 云端问答 → 配置、Chrome 与故障恢复打磨。
+```sh
+npm ci
+cp server/.env.example server/.env        # 设置管理员口令、JWT 密钥、Runner token、vault 路径
+node --import tsx server/scripts/vault-key.ts "$PWD/server/vault.json"
+(cd server && docker compose up postgres -d)
+npm run build && npm start                # API + 管理后台：http://127.0.0.1:8000/admin/
+npm run desktop:dev                       # 另一个终端：Pi Bot for Mac
+```
+
+在后台添加模型和用户后，用该用户登录 Mac 和手机。详细步骤见 [server/README.md](server/README.md)。
+
+## 检查
+
+```sh
+npm run typecheck
+PI_BOT_TEST_DATABASE_URL=postgresql://pibot:pibot@127.0.0.1:5432/pibot npm test   # 会清空该库
+(cd android && ./gradlew :app:testDebugUnitTest)
+```

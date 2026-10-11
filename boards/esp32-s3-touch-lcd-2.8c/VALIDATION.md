@@ -78,3 +78,12 @@ DEMO alive uptime=1 heap=284228 psram=8388608
 - 最新观察窗口没有 panic 或反复重启。
 - `preview/moods.png` 为实际 C++ 角色几何在固定时间的桌面预览，已视觉检查；不是实物拍照。实际 LCD 显示、触摸手感仍需人工查看。
 - 桥接为本次手动启动的常驻进程，不自动安装登录启动项；重启电脑后运行 `./run-bridge.sh` 恢复。
+
+# Pi Bot 更名（2026-10-11）
+
+以上记录保留当时的 T-AGNET 名称和日志原文。项目更名为 Pi Bot 后：
+
+- 固件与预览中的显示文字改为 Pi Bot（`Pi Bot buddy`、`LIVE / Pi Bot`、`Pi Bot | ESP32-S3`），画面几何和串口协议不变。
+- `agent_bridge.py` 改为连接 `/tmp/pi-bot-<uid>-<digest>/service.sock`，默认数据目录 `~/Library/Application Support/Pi Bot`（`PI_BOT_DATA_DIR` 可覆盖）；订阅 `bot.mood` 事件，每 2 秒用只读 `status` 恢复状态，多个 Bot 同时运行时取最需要关注的状态。
+- 验证：`tests/test_bridge.py` 7 项通过（socket 路径与桌面服务一致、多 Bot 优先级、表情映射与完成保持、快照忽略已结束的表情、空闲转睡眠、忽略其他事件）；socket 路径与 `desktop/packages/service/src/paths.ts` 的计算结果已对比一致。
+- 未重新编译烧录，也未在实物上复验桥接；固件只改了字符串。
