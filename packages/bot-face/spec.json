@@ -53,7 +53,7 @@
     "lime": { "label": "青柠", "light": ["#D2F28A", "#86C93A"], "dark": ["#9FCB4F", "#557F1E"], "ink": "#1D2A0C", "cheek": "#FF7D7D" },
     "lemon": { "label": "柠檬", "light": ["#FFE58A", "#F5B921"], "dark": ["#E5BE45", "#A87A10"], "ink": "#2E2208", "cheek": "#FF7D6B" },
     "cocoa": { "label": "可可", "light": ["#D2AC90", "#8A5A3C"], "dark": ["#9E7559", "#5A3722"], "ink": "#22140B", "cheek": "#FF8A8A" },
-    "ink": { "label": "墨色", "light": ["#62666F", "#23252B"], "dark": ["#454852", "#121317"], "ink": "#F5F5F7", "cheek": "#FF7D9A" }
+    "ink": { "label": "墨色", "light": ["#62666F", "#23252B"], "dark": ["#8A8F9C", "#4A4E58"], "ink": "#F5F5F7", "cheek": "#FF7D9A" }
   },
   "moods": {
     "idle": { "label": "待命", "eyes": "open", "mouth": "smile", "arms": "down", "effect": "none" },

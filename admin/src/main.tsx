@@ -1,0 +1,584 @@
+import { StrictMode, useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { createRoot } from "react-dom/client";
+import { PiBot } from "@pi-bot/bot-face/react";
+import type { Mood } from "@pi-bot/bot-face";
+import { api, ApiError, session, type Device, type Model, type ModelInput, type Overview, type Usage, type User } from "./api.js";
+import "./style.css";
+
+type Page = "overview" | "users" | "models" | "devices" | "usage";
+const PAGES: { id: Page; label: string }[] = [
+  { id: "overview", label: "概览" },
+  { id: "users", label: "用户" },
+  { id: "models", label: "模型" },
+  { id: "devices", label: "Mac 设备" },
+  { id: "usage", label: "用量" },
+];
+
+const message = (e: unknown) => (e instanceof Error ? e.message : "请求失败");
+const fmt = (n: number) => n.toLocaleString("zh-CN");
+const ago = (iso: string | null) => {
+  if (!iso) return "从未";
+  const s = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (s < 60) return "刚刚";
+  if (s < 3600) return `${Math.floor(s / 60)} 分钟前`;
+  if (s < 86400) return `${Math.floor(s / 3600)} 小时前`;
+  return `${Math.floor(s / 86400)} 天前`;
+};
+
+function useLoad<T>(load: () => Promise<T>) {
+  const [data, setData] = useState<T | null>(null);
+  const [error, setError] = useState("");
+  const reload = useCallback(() => {
+    load().then(
+      (d) => {
+        setData(d);
+        setError("");
+      },
+      (e) => setError(message(e)),
+    );
+  }, [load]);
+  useEffect(reload, [reload]);
+  return { data, error, reload };
+}
+
+function Login({ onDone }: { onDone: (u: User) => void }) {
+  const [username, setUsername] = useState("admin");
+  const [password, setPassword] = useState("");
+  const [mood, setMood] = useState<Mood>("idle");
+  const [error, setError] = useState("");
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setMood("thinking");
+    setError("");
+    try {
+      const r = await api.login(username, password);
+      if (r.user.role !== "admin") throw new ApiError(403, "该账号不是管理员");
+      session.set(r.access_token);
+      setMood("celebrate");
+      setTimeout(() => onDone(r.user), 700);
+    } catch (err) {
+      setMood("error");
+      setError(message(err));
+    }
+  };
+  return (
+    <div className="login">
+      <form className="login-card" onSubmit={submit}>
+        <PiBot avatar={{ shape: "blob", color: "orange", scheme: "light" }} mood={mood} size={132} followPointer />
+        <h1>Pi Bot 管理后台</h1>
+        <p className="muted">管理用户、模型与设备</p>
+        <label>
+          用户名
+          <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" autoFocus />
+        </label>
+        <label>
+          密码
+          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
+        </label>
+        {error && <p className="error">{error}</p>}
+        <button className="primary" disabled={!username || !password || mood === "thinking"}>
+          登录
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function Modal({ title, children, onClose }: { title: string; children: ReactNode; onClose: () => void }) {
+  return (
+    <div className="backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="modal" role="dialog" aria-label={title}>
+        <header>
+          <h2>{title}</h2>
+          <button className="ghost icon" onClick={onClose} aria-label="关闭">
+            ×
+          </button>
+        </header>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function OverviewPage() {
+  const load = useCallback(() => api.overview(), []);
+  const { data, error } = useLoad<Overview>(load);
+  if (error) return <p className="error">{error}</p>;
+  if (!data) return null;
+  const stats = [
+    ["用户", data.users],
+    ["Bot", data.bots],
+    ["在线 Mac", data.macs_online],
+    ["启用模型", data.models],
+    ["今日运行", data.runs_today],
+    ["今日 Token", data.tokens_today],
+  ] as const;
+  return (
+    <>
+      <div className="stats">
+        {stats.map(([label, value]) => (
+          <div className="stat" key={label}>
+            <span className="muted">{label}</span>
+            <strong>{fmt(Number(value))}</strong>
+          </div>
+        ))}
+      </div>
+      {data.models === 0 && (
+        <div className="callout">
+          <PiBot avatar={{ shape: "blob", color: "orange", scheme: "light" }} mood="waiting" size={72} />
+          <div>
+            <strong>还没有可用模型</strong>
+            <p className="muted">用户的 Bot 需要至少一个启用的模型才能工作。到「模型」页添加一个 OpenAI 兼容的模型。</p>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+function UserForm({ user, onClose, onSaved }: { user?: User; onClose: () => void; onSaved: () => void }) {
+  const [form, setForm] = useState({ username: user?.username ?? "", display_name: user?.display_name ?? "", password: "", role: user?.role ?? "user" });
+  const [error, setError] = useState("");
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    try {
+      if (user) await api.updateUser(user.id, { display_name: form.display_name, role: form.role, ...(form.password ? { password: form.password } : {}) });
+      else await api.createUser(form);
+      onSaved();
+      onClose();
+    } catch (err) {
+      setError(message(err));
+    }
+  };
+  return (
+    <Modal title={user ? `编辑 ${user.username}` : "新建用户"} onClose={onClose}>
+      <form className="form" onSubmit={submit}>
+        <label>
+          用户名
+          <input value={form.username} disabled={!!user} onChange={(e) => setForm({ ...form, username: e.target.value })} placeholder="字母、数字和 _ . @ -" />
+        </label>
+        <label>
+          显示名称
+          <input value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} />
+        </label>
+        <label>
+          {user ? "重置密码（留空不修改）" : "初始密码"}
+          <input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="至少 8 位" autoComplete="new-password" />
+        </label>
+        <label>
+          角色
+          <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value as User["role"] })}>
+            <option value="user">普通用户</option>
+            <option value="admin">管理员</option>
+          </select>
+        </label>
+        {error && <p className="error">{error}</p>}
+        <footer>
+          <button type="button" className="ghost" onClick={onClose}>
+            取消
+          </button>
+          <button className="primary" disabled={!form.username || (!user && form.password.length < 8)}>
+            保存
+          </button>
+        </footer>
+      </form>
+    </Modal>
+  );
+}
+
+function UsersPage({ me }: { me: User }) {
+  const load = useCallback(() => api.users(), []);
+  const { data, error, reload } = useLoad<User[]>(load);
+  const [editing, setEditing] = useState<User | "new" | null>(null);
+  const act = async (fn: () => Promise<unknown>) => {
+    try {
+      await fn();
+      reload();
+    } catch (e) {
+      alert(message(e));
+    }
+  };
+  return (
+    <>
+      <div className="toolbar">
+        <p className="muted">用户由管理员创建，没有自助注册。每个用户可以绑定一台 Mac。</p>
+        <button className="primary" onClick={() => setEditing("new")}>
+          新建用户
+        </button>
+      </div>
+      {error && <p className="error">{error}</p>}
+      <table>
+        <thead>
+          <tr>
+            <th>用户</th>
+            <th>角色</th>
+            <th>Bot</th>
+            <th>Mac</th>
+            <th>状态</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {data?.map((u) => (
+            <tr key={u.id} className={u.disabled ? "dim" : ""}>
+              <td>
+                <strong>{u.display_name}</strong>
+                <div className="muted small">{u.username}</div>
+              </td>
+              <td>{u.role === "admin" ? <span className="badge accent">管理员</span> : "用户"}</td>
+              <td>{u.bot_count ?? 0}</td>
+              <td>
+                {u.mac ? (
+                  <span className="device">
+                    <i className={u.mac.online ? "dot on" : "dot"} />
+                    {u.mac.label}
+                    <span className="muted small">{u.mac.online ? "在线" : ago(u.mac.last_seen_at)}</span>
+                  </span>
+                ) : (
+                  <span className="muted">未绑定</span>
+                )}
+              </td>
+              <td>{u.disabled ? <span className="badge">已禁用</span> : <span className="badge ok">正常</span>}</td>
+              <td className="actions">
+                <button className="ghost" onClick={() => setEditing(u)}>
+                  编辑
+                </button>
+                {u.id !== me.id && (
+                  <>
+                    <button className="ghost" onClick={() => act(() => api.updateUser(u.id, { disabled: !u.disabled }))}>
+                      {u.disabled ? "启用" : "禁用"}
+                    </button>
+                    <button className="ghost danger" onClick={() => confirm(`删除用户 ${u.username}？其 Bot 记录会一并删除（Mac 上的资料库文件保留）。`) && act(() => api.deleteUser(u.id))}>
+                      删除
+                    </button>
+                  </>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {editing && <UserForm user={editing === "new" ? undefined : editing} onClose={() => setEditing(null)} onSaved={reload} />}
+    </>
+  );
+}
+
+const EMPTY_MODEL: ModelInput = { name: "", base_url: "", provider_model: "", api_key: "", context_window: 128000, max_tokens: 8192, enabled: true, is_default: false };
+
+function ModelForm({ model, onClose, onSaved }: { model?: Model; onClose: () => void; onSaved: () => void }) {
+  const [form, setForm] = useState<ModelInput>(model ? { ...model, api_key: "" } : EMPTY_MODEL);
+  const [error, setError] = useState("");
+  const set = (patch: Partial<ModelInput>) => setForm({ ...form, ...patch });
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    try {
+      const body = { ...form, base_url: form.base_url.trim().replace(/\/+$/, "") };
+      if (model) {
+        if (!body.api_key) delete body.api_key;
+        await api.updateModel(model.id, body);
+      } else await api.createModel(body);
+      onSaved();
+      onClose();
+    } catch (err) {
+      setError(message(err));
+    }
+  };
+  return (
+    <Modal title={model ? `编辑 ${model.name}` : "添加模型"} onClose={onClose}>
+      <form className="form" onSubmit={submit}>
+        <label>
+          显示名称
+          <input value={form.name} onChange={(e) => set({ name: e.target.value })} placeholder="例如：通义千问 Max" />
+        </label>
+        <label>
+          接口地址（OpenAI 兼容）
+          <input value={form.base_url} onChange={(e) => set({ base_url: e.target.value })} placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1" />
+        </label>
+        <label>
+          服务商模型名
+          <input value={form.provider_model} onChange={(e) => set({ provider_model: e.target.value })} placeholder="qwen-max" />
+        </label>
+        <label>
+          API Key{model && "（留空则保持不变）"}
+          <input type="password" value={form.api_key} onChange={(e) => set({ api_key: e.target.value })} autoComplete="off" />
+        </label>
+        <div className="row">
+          <label>
+            上下文长度
+            <input type="number" value={form.context_window} onChange={(e) => set({ context_window: Number(e.target.value) })} />
+          </label>
+          <label>
+            单次输出上限
+            <input type="number" value={form.max_tokens} onChange={(e) => set({ max_tokens: Number(e.target.value) })} />
+          </label>
+        </div>
+        <div className="row checks">
+          <label className="check">
+            <input type="checkbox" checked={form.enabled} onChange={(e) => set({ enabled: e.target.checked })} /> 启用
+          </label>
+          <label className="check">
+            <input type="checkbox" checked={form.is_default} onChange={(e) => set({ is_default: e.target.checked })} /> 设为默认
+          </label>
+        </div>
+        <p className="muted small">密钥加密保存在服务端，客户端只通过服务端代理调用模型，永远拿不到密钥。</p>
+        {error && <p className="error">{error}</p>}
+        <footer>
+          <button type="button" className="ghost" onClick={onClose}>
+            取消
+          </button>
+          <button className="primary" disabled={!form.name || !form.base_url || !form.provider_model || (!model && !form.api_key)}>
+            保存
+          </button>
+        </footer>
+      </form>
+    </Modal>
+  );
+}
+
+function ModelsPage() {
+  const load = useCallback(() => api.models(), []);
+  const { data, error, reload } = useLoad<Model[]>(load);
+  const [editing, setEditing] = useState<Model | "new" | null>(null);
+  const [tests, setTests] = useState<Record<string, string>>({});
+  const test = async (m: Model) => {
+    setTests((t) => ({ ...t, [m.id]: "测试中…" }));
+    const r = await api.testModel(m.id).catch((e) => ({ ok: false, error: message(e), latency_ms: 0 }));
+    setTests((t) => ({ ...t, [m.id]: r.ok ? `✓ 可用 · ${r.latency_ms} ms` : `✗ ${"error" in r ? r.error : "失败"}` }));
+  };
+  return (
+    <>
+      <div className="toolbar">
+        <p className="muted">所有用户的 Bot 共用这里的模型。默认模型用于未单独选择模型的 Bot 和长期记忆整理。</p>
+        <button className="primary" onClick={() => setEditing("new")}>
+          添加模型
+        </button>
+      </div>
+      {error && <p className="error">{error}</p>}
+      <div className="cards">
+        {data?.map((m) => (
+          <div className={`card ${m.enabled ? "" : "dim"}`} key={m.id}>
+            <div className="card-head">
+              <strong>{m.name}</strong>
+              {m.is_default && <span className="badge accent">默认</span>}
+              {!m.enabled && <span className="badge">已停用</span>}
+            </div>
+            <dl>
+              <dt>模型</dt>
+              <dd>{m.provider_model}</dd>
+              <dt>接口</dt>
+              <dd className="mono">{m.base_url}</dd>
+              <dt>上下文</dt>
+              <dd>
+                {fmt(m.context_window)} / 输出 {fmt(m.max_tokens)}
+              </dd>
+            </dl>
+            {tests[m.id] && <p className={tests[m.id].startsWith("✗") ? "error small" : "ok small"}>{tests[m.id]}</p>}
+            <div className="actions">
+              <button className="ghost" onClick={() => test(m)}>
+                测试
+              </button>
+              <button className="ghost" onClick={() => setEditing(m)}>
+                编辑
+              </button>
+              <button className="ghost danger" onClick={() => confirm(`删除模型 ${m.name}？使用它的 Bot 会改用默认模型。`) && api.deleteModel(m.id).then(reload, (e) => alert(message(e)))}>
+                删除
+              </button>
+            </div>
+          </div>
+        ))}
+        {data?.length === 0 && <p className="muted">还没有模型。</p>}
+      </div>
+      {editing && <ModelForm model={editing === "new" ? undefined : editing} onClose={() => setEditing(null)} onSaved={reload} />}
+    </>
+  );
+}
+
+function DevicesPage() {
+  const load = useCallback(() => api.devices(), []);
+  const { data, error, reload } = useLoad<Device[]>(load);
+  return (
+    <>
+      <p className="muted">用户在 Mac 客户端登录即绑定设备；重新绑定会自动吊销旧设备。吊销后该 Mac 立即断开，需要重新登录。</p>
+      {error && <p className="error">{error}</p>}
+      <table>
+        <thead>
+          <tr>
+            <th>设备</th>
+            <th>用户</th>
+            <th>最近在线</th>
+            <th>绑定时间</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {data?.map((d) => (
+            <tr key={d.id} className={d.revoked_at ? "dim" : ""}>
+              <td>
+                <span className="device">
+                  <i className={d.online ? "dot on" : "dot"} />
+                  {d.label}
+                </span>
+              </td>
+              <td>{d.username}</td>
+              <td>{d.online ? "在线" : ago(d.last_seen_at)}</td>
+              <td>{new Date(d.created_at).toLocaleString("zh-CN")}</td>
+              <td className="actions">
+                {d.revoked_at ? (
+                  <span className="muted small">已吊销</span>
+                ) : (
+                  <button className="ghost danger" onClick={() => confirm(`吊销 ${d.label}？`) && api.revokeDevice(d.id).then(reload, (e) => alert(message(e)))}>
+                    吊销
+                  </button>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </>
+  );
+}
+
+const SOURCES: Record<string, string> = { mac: "Mac", cloud: "云端", memory: "记忆整理", test: "测试" };
+
+function UsagePage() {
+  const [days, setDays] = useState(7);
+  const load = useCallback(() => api.usage(days), [days]);
+  const { data, error } = useLoad<Usage>(load);
+  const daily = new Map<string, number>();
+  for (const r of data?.by_day ?? []) daily.set(r.day, (daily.get(r.day) ?? 0) + r.tokens);
+  const max = Math.max(1, ...daily.values());
+  const table = (rows: Usage["by_user"], label: string, key: "username" | "name") => (
+    <table>
+      <thead>
+        <tr>
+          <th>{label}</th>
+          <th>调用</th>
+          <th>输入 Token</th>
+          <th>输出 Token</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((r, i) => (
+          <tr key={i}>
+            <td>{r[key] ?? "（已删除）"}</td>
+            <td>{fmt(r.calls)}</td>
+            <td>{fmt(r.input_tokens)}</td>
+            <td>{fmt(r.output_tokens)}</td>
+          </tr>
+        ))}
+        {rows.length === 0 && (
+          <tr>
+            <td colSpan={4} className="muted">
+              暂无数据
+            </td>
+          </tr>
+        )}
+      </tbody>
+    </table>
+  );
+  return (
+    <>
+      <div className="toolbar">
+        <div className="segmented">
+          {[1, 7, 30].map((d) => (
+            <button key={d} className={d === days ? "active" : ""} onClick={() => setDays(d)}>
+              {d === 1 ? "今天" : `${d} 天`}
+            </button>
+          ))}
+        </div>
+      </div>
+      {error && <p className="error">{error}</p>}
+      {data && (
+        <>
+          <div className="chart">
+            {[...daily.entries()].map(([day, tokens]) => (
+              <div className="bar" key={day} title={`${day}：${fmt(tokens)} tokens`}>
+                <i style={{ height: `${(tokens / max) * 100}%` }} />
+                <span>{day.slice(5)}</span>
+              </div>
+            ))}
+            {daily.size === 0 && <p className="muted">这段时间还没有模型调用。</p>}
+          </div>
+          <p className="muted small">
+            来源：{Object.entries(SOURCES).map(([k, v]) => `${v} ${fmt((data.by_day ?? []).filter((r) => r.source === k).reduce((n, r) => n + r.tokens, 0))}`).join(" · ")}
+          </p>
+          <div className="split">
+            <section>
+              <h3>按用户</h3>
+              {table(data.by_user, "用户", "username")}
+            </section>
+            <section>
+              <h3>按模型</h3>
+              {table(data.by_model, "模型", "name")}
+            </section>
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
+function App() {
+  const [me, setMe] = useState<User | null>(null);
+  const [checking, setChecking] = useState(!!session.token);
+  const [page, setPage] = useState<Page>(() => (location.hash.slice(1) as Page) || "overview");
+  useEffect(() => {
+    if (!session.token) return;
+    api.me().then(
+      (r) => {
+        if (r.user.role === "admin") setMe(r.user);
+        else session.set(null);
+      },
+      () => session.set(null),
+    ).finally(() => setChecking(false));
+  }, []);
+  useEffect(() => {
+    location.hash = page;
+  }, [page]);
+  if (checking) return null;
+  if (!me) return <Login onDone={setMe} />;
+  return (
+    <div className="shell">
+      <aside>
+        <div className="brand">
+          <PiBot avatar={{ shape: "blob", color: "orange", scheme: "dark" }} mood="idle" size={36} />
+          <span>Pi Bot</span>
+        </div>
+        <nav>
+          {PAGES.map((p) => (
+            <button key={p.id} className={p.id === page ? "active" : ""} onClick={() => setPage(p.id)}>
+              {p.label}
+            </button>
+          ))}
+        </nav>
+        <div className="me">
+          <span>{me.display_name}</span>
+          <button
+            className="ghost small"
+            onClick={() => {
+              session.set(null);
+              setMe(null);
+            }}
+          >
+            退出
+          </button>
+        </div>
+      </aside>
+      <main>
+        <h1>{PAGES.find((p) => p.id === page)!.label}</h1>
+        {page === "overview" && <OverviewPage />}
+        {page === "users" && <UsersPage me={me} />}
+        {page === "models" && <ModelsPage />}
+        {page === "devices" && <DevicesPage />}
+        {page === "usage" && <UsagePage />}
+      </main>
+    </div>
+  );
+}
+
+createRoot(document.getElementById("root")!).render(
+  <StrictMode>
+    <App />
+  </StrictMode>,
+);
