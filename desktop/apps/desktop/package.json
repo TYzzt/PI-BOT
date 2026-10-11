@@ -1,6 +1,6 @@
 {
-  "name": "@t-agnet/desktop",
-  "version": "0.1.0",
+  "name": "@pi-bot/desktop",
+  "version": "0.2.0",
   "private": true,
   "main": "dist/main.cjs",
   "config": {

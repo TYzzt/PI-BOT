@@ -29,7 +29,7 @@ export class FileCredentials implements Credentials {
 // Process-local fallback so an unpaired service never needs the device Keychain entry.
 export class MemoryCredentials implements Credentials { private values = new Map<string, string>(); async get(id: string) { return this.values.get(id) ?? null; } async set(id: string, value: string) { this.values.set(id, value); } async delete(id: string) { this.values.delete(id); } }
 export class Keychain implements Credentials {
-  constructor(private binary: string, private service = 'dev.t-agnet.models') {}
+  constructor(private binary: string, private service = 'dev.pi-bot.device') {}
   private request(operation: string, account: string, value?: string): Promise<{ value?: string | null }> {
     return new Promise((resolve, reject) => {
       const child = spawn(this.binary, [], { stdio: ['pipe', 'pipe', 'pipe'] });

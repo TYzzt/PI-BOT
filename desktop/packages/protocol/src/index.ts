@@ -1,55 +1,67 @@
-import { codingSchemas, type CodingApi } from './coding.js';
-import { cloudSchemas, type CloudApi } from './cloud.js';
-import { configSchemas, type ConfigApi } from './configs.js';
-import { browserSchemas, type BrowserApi } from './browser.js';
-export * from './coding.js';
-export * from './cloud.js';
-export * from './configs.js';
-export * from './browser.js';
 import { z } from 'zod';
+import { COLORS, SCHEMES, SHAPES, type Avatar, type Mood } from '@pi-bot/bot-face';
 
-export type RunState = 'running' | 'cancelling' | 'completed' | 'cancelled' | 'failed' | 'interrupted';
-export interface ModelConfig { id: string; name: string; baseUrl: string; modelId: string; contextWindow: number; maxTokens: number; isDefault: boolean; hasKey: boolean; revision?: number; }
-export interface Conversation { shared?: boolean | number; kind?: 'ask' | 'coding'; projectId?: string | null; id: string; title: string; modelConfigId: string; createdAt: number; updatedAt: number; }
-export interface Message { id: string; conversationId: string; runId: string; role: 'user' | 'assistant'; content: string; status: string; visibility: 'local_only' | 'shared'; }
-export interface Run { id: string; taskId: string; conversationId: string; state: RunState; error: string | null; }
-export interface Snapshot { models: ModelConfig[]; conversations: Conversation[]; activeRun: Run | null; testing: boolean; }
-export interface ConversationDetail { conversation: Conversation; messages: Message[]; runs: Run[]; }
-export interface AppEvent { seq?: number; project_id?: string; tool_call_id?: string; type: 'coding.changed' | 'cloud.changed' | 'tool.updated' | 'service.status' | 'state.changed' | 'run.started' | 'message.delta' | 'message.finalized' | 'run.completed' | 'run.cancelled' | 'run.failed'; conversation_id?: string; task_id?: string; run_id?: string; message_id?: string; content?: string; connected?: boolean; }
-export interface ModelInput { id?: string; name: string; baseUrl: string; modelId: string; apiKey?: string; contextWindow: number; maxTokens: number; }
-export interface Api extends CodingApi, CloudApi, ConfigApi, BrowserApi {
-  health: { input: Record<string, never>; output: { ok: boolean; version: string } };
-  snapshot: { input: Record<string, never>; output: Snapshot };
-  modelSave: { input: ModelInput; output: ModelConfig };
-  modelDelete: { input: { id: string; replacementId?: string }; output: null };
-  modelDefault: { input: { id: string }; output: null };
-  modelTest: { input: { id: string }; output: { ok: boolean } };
-  conversationCreate: { input: { modelConfigId: string; shared?: boolean }; output: Conversation };
-  conversationGet: { input: { id: string }; output: ConversationDetail };
-  conversationRename: { input: { id: string; title: string }; output: null };
-  conversationDelete: { input: { id: string }; output: null };
-  messageSend: { input: { conversationId: string; text: string; requestId: string }; output: Run };
-  runCancel: { input: { id: string }; output: null };
-}
-export type Method = keyof Api;
+export const avatarSchema = z.object({ shape: z.enum(SHAPES), color: z.enum(COLORS), scheme: z.enum(SCHEMES) });
 const id = z.string().uuid();
-const endpoint = z.string().url().refine(v => { const u = new URL(v); return ['https:', 'http:'].includes(u.protocol) && !u.username && !u.password && !u.search && !u.hash; }, 'API 根地址需使用 HTTP(S)，且不包含账号、查询参数或片段');
+
+/** Local service methods the Electron UI may call. Every cloud call is signed by the service. */
 export const schemas = {
-  ...codingSchemas,
-  ...cloudSchemas,
-  ...configSchemas,
-  ...browserSchemas,
-  health: z.object({}).strict(), snapshot: z.object({}).strict(),
-  modelSave: z.object({ id: id.optional(), name: z.string().trim().min(1).max(80), baseUrl: endpoint, modelId: z.string().trim().min(1).max(200), apiKey: z.string().max(8192).optional(), contextWindow: z.number().int().min(1024).max(4000000), maxTokens: z.number().int().min(16).max(1000000) }).strict().refine(v => v.maxTokens < v.contextWindow, '输出上限必须小于上下文长度'),
-  modelDelete: z.object({ id, replacementId: id.optional() }).strict(), modelDefault: z.object({ id }).strict(), modelTest: z.object({ id }).strict(),
-  conversationCreate: z.object({ modelConfigId: id, shared: z.boolean().optional() }).strict(), conversationGet: z.object({ id }).strict(),
-  conversationRename: z.object({ id, title: z.string().trim().min(1).max(120) }).strict(), conversationDelete: z.object({ id }).strict(),
-  messageSend: z.object({ conversationId: id, text: z.string().trim().min(1).max(100000), requestId: id }).strict(), runCancel: z.object({ id }).strict(),
-} satisfies Record<Method, z.ZodType>;
-export function parseInput<M extends Method>(method: M, input: unknown): Api[M]['input'] {
-  if (!Object.hasOwn(schemas, method)) throw new Error('不支持的请求');
-  const result = schemas[method].safeParse(input);
-  if (!result.success) throw new Error(result.error.issues.map(i => i.message).join('；'));
-  return result.data as Api[M]['input'];
+  status: z.object({}),
+  login: z.object({ serverUrl: z.string().url(), username: z.string().trim().min(1).max(64), password: z.string().min(1).max(200), label: z.string().trim().min(1).max(80) }),
+  logout: z.object({}),
+  models: z.object({}),
+  bots: z.object({}),
+  botCreate: z.object({ name: z.string().trim().min(1).max(40), persona: z.string().max(8000).default(''), model_id: id.nullable().optional(), avatar: avatarSchema }),
+  botUpdate: z.object({ id, name: z.string().trim().min(1).max(40).optional(), persona: z.string().max(8000).optional(), model_id: id.nullable().optional(), avatar: avatarSchema.optional() }),
+  botDelete: z.object({ id }),
+  messages: z.object({ botId: id, before: z.number().int().positive().optional() }),
+  send: z.object({ botId: id, text: z.string().trim().min(1).max(100000) }),
+  cancel: z.object({ runId: id }),
+  decide: z.object({ approvalId: id, decision: z.enum(['approve', 'reject']) }),
+} as const;
+export type Method = keyof typeof schemas;
+export function parseInput(method: Method, input: unknown) {
+  const schema = schemas[method];
+  if (!schema) throw new Error('未知方法');
+  const parsed = schema.safeParse(input ?? {});
+  if (!parsed.success) throw new Error(parsed.error.issues[0]?.message ?? '参数无效');
+  return parsed.data;
 }
-export interface DesktopBridge { chooseProjectDirectory(): Promise<string | null>; computerName(): Promise<string>; cloudServerUrl(): Promise<string>; call<M extends Method>(method: M, input: Api[M]['input']): Promise<Api[M]['output']>; subscribe(listener: (event: AppEvent) => void): () => void; openExternal(url: string): Promise<void>; openProjectFile(projectId: string, href: string): Promise<{ warning?: string }>; }
+
+export type RunStatus = 'queued' | 'running' | 'waiting_approval' | 'completed' | 'failed' | 'cancelled';
+export interface Run { id: string; bot_id: string; status: RunStatus; executor: 'mac' | 'cloud'; error: string | null; created_at: string; finished_at: string | null; assistant_message_id: string }
+export interface ToolEntry { id: string; name: string; state: 'running' | 'completed' | 'failed'; summary?: string }
+export interface Message { id: string; bot_id: string; run_id: string | null; seq: number; role: 'user' | 'assistant'; content: string; status: 'completed' | 'running' | 'failed' | 'cancelled'; executor: 'mac' | 'cloud' | null; tools: ToolEntry[]; created_at: string; updated_at: string }
+export interface Approval { id: string; run_id: string; bot_id: string; kind: 'outside_access'; path: string; reason: string; status: string; expires_at: string }
+export interface Bot { id: string; name: string; slug: string; persona: string; model_id: string | null; avatar: Avatar; created_at: string; last_active_at: string; latest_run: Run | null; last_message: { role: string; preview: string; status: string; created_at: string } | null; pending_approvals: Approval[] }
+export interface ModelOption { id: string; name: string; is_default: boolean }
+export interface MessagePage { messages: Message[]; has_more: boolean }
+
+export type Connection = 'signed_out' | 'connecting' | 'online' | 'offline' | 'revoked';
+export interface AccountState {
+  connection: Connection;
+  serverUrl: string | null;
+  user: { id: string; username: string; display_name: string } | null;
+  deviceLabel: string | null;
+  libraryRoot: string;
+}
+/** What the Mac is doing for a bot right now, for the character's mood. */
+export interface LocalActivity { botId: string; runId: string; tool: string | null; mood: Mood }
+
+export type AppEvent =
+  | { type: 'service.status'; connected: boolean }
+  | { type: 'account'; state: AccountState }
+  | { type: 'bots' }
+  | { type: 'bot'; bot_id: string }
+  | { type: 'delta'; bot_id: string; message_id: string; content: string }
+  | { type: 'activity'; activity: LocalActivity | null; botId: string }
+  | { type: 'bot.mood'; bot_id: string; name: string; mood: Mood };
+
+export interface DesktopBridge {
+  call(method: Method, input?: unknown): Promise<unknown>;
+  subscribe(listener: (event: AppEvent) => void): () => void;
+  computerName(): Promise<string>;
+  defaultServerUrl(): Promise<string>;
+  openLibrary(slug: string): Promise<void>;
+  openExternal(url: string): Promise<void>;
+}

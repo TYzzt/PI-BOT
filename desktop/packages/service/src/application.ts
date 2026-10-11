@@ -1,182 +1,176 @@
-import { SharedSync } from './cloud/shared.js';
-import { CloudChat, cloudChatMethods, type CloudChatMethod } from './cloud/chat.js';
-import { ConfigSync, configMethods, type ConfigMethod, type ConfigHost } from './cloud/configs.js';
-import { dataDir } from './paths.js';
-import { join } from 'node:path';
-import { CodingController } from './coding/controller.js';
-import { BrowserService } from './browser/index.js';
-import { JevConfig } from './browser/jev.js';
-import { browserSchemas } from '../../protocol/src/browser.js';
-import { codingSchemas } from '../../protocol/src/coding.js';
-import { cloudSchemas } from '../../protocol/src/cloud.js';
-import { CloudSync, type CloudOptions } from './cloud/sync.js';
-import { rmSync, mkdirSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import type { Api, Method, AppEvent, Run } from '../../protocol/src/index.js';
-import { parseInput } from '../../protocol/src/index.js';
-import { Store } from './store.js';
-import { MemoryCredentials, type Credentials } from './keychain.js';
-import type { AgentFactory, AgentHandle } from './pi-adapter.js';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import type { Mood } from '@pi-bot/bot-face';
+import type { AgentFactory } from '@pi-bot/agent';
+import type { AccountState, AppEvent, Bot, Connection, LocalActivity, Method, MessagePage, ModelOption } from '../../protocol/src/index.js';
+import { checkServerUrl, cloudFetch, CloudHttpError, CloudSocket, newIdentity, signer, type Signer } from './cloud.js';
+import type { Credentials } from './keychain.js';
+import { Executor, agentDirFor, type RunContext } from './executor.js';
+import { previewList, previewRead } from './library.js';
+import type { LogEvent } from './log.js';
 
-export class Application {
-  private active: { run: Run; assistantId: string; agent?: AgentHandle; cancelled: boolean; done?: Promise<void> } | null = null;
-  private testing = false;
-  private serial: Promise<unknown> = Promise.resolve();
-  readonly coding: CodingController; readonly cloud: CloudSync; readonly shared: SharedSync; readonly cloudChat: CloudChat; readonly configs: ConfigSync; readonly browser: BrowserService;
-  constructor(readonly store: Store, private credentials: Credentials, private factory: AgentFactory, private emit: (event: AppEvent) => void, cloud: { dataDir?: string; credentials?: Credentials; options?: CloudOptions; configs?: { dir?: string; intervalMs?: number; env?: ConfigHost['env'] }; browser?: { profileDir?: string; executable?: string; headless?: boolean; args?: string[]; lockTimeoutMs?: number; fetch?: typeof fetch } } = {}) {
-    const rawFactory = factory;
-    const localFactory: AgentFactory = async (model, key, existing, id, ephemeral, options) => {
-      if (ephemeral) return rawFactory(model, key, existing, id, ephemeral, options);
-      const cwd = options?.cwd ?? join(cloud.dataDir ?? dataDir, 'pi', 'empty-workspace');
-      const allowMcp = !options || options.tools.some(t => ['run_command', 'write_file', 'edit_file'].includes(t.name));
-      const plugins = this.configs.agentPlugins(cwd, allowMcp);
-      if (!plugins) return rawFactory(model, key, existing, id, ephemeral, options);
-      if (!options) mkdirSync(cwd, { recursive: true, mode: 0o700 });
-      return rawFactory(model, key, existing, id, ephemeral, { ...(options ?? { cwd, tools: [], systemPrompt: '你是 T-AGNET 的中文助手，可使用已启用的 Skills 与 MCP。没有本机项目文件、终端或浏览器工具。' }), plugins });
-    };
-    this.factory = localFactory;
-    const b = cloud.browser ?? {};
-    this.browser = new BrowserService({ profileDir: b.profileDir ?? join(dataDir, 'chrome-profile'), executable: b.executable, headless: b.headless, args: b.args, lockTimeoutMs: b.lockTimeoutMs, jev: new JevConfig(store.db, credentials, b.fetch) });
-    this.coding = new CodingController(store, credentials, localFactory, emit, () => this.idle(), this.browser, cloud.dataDir ?? dataDir);
-    this.cloud = new CloudSync({ store, coding: this.coding, credentials: cloud.credentials ?? new MemoryCredentials(), serial: fn => this.enqueue(fn), busy: () => this.busy(), emit }, cloud.options);
-    this.shared = new SharedSync({ store, keys: credentials, cloud: this.cloud, coding: this.coding, busy: () => this.busy(), serial: fn => this.enqueue(fn), call: (method, input) => this.dispatch(method as Method, input, true), emit });
-    this.cloudChat = new CloudChat({ paired: () => !!this.cloud.db.link(), request: (method, path, body) => this.cloud.request(method, path, body) });
-    this.configs = new ConfigSync({ paired: () => !!this.cloud.db.link(), connected: () => this.cloud.connected, request: (method, path, body) => this.cloud.request(method, path, body), keys: credentials, db: store.db, dir: cloud.configs?.dir ?? join(dataDir, 'skills'), env: cloud.configs?.env, emit: () => emit({ type: 'cloud.changed' }) }, cloud.configs?.intervalMs);
-    void this.cloud.start();
-  }
-  private enqueue<T>(fn: () => Promise<T>): Promise<T> { const result = this.serial.then(fn); this.serial = result.catch(() => {}); return result; }
-  call<M extends Method>(method: M, raw: unknown): Promise<Api[M]['output']> {
-    const input = parseInput(method, raw);
-    // Cloud chat is plain server I/O: it must not wait behind local generation or sync work in the serial queue.
-    if (cloudChatMethods.has(method)) return this.cloudChat.dispatch(method as CloudChatMethod, input as never) as Promise<Api[M]['output']>;
-    if (configMethods.has(method)) return this.configs.dispatch(method as ConfigMethod, input as never) as Promise<Api[M]['output']>;
-    if (Object.hasOwn(browserSchemas, method)) return this.browserCall(method, input) as Promise<Api[M]['output']>;
-    const result = this.enqueue(() => this.dispatch(method, input));
-    return result.then(value => value && typeof value === 'object' && 'deferred' in value ? (value as { deferred: Promise<unknown> }).deferred : value) as Promise<Api[M]['output']>;
-  }
-  private async browserCall(method: Method, data: any): Promise<unknown> {
-    const jev = this.browser.jev;
-    switch (method) {
-      case 'jevGet': return jev.status();
-      case 'jevSave': return jev.save(data);
-      case 'jevDelete': return jev.remove();
-      case 'jevTest': return jev.test();
-      case 'browserStatus': return this.browser.status();
-    }
-    throw new Error('不支持的浏览器请求');
-  }
-  private changed() { this.emit({ type: 'state.changed' }); }
-  private busy() { return !!(this.active || this.testing || this.coding.active); }
-  private idle() { if (this.busy()) throw new Error('正在生成或测试连接，请先等待当前请求完成'); }
-  private async dispatch(method: Method, data: any, syncing = false): Promise<unknown> {
-    if (method === 'sharedStatus') return this.shared.status();
-    if (method === 'sharedConversation') { await this.shared.share(data.ids, data.shared); return null; }
-    if (method === 'sharedResolve') { await this.shared.resolve(data.id, data.choice); return null; }
-    if (method === 'cloudUnpair') return this.cloud.dispatch(method, data);
-    if (method === 'cloudPair') {
-      const previous = this.cloud.db.detached();
-      const result = await this.cloud.dispatch(method, data);
-      const current = this.cloud.db.link()!;
-      if (!previous || previous.serverUrl !== current.serverUrl || previous.deviceId !== current.deviceId) await this.shared.reset();
-      return result;
-    }
-    if (Object.hasOwn(cloudSchemas, method)) return this.cloud.dispatch(method as Extract<Method, `cloud${string}`>, data);
-    if (method === 'codingGet') { const detail = await this.coding.dispatch(method, data) as Api['codingGet']['output']; return { ...detail, cloud: this.cloud.taskInfo(detail.task.id) }; }
-    if (Object.hasOwn(codingSchemas, method)) return this.coding.dispatch(method, data);
-    switch (method) {
-      case 'health': return { ok: true, version: '0.2.0' };
-      case 'snapshot': return { models: this.store.models(), conversations: this.store.conversations(), activeRun: this.active ? this.store.run(this.active.run.id) : this.coding.active ? this.store.run(this.coding.active.run.id) : null, testing: this.testing };
-      case 'modelSave': {
-        this.idle(); const existing = data.id ? this.store.model(data.id) : null; const id = existing?.id ?? randomUUID();
-        if (!existing && !data.apiKey) throw new Error('请填写 API Key；无需认证的本地端点可填入占位值');
-        if (data.apiKey) await this.credentials.set(id, data.apiKey);
-        const m = { id, revision: (existing?.revision ?? 0) + 1, name: data.name, baseUrl: data.baseUrl, modelId: data.modelId, contextWindow: data.contextWindow, maxTokens: data.maxTokens, isDefault: existing?.isDefault ?? this.store.models().length === 0, hasKey: !!data.apiKey || !!existing?.hasKey };
-        this.store.putModel(m); this.changed(); return m;
-      }
-      case 'modelDelete': {
-        this.idle(); this.store.model(data.id);
-        if (data.replacementId) { this.store.model(data.replacementId); if (data.replacementId === data.id) throw new Error('替代模型不能是当前模型'); }
-        if (this.store.conversations().some(c => c.modelConfigId === data.id) && !data.replacementId) throw new Error('此模型被会话引用，请选择替代模型');
-        if (this.coding.modelReferences(data.id) && !data.replacementId) throw new Error('此模型被编程任务引用，请选择替代模型');
-        if (!syncing) await this.shared.beforeDeleteModel(data.id, data.replacementId);
-        await this.credentials.delete(data.id); if (data.replacementId) this.coding.replaceModel(data.id, data.replacementId); this.store.deleteModel(data.id, data.replacementId); this.changed(); return null;
-      }
-      case 'modelDefault': this.idle(); this.store.defaultModel(data.id); this.changed(); return null;
-      case 'modelTest': {
-        this.idle(); const m = this.store.model(data.id); this.store.assertModelReady(m.id); this.testing = true; this.changed();
-        // Do not block other RPCs behind a network test. The busy flag serializes model calls.
-        const operation = this.testModel(m);
-        return { deferred: operation };
-      }
-      case 'conversationCreate': { const c = this.store.createConversation(data.modelConfigId, data.shared); this.changed(); return c; }
-      case 'conversationGet': return { conversation: this.store.conversation(data.id), messages: this.store.messages(data.id), runs: this.store.runs(data.id) };
-      case 'conversationRename': this.store.rename(data.id, data.title); this.changed(); return null;
-      case 'conversationDelete': {
-        if (this.active?.run.conversationId === data.id || this.coding.active?.run.conversationId === data.id) throw new Error('请先停止该会话的生成');
-        if (!syncing) await this.shared.beforeDeleteConversation(data.id);
-        this.coding.removeConversation(data.id);
-        this.store.conversation(data.id);
-        const sessionPath = this.store.sessionPath(data.id);
-        if (sessionPath) rmSync(sessionPath, { force: true });
-        this.store.deleteConversation(data.id); this.changed(); return null;
-      }
-      case 'messageSend': {
-        const previous = this.store.existing(data.requestId, data.conversationId, data.text); if (previous) return previous;
-        this.idle(); const c = this.store.conversation(data.conversationId); if (c.kind === 'coding') throw new Error('编程会话请使用规划接口'); const model = this.store.model(c.modelConfigId); this.store.assertModelReady(model.id);
-        const entry = this.store.start(c.id, data.text, data.requestId); this.active = { ...entry, cancelled: false };
-        const active = this.active;
-        this.emit({ type: 'run.started', conversation_id: c.id, task_id: entry.run.taskId, run_id: entry.run.id, message_id: entry.assistantId });
-        active.done = this.execute(active, model, data.text); return entry.run;
-      }
-      case 'runCancel': {
-        if (await this.coding.cancel(data.id)) return null;
-        const active = this.active;
-        if (active && active.run.id === data.id) { active.cancelled = true; this.store.finish(data.id, 'cancelling'); this.changed(); await active.agent?.abort(); }
-        else this.store.run(data.id);
-        return null;
-      }
-    }
-  }
-  private async testModel(model: ReturnType<Store['model']>) {
-    let agent: AgentHandle | undefined;
-    try { const key = await this.credentials.get(model.id); if (!key) throw new Error('本机缺少 API Key，请重新保存');
-      agent = await this.factory({ ...model, maxTokens: Math.min(64, model.maxTokens) }, key, null, randomUUID(), true);
-      await agent.prompt('Reply with OK.', () => {}); return { ok: true };
-    } finally { agent?.dispose(); this.testing = false; this.changed(); }
-  }
-  private async execute(active: NonNullable<Application['active']>, model: ReturnType<Store['model']>, text: string) {
-    let content = '', lastFlush = 0, error: string | null = null; let state: 'completed' | 'cancelled' | 'failed' = 'completed';
-    const ids = { conversation_id: active.run.conversationId, task_id: active.run.taskId, run_id: active.run.id, message_id: active.assistantId };
-    try {
-      const key = await this.credentials.get(model.id); if (!key) throw new Error('本机缺少 API Key，请重新保存');
-      if (active.cancelled) throw new Error('CANCELLED');
-      const agent = await this.factory(model, key, this.store.sessionPath(active.run.conversationId), active.run.conversationId);
-      active.agent = agent; if (agent.sessionPath) this.store.setSessionPath(active.run.conversationId, agent.sessionPath);
-      if (active.cancelled) throw new Error('CANCELLED');
-      await agent.prompt(text, value => {
-        content = value.replaceAll(key, '[已隐藏凭据]');
-        if (Date.now() - lastFlush > 150) { this.store.updateMessage(active.assistantId, content, 'running'); lastFlush = Date.now(); }
-        this.emit({ type: 'message.delta', ...ids, content });
-      });
-    } catch (e) {
-      state = active.cancelled || (e instanceof Error && e.message === 'CANCELLED') ? 'cancelled' : 'failed';
-      if (state === 'failed') error = safeFailure(e);
-    } finally {
-      if (active.cancelled) state = 'cancelled';
-      active.agent?.dispose();
-      this.store.transaction(() => { this.store.updateMessage(active.assistantId, content, state); this.store.finish(active.run.id, state, error); });
-      if (this.active === active) this.active = null;
-      this.emit({ type: 'message.finalized', ...ids, content });
-      this.emit({ type: state === 'completed' ? 'run.completed' : state === 'cancelled' ? 'run.cancelled' : 'run.failed', ...ids }); this.changed();
-    }
-  }
-  async shutdown() { await this.configs.stop(); await this.shared.stop(); this.cloud.stop(); await this.coding.shutdown(); if (this.active) { const active = this.active; active.cancelled = true; await active.agent?.abort(); await active.done; } await this.browser.close(); }
+interface Account {
+  serverUrl: string;
+  deviceId: string;
+  deviceLabel: string;
+  user: { id: string; username: string; display_name: string };
 }
-export function safeFailure(error: unknown): string {
-  const text = error instanceof Error ? error.message : '';
-  if (text.startsWith('模型请求失败')) return '模型请求失败，请检查 API Key、模型名、Base URL、接口兼容性和网络后重试';
-  if (text.includes('凭据') || text.includes('API Key')) return '无法读取模型凭据，请重新保存 API Key';
-  if (text.includes('会话文件缺失')) return '私有会话文件缺失，请新建会话';
-  if (text.includes('未返回文本')) return '模型未返回文本，请检查 Chat Completions 接口配置';
-  return '模型请求失败，请检查 API Key、模型名、Base URL、接口兼容性和网络后重试';
+export interface ApplicationOptions {
+  dataDir: string;
+  libraryRoot: string;
+  credentials: Credentials;
+  emit(event: AppEvent): void;
+  log?(event: LogEvent, detail?: Record<string, string>): void;
+  factory?: AgentFactory;
+  backoff?: { baseMs: number; maxMs: number };
+}
+
+/**
+ * The Mac harness: binds this computer to a Pi Bot account, keeps the device
+ * socket open, executes bot runs locally and proxies UI calls to the server.
+ */
+export class Application {
+  private account: Account | null = null;
+  private sign: Signer | null = null;
+  private socket: CloudSocket | null = null;
+  private executor: Executor | null = null;
+  private connection: Connection = 'signed_out';
+  private activities = new Map<string, LocalActivity>();
+  constructor(private o: ApplicationOptions) {}
+  private get accountFile() { return join(this.o.dataDir, 'account.json'); }
+
+  async start() {
+    if (!existsSync(this.accountFile)) return;
+    try {
+      const account = JSON.parse(readFileSync(this.accountFile, 'utf8')) as Account;
+      const key = await this.o.credentials.get(account.deviceId);
+      if (!key) throw new Error('missing key');
+      this.connect(account, key);
+    } catch {
+      this.setConnection('signed_out');
+    }
+  }
+  state(): AccountState {
+    return { connection: this.connection, serverUrl: this.account?.serverUrl ?? null, user: this.account?.user ?? null, deviceLabel: this.account?.deviceLabel ?? null, libraryRoot: this.o.libraryRoot };
+  }
+  private setConnection(connection: Connection) {
+    if (this.connection === connection) return;
+    this.connection = connection;
+    this.o.emit({ type: 'account', state: this.state() });
+  }
+  private connect(account: Account, privateKey: string) {
+    this.account = account;
+    this.sign = signer(account.deviceId, privateKey);
+    this.executor = new Executor({
+      libraryRoot: this.o.libraryRoot,
+      agentDir: agentDirFor(this.o.dataDir),
+      proxyUrl: `${account.serverUrl}/llm/v1`,
+      llmToken: async botId => (await this.cloud<{ token: string }>('POST', '/device/llm-token', { bot_id: botId })).token,
+      send: m => { this.socket?.send(m); },
+      activity: (run, tool, mood) => this.activity(run, tool, mood),
+      factory: this.o.factory,
+    });
+    this.socket = new CloudSocket(account.serverUrl, this.sign, {
+      open: () => { this.o.log?.('cloud.online'); this.setConnection('online'); this.o.emit({ type: 'bots' }); },
+      close: authFailed => {
+        this.o.log?.(authFailed ? 'cloud.revoked' : 'cloud.offline');
+        this.executor?.stopAll();
+        if (authFailed) { this.socket?.stop(); this.setConnection('revoked'); }
+        else this.setConnection('offline');
+      },
+      message: m => void this.onMessage(m),
+    }, this.o.backoff);
+    this.setConnection('connecting');
+    this.socket.start();
+  }
+  private activity(run: RunContext, tool: string | null, mood: Mood | null) {
+    const activity = mood ? { botId: run.bot.id, runId: run.run_id, tool, mood } : null;
+    if (activity) this.activities.set(run.bot.id, activity); else this.activities.delete(run.bot.id);
+    this.o.emit({ type: 'activity', botId: run.bot.id, activity });
+    this.o.emit({ type: 'bot.mood', bot_id: run.bot.id, name: run.bot.name, mood: mood ?? 'idle' });
+  }
+  private async onMessage(m: Record<string, any>) {
+    const executor = this.executor;
+    if (!executor) return;
+    switch (m.type) {
+      case 'run':
+        this.o.log?.('run.started', { run: String(m.run?.run_id) });
+        await executor.start(m.run as RunContext);
+        this.o.log?.('run.finished', { run: String(m.run?.run_id) });
+        return;
+      case 'cancel': executor.cancel(m.run_id); return;
+      case 'approval_created': executor.approvalCreated(m.run_id, m.request_id, m.approval_id); return;
+      case 'approval': executor.approvalDecided(m.run_id, m.approval_id, m.decision); return;
+      case 'rpc': {
+        try {
+          const p = m.params ?? {};
+          const result = m.method === 'files.list' ? await previewList(this.o.libraryRoot, String(p.slug), String(p.path ?? ''))
+            : m.method === 'files.read' ? await previewRead(this.o.libraryRoot, String(p.slug), String(p.path ?? ''))
+            : (() => { throw new Error('不支持的请求'); })();
+          this.socket?.send({ type: 'rpc_result', id: m.id, ok: true, result });
+        } catch (e) {
+          const missing = (e as NodeJS.ErrnoException).code === 'ENOENT';
+          this.socket?.send({ type: 'rpc_result', id: m.id, ok: false, error: missing ? '文件不存在' : e instanceof Error ? e.message : '读取失败' });
+        }
+        return;
+      }
+      case 'event': {
+        const e = m.event ?? {};
+        if (e.type === 'bot' || e.type === 'delta' || e.type === 'bots') this.o.emit(e as AppEvent);
+        return;
+      }
+    }
+  }
+  private cloud<T>(method: string, path: string, body?: unknown) {
+    if (!this.account || !this.sign) throw new Error('请先登录');
+    return cloudFetch<T>(this.account.serverUrl, method, path, { body, signer: this.sign }).catch(error => {
+      if (error instanceof CloudHttpError && error.status === 401 && path !== '/device/llm-token') { this.socket?.stop(); this.setConnection('revoked'); }
+      throw error;
+    });
+  }
+
+  async login(input: { serverUrl: string; username: string; password: string; label: string }) {
+    const serverUrl = checkServerUrl(input.serverUrl);
+    const auth = await cloudFetch<{ access_token: string; user: Account['user'] }>(serverUrl, 'POST', '/auth/login', { body: { username: input.username, password: input.password } });
+    const identity = newIdentity();
+    const reg = await cloudFetch<{ device: { id: string } }>(serverUrl, 'POST', '/devices/register', { body: { public_key: identity.publicKey, label: input.label }, headers: { authorization: `Bearer ${auth.access_token}` } });
+    await this.logout();
+    const account: Account = { serverUrl, deviceId: reg.device.id, deviceLabel: input.label, user: { id: auth.user.id, username: auth.user.username, display_name: auth.user.display_name } };
+    await this.o.credentials.set(account.deviceId, identity.privateKey);
+    mkdirSync(this.o.dataDir, { recursive: true, mode: 0o700 });
+    const tmp = `${this.accountFile}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(account), { mode: 0o600 });
+    renameSync(tmp, this.accountFile);
+    this.connect(account, identity.privateKey);
+    return this.state();
+  }
+  async logout() {
+    this.executor?.stopAll();
+    this.socket?.stop();
+    if (this.account) await this.o.credentials.delete(this.account.deviceId).catch(() => {});
+    rmSync(this.accountFile, { force: true });
+    this.account = null; this.sign = null; this.socket = null; this.executor = null;
+    this.activities.clear();
+    this.setConnection('signed_out');
+    return this.state();
+  }
+  async call(method: Method, input: any): Promise<unknown> {
+    switch (method) {
+      case 'status': return { ...this.state(), activities: [...this.activities.values()] };
+      case 'login': return this.login(input);
+      case 'logout': return this.logout();
+      case 'models': return this.cloud<ModelOption[]>('GET', '/models');
+      case 'bots': return this.cloud<{ bots: Bot[] }>('GET', '/bots');
+      case 'botCreate': return this.cloud<Bot>('POST', '/bots', input);
+      case 'botUpdate': { const { id, ...patch } = input; return this.cloud<Bot>('PATCH', `/bots/${id}`, patch); }
+      case 'botDelete': return this.cloud('DELETE', `/bots/${input.id}`);
+      case 'messages': return this.cloud<MessagePage>('GET', `/bots/${input.botId}/messages?limit=50${input.before ? `&before=${input.before}` : ''}`);
+      case 'send': return this.cloud('POST', `/bots/${input.botId}/messages`, { text: input.text, request_id: randomUUID() });
+      case 'cancel': this.executor?.cancel(input.runId); return this.cloud('POST', `/runs/${input.runId}/cancel`);
+      case 'decide': return this.cloud('POST', `/approvals/${input.approvalId}`, { decision: input.decision });
+    }
+    throw new Error('未知方法');
+  }
+  async shutdown() { this.executor?.stopAll(); this.socket?.stop(); }
 }

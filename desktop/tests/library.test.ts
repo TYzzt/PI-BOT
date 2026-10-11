@@ -1,0 +1,118 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync, mkdirSync, existsSync, readFileSync, realpathSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { libraryDir, libraryTools, OutsideError, previewList, previewRead, Sandbox } from '../packages/service/src/library.js';
+
+function temp() {
+  const path = realpathSync(mkdtempSync(join(tmpdir(), 'pi-bot-lib-')));
+  return { path, cleanup: () => rmSync(path, { recursive: true, force: true }) };
+}
+const call = async (tools: ReturnType<typeof libraryTools>, name: string, args: object, signal?: AbortSignal) => {
+  const tool = tools.find(t => t.name === name)!;
+  const r = await (tool.execute as any)('id', args, signal);
+  return r.content[0].text as string;
+};
+
+test('library folders are created per slug and slugs are validated', async () => {
+  const dir = temp();
+  try {
+    const lib = await libraryDir(join(dir.path, 'pi-bot'), 'research-bot');
+    assert.equal(lib, join(dir.path, 'pi-bot', 'research-bot'));
+    assert.ok(existsSync(lib));
+    await assert.rejects(libraryDir(dir.path, '../etc'), /资料库名称无效/);
+    await assert.rejects(libraryDir(dir.path, 'A'), /资料库名称无效/);
+  } finally { dir.cleanup(); }
+});
+
+test('sandbox keeps file tools inside the library unless the user approves', async () => {
+  const dir = temp();
+  try {
+    const root = await libraryDir(dir.path, 'bot');
+    const outside = join(dir.path, 'outside');
+    mkdirSync(outside);
+    writeFileSync(join(outside, 'secret.txt'), 'top secret');
+    symlinkSync(outside, join(root, 'link'));
+    const sandbox = new Sandbox(root);
+    assert.equal(await sandbox.resolve('notes/a.md'), join(root, 'notes/a.md'));
+    await assert.rejects(sandbox.resolve('../outside/secret.txt'), OutsideError);
+    await assert.rejects(sandbox.resolve(join(outside, 'secret.txt')), OutsideError);
+    await assert.rejects(sandbox.resolve('link/secret.txt'), OutsideError, 'symlinks cannot escape');
+    await assert.rejects(sandbox.resolve('link/new.txt'), OutsideError, 'nor create files through a symlink');
+    await assert.rejects(sandbox.allow('/'), /不能授权整个磁盘/);
+    await sandbox.allow(outside);
+    assert.equal(await sandbox.resolve('link/secret.txt'), join(outside, 'secret.txt'));
+  } finally { dir.cleanup(); }
+});
+
+test('file tools read, write, edit and search inside the library', async () => {
+  const dir = temp();
+  try {
+    const root = await libraryDir(dir.path, 'bot');
+    const tools = libraryTools(new Sandbox(root), { requestOutside: async () => false });
+    assert.match(await call(tools, 'write_file', { path: 'notes/today.md', content: '# 今天\n买牛奶\n买面包\n' }), /已写入 notes\/today.md/);
+    assert.equal(readFileSync(join(root, 'notes/today.md'), 'utf8'), '# 今天\n买牛奶\n买面包\n');
+    assert.match(await call(tools, 'list_files', {}), /📁 notes\//);
+    assert.match(await call(tools, 'read_file', { path: 'notes/today.md', offset: 2, limit: 1 }), /^买牛奶$/);
+    await assert.rejects(call(tools, 'edit_file', { path: 'notes/today.md', old_text: '买', new_text: '卖' }), /出现了 2 次/);
+    assert.match(await call(tools, 'edit_file', { path: 'notes/today.md', old_text: '买牛奶', new_text: '买豆浆' }), /1 处/);
+    assert.match(await call(tools, 'search_files', { pattern: '豆浆', glob: '**/*.md' }), /notes\/today.md:2: 买豆浆/);
+    assert.equal(await call(tools, 'search_files', { pattern: '豆浆', glob: '*.txt' }), '没有匹配');
+    await assert.rejects(call(tools, 'read_file', { path: '/etc/hosts' }), OutsideError);
+  } finally { dir.cleanup(); }
+});
+
+test('run_command runs in the library with a timeout and can be cancelled', async () => {
+  const dir = temp();
+  try {
+    const root = await libraryDir(dir.path, 'bot');
+    const tools = libraryTools(new Sandbox(root), { requestOutside: async () => false });
+    const r = JSON.parse(await call(tools, 'run_command', { command: 'pwd && echo $PI_BOT_LIBRARY && exit 3' }));
+    assert.equal(r.exit_code, 3);
+    assert.equal(r.output.trim().split('\n')[0], root);
+    const slow = JSON.parse(await call(tools, 'run_command', { command: 'sleep 5', timeout_seconds: 1 }));
+    assert.equal(slow.timed_out, true);
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 200);
+    await assert.rejects(call(tools, 'run_command', { command: 'sleep 5' }, controller.signal), /CANCELLED/);
+  } finally { dir.cleanup(); }
+});
+
+test('request_outside_access asks the user and extends the sandbox only when approved', async () => {
+  const dir = temp();
+  try {
+    const root = await libraryDir(dir.path, 'bot');
+    const outside = join(dir.path, 'Desktop');
+    mkdirSync(outside);
+    writeFileSync(join(outside, 'todo.txt'), 'hi');
+    const asked: string[] = [];
+    let answer = false;
+    const tools = libraryTools(new Sandbox(root), { requestOutside: async (path, reason) => { asked.push(`${path}|${reason}`); return answer; } });
+    assert.match(await call(tools, 'request_outside_access', { path: outside, reason: '整理桌面' }), /用户拒绝/);
+    await assert.rejects(call(tools, 'read_file', { path: join(outside, 'todo.txt') }), OutsideError);
+    answer = true;
+    assert.match(await call(tools, 'request_outside_access', { path: outside, reason: '整理桌面' }), /已批准/);
+    assert.equal(await call(tools, 'read_file', { path: join(outside, 'todo.txt') }), 'hi');
+    assert.match(await call(tools, 'request_outside_access', { path: join(outside, 'todo.txt'), reason: 'again' }), /无需申请/);
+    assert.deepEqual(asked, [`${outside}|整理桌面`, `${outside}|整理桌面`]);
+  } finally { dir.cleanup(); }
+});
+
+test('phone previews list and read only inside the library', async () => {
+  const dir = temp();
+  try {
+    const root = await libraryDir(dir.path, 'bot');
+    mkdirSync(join(root, 'img'));
+    writeFileSync(join(root, 'readme.md'), '你好');
+    writeFileSync(join(root, 'img', 'dot.png'), Buffer.from('89504e470d0a1a0a', 'hex'));
+    writeFileSync(join(root, 'blob.bin'), Buffer.from([0, 1, 2, 3]));
+    const list = await previewList(dir.path, 'bot', '');
+    assert.deepEqual(list.entries.map(e => e.name), ['img', 'blob.bin', 'readme.md']);
+    assert.deepEqual((await previewRead(dir.path, 'bot', 'readme.md')) as any, { ...(await previewRead(dir.path, 'bot', 'readme.md')), kind: 'text', content: '你好' });
+    assert.equal((await previewRead(dir.path, 'bot', 'img/dot.png')).kind, 'image');
+    assert.equal((await previewRead(dir.path, 'bot', 'blob.bin')).kind, 'binary');
+    await assert.rejects(previewList(dir.path, 'bot', '..'), OutsideError);
+    await assert.rejects(previewRead(dir.path, 'bot', '/etc/hosts'), OutsideError);
+  } finally { dir.cleanup(); }
+});

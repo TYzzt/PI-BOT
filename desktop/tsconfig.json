@@ -14,14 +14,14 @@
     ],
     "types": [
       "node"
-    ]
+    ],
+    "resolveJsonModule": true
   },
   "include": [
     "apps/**/*.ts",
     "apps/**/*.tsx",
     "packages/**/*.ts",
     "tests/**/*.ts",
-    "playwright.config.ts",
     "scripts/**/*.ts"
   ]
 }

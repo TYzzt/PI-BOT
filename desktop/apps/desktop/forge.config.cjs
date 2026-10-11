@@ -1,6 +1,7 @@
 module.exports = {
   packagerConfig: {
-    name: 'T-AGNET',
+    name: 'Pi Bot',
+    appBundleId: 'dev.pi-bot.desktop',
     asar: true,
     extraResource: ['./runtime'],
     ignore: [/^\/runtime($|\/)/, /^\/src($|\/)/, /^\/ui($|\/)/],

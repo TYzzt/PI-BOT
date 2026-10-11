@@ -5,7 +5,7 @@ func reply(_ data: [String: Any]) { let encoded = try! JSONSerialization.data(wi
 // 允许本机任何程序读取。这样助手重新签名后，不会再要求输入登录钥匙串密码。
 func openAccess() -> SecAccess? {
  var access: SecAccess?
- guard SecAccessCreate("T-AGNET" as CFString, [] as CFArray, &access) == errSecSuccess, let access else { return nil }
+ guard SecAccessCreate("Pi Bot" as CFString, [] as CFArray, &access) == errSecSuccess, let access else { return nil }
  var list: CFArray?
  guard SecAccessCopyACLList(access, &list) == errSecSuccess, let list else { return access }
  let prompt = SecKeychainPromptSelector(rawValue: 0x0020 | 0x0080)
@@ -13,12 +13,12 @@ func openAccess() -> SecAccess? {
  var apps: CFArray?
  var desc: CFString?
  var current = SecKeychainPromptSelector(rawValue: 0)
- if SecACLCopyContents(acl, &apps, &desc, &current) == errSecSuccess { SecACLSetContents(acl, nil, desc ?? "T-AGNET" as CFString, prompt) }
+ if SecACLCopyContents(acl, &apps, &desc, &current) == errSecSuccess { SecACLSetContents(acl, nil, desc ?? "Pi Bot" as CFString, prompt) }
  return access
 }
 do {
  let request = try JSONDecoder().decode(Request.self, from: FileHandle.standardInput.readDataToEndOfFile())
- guard request.service.hasPrefix("dev.t-agnet."), UUID(uuidString: request.account) != nil else { throw NSError(domain: "invalid", code: 1) }
+ guard request.service.hasPrefix("dev.pi-bot."), UUID(uuidString: request.account) != nil else { throw NSError(domain: "invalid", code: 1) }
  let base: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: request.service, kSecAttrAccount as String: request.account]
  var status: OSStatus = errSecSuccess
  switch request.operation {

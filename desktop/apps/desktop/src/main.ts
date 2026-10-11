@@ -3,11 +3,11 @@ import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
-import { dataDir } from '../../../packages/service/src/paths.js';
 import { pathToFileURL } from 'node:url';
+import { dataDir, libraryRoot } from '../../../packages/service/src/paths.js';
+import { libraryDir } from '../../../packages/service/src/library.js';
 import { ServiceClient } from './service-client.js';
-import { parseInput, type Method, type Project } from '../../../packages/protocol/src/index.js';
-import { resolveProjectFile } from './project-file.js';
+import { parseInput, type Method } from '../../../packages/protocol/src/index.js';
 
 mkdirSync(join(dataDir, 'electron'), { recursive: true, mode: 0o700 });
 app.setPath('userData', join(dataDir, 'electron'));
@@ -16,7 +16,7 @@ let serviceProcess: ChildProcess | undefined;
 const page = pathToFileURL(join(__dirname, '../ui-dist/index.html')).href;
 const client = new ServiceClient(event => window?.webContents.send('agent:event', event));
 function validSender(event: Electron.IpcMainInvokeEvent) { if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame || event.senderFrame.url !== page) throw new Error('不受信任的 IPC 来源'); }
-const CLOUD_SERVER_URL = 'https://aicloud-app.lenovo.com.cn/tagent';
+const DEFAULT_SERVER_URL = 'https://aicloud-app.lenovo.com.cn/pibot';
 function computerName() {
   try {
     const name = execFileSync('scutil', ['--get', 'ComputerName'], { encoding: 'utf8', timeout: 2000 }).trim();
@@ -30,7 +30,7 @@ function startBundledService() {
   serviceProcess = spawn(join(root, 'bin', 'node'), [join(root, 'server.mjs')], {
     cwd: root,
     detached: true,
-    env: { ...process.env, T_AGNET_KEYCHAIN_HELPER: join(root, 'keychain') },
+    env: { ...process.env, PI_BOT_KEYCHAIN_HELPER: join(root, 'keychain') },
     stdio: 'ignore',
   });
   serviceProcess.unref();
@@ -44,27 +44,22 @@ function present(target: BrowserWindow) {
 }
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
-  app.setName('T-AGNET');
+  app.setName('Pi Bot');
   if (process.platform === 'darwin') app.setActivationPolicy('regular');
   app.on('second-instance', () => { if (window) present(window); });
   app.whenReady().then(() => {
-    ipcMain.handle('agent:chooseProjectDirectory', async event => { validSender(event); const result = await dialog.showOpenDialog(window!, { title: '选择 Git 项目目录', properties: ['openDirectory'] }); return result.canceled ? null : result.filePaths[0] ?? null; });
     ipcMain.handle('agent:computerName', event => { validSender(event); return computerName(); });
-    ipcMain.handle('agent:cloudServerUrl', event => { validSender(event); return process.env.T_AGNET_SHARED_URL || CLOUD_SERVER_URL; });
+    ipcMain.handle('agent:defaultServerUrl', event => { validSender(event); return process.env.PI_BOT_SERVER_URL || DEFAULT_SERVER_URL; });
     ipcMain.handle('agent:call', async (event, method: Method, input: unknown) => { validSender(event); return client.call(method, parseInput(method, input)); });
     ipcMain.handle('agent:openExternal', async (event, url: string) => { validSender(event); const parsed = new URL(url); if (!['https:', 'http:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error('不支持此链接'); await shell.openExternal(parsed.href); });
-    ipcMain.handle('agent:openProjectFile', async (event, projectId: unknown, href: unknown) => {
+    ipcMain.handle('agent:openLibrary', async (event, slug: unknown) => {
       validSender(event);
-      if (typeof projectId !== 'string' || typeof href !== 'string') throw new Error('文件链接无效');
-      const project = (await client.call('projectList', {}) as Project[]).find(p => p.id === projectId && p.available && !p.removed);
-      if (!project) throw new Error('当前项目不可用');
-      const target = await resolveProjectFile(project.path, href);
-      const error = await shell.openPath(target.path);
-      if (error) throw new Error('无法用默认应用打开文件，请检查文件关联设置');
-      return target.line ? { warning: `文件已用默认应用打开；此方式不支持自动跳转至第 ${target.line} 行。` } : {};
+      if (typeof slug !== 'string') throw new Error('资料库无效');
+      const error = await shell.openPath(await libraryDir(libraryRoot, slug));
+      if (error) throw new Error('无法在 Finder 中打开资料库');
     });
     const createWindow = () => {
-      window = new BrowserWindow({ width: 1160, height: 800, minWidth: 880, minHeight: 600, show: false, title: 'T-AGNET', backgroundColor: '#f7f8fa', titleBarStyle: 'hiddenInset', webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false } });
+      window = new BrowserWindow({ width: 1180, height: 820, minWidth: 900, minHeight: 600, show: false, title: 'Pi Bot', backgroundColor: '#f6f4f1', titleBarStyle: 'hiddenInset', webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false } });
       window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
       window.webContents.on('will-navigate', event => event.preventDefault());
       window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
@@ -74,7 +69,7 @@ else {
     };
     createWindow(); client.start(); startBundledService();
     app.on('activate', () => { if (!window) createWindow(); else present(window); });
-  }).catch(() => { dialog.showErrorBox('启动失败', '无法启动桌面应用，请查看开发终端'); app.quit(); });
+  }).catch(() => { dialog.showErrorBox('启动失败', '无法启动 Pi Bot，请查看开发终端'); app.quit(); });
   app.on('before-quit', () => { client.stop(); serviceProcess?.kill('SIGTERM'); });
   app.on('window-all-closed', () => { /* macOS keeps UI process alive until Cmd+Q */ });
 }

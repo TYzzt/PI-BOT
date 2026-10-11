@@ -87,8 +87,13 @@ export function redactor(secrets: string[]) {
     list.reduce((text, secret) => text.replaceAll(secret, "[已隐藏凭据]"), value);
 }
 
-function summarize(value: unknown) {
-  const text = typeof value === "string" ? value : JSON.stringify(value ?? "");
+const SUMMARY_KEYS = ["path", "query", "command", "pattern"];
+
+/** One human-readable line for a tool call, preferring its most telling argument. */
+export function summarize(value: unknown) {
+  const args = value && typeof value === "object" ? (value as Record<string, unknown>) : undefined;
+  const key = args && SUMMARY_KEYS.find((k) => typeof args[k] === "string" && args[k]);
+  const text = key ? String(args![key]) : typeof value === "string" ? value : JSON.stringify(value ?? "");
   return text.length > 160 ? `${text.slice(0, 157)}…` : text;
 }
 
