@@ -2,6 +2,7 @@ import base64
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import stat
 import subprocess
 import sys
@@ -41,6 +42,23 @@ class DeploymentSecretsTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn(b"refusing to replace", result.stderr)
             self.assertEqual(vault.read_text(), '{"active":"existing","keys":{}}')
+
+
+@unittest.skipUnless(shutil.which("docker"), "Docker Compose CLI is required")
+class DeploymentComposeTest(unittest.TestCase):
+    def test_runner_mount_and_public_ports_match_the_deployment_contract(self):
+        with tempfile.TemporaryDirectory() as name:
+            subprocess.run([sys.executable, str(SCRIPT), name], check=True, capture_output=True)
+            result = subprocess.run([
+                "docker", "compose", "--env-file", str(Path(name) / ".env"),
+                "-f", str(SCRIPT.with_name("compose.yml")), "config", "--format", "json",
+            ], check=True, capture_output=True)
+            services = json.loads(result.stdout)["services"]
+            self.assertEqual(services["runner"]["tmpfs"], ["/tmp:rw,nosuid,nodev"])
+            self.assertTrue(services["runner"]["read_only"])
+            self.assertEqual(services["api"]["ports"][0]["published"], "8000")
+            for name in ["postgres", "runner", "worker", "searxng"]:
+                self.assertFalse(services[name].get("ports"), f"{name} must stay internal")
 
 
 if __name__ == "__main__":
