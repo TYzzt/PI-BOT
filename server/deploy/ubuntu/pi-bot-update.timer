@@ -1,0 +1,11 @@
+[Unit]
+Description=Check Aliyun for a new Pi Bot backend image every two minutes
+
+[Timer]
+OnBootSec=90s
+OnUnitInactiveSec=2min
+RandomizedDelaySec=10s
+Unit=pi-bot-update.service
+
+[Install]
+WantedBy=timers.target

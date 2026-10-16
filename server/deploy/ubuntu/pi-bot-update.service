@@ -1,0 +1,11 @@
+[Unit]
+Description=Deploy a new Pi Bot image after it is published to Aliyun
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/pi-bot
+ExecStart=/opt/pi-bot/deploy.sh --if-changed
+TimeoutStartSec=15min

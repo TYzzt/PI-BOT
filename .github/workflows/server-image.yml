@@ -41,6 +41,10 @@ jobs:
       - name: Install desktop test dependencies
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh
       - run: npm ci --ignore-scripts
+      - name: Validate Ubuntu deployment scripts
+        run: |
+          bash -n server/deploy/ubuntu/install.sh server/deploy/ubuntu/deploy.sh
+          python3 -m unittest discover -s server/deploy/ubuntu -p 'test_*.py' -v
       - run: npm run typecheck
       - run: npm test
         env:
@@ -71,3 +75,5 @@ jobs:
           tags: |
             registry.cn-beijing.aliyuncs.com/liuhx/pi-bot-server:latest
             registry.cn-beijing.aliyuncs.com/liuhx/pi-bot-server:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
