@@ -32,15 +32,6 @@ if [[ -n "$api_id" ]]; then current=$(docker inspect "$api_id" --format '{{.Imag
 if [[ "$mode" == --if-changed && "$candidate" == "$current" ]]; then exit 0; fi
 digest=$(docker image inspect "$image" --format '{{range .RepoDigests}}{{println .}}{{end}}' | awk -v repo="$PI_BOT_IMAGE_REPOSITORY@sha256:" 'index($0,repo)==1 {print; exit}')
 if [[ ! "$digest" =~ @sha256:[0-9a-f]{64}$ ]]; then echo 'Missing immutable repository digest' >&2; exit 1; fi
-mkdir -p backups
-chmod 700 backups
-postgres_id=$("${compose[@]}" ps -q postgres)
-if [[ -n "$postgres_id" ]]; then
-  backup="backups/$(date -u +%Y%m%dT%H%M%SZ)-$$.sql.gz"
-  "${compose[@]}" exec -T postgres pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" | gzip > "$backup.tmp"
-  mv "$backup.tmp" "$backup"
-  echo "Database backup: $backup"
-fi
 if [[ -f .release.env ]]; then cp .release.env .previous-release.env; fi
 printf 'PI_BOT_IMAGE=%s\n' "$digest" > .release.env.tmp
 mv .release.env.tmp .release.env

@@ -23,7 +23,6 @@ sudo systemctl enable --now pi-bot-update.timer
 | `vault.json` | 从 `.env` 生成的模型密钥加密文件；权限 400，UID 1000 供容器读取 |
 | `.release.env` | 本次部署的不可变镜像 digest |
 | `.previous-release.env` | 上次部署的镜像 digest |
-| `backups/` | 每次更新前的 PostgreSQL 逻辑备份；权限 700 |
 
 管理员和数据库密码由 16 个随机字节生成（32 个十六进制字符）；JWT、Runner 和 SearXNG 使用 32 个随机字节（64 个十六进制字符）；AES-256 vault key 是 32 个随机字节的 Base64。全部在目标机生成。重复运行 `init-env.py` 保留原密钥，遇到 vault 不一致时拒绝覆盖。
 
@@ -41,7 +40,7 @@ sudo sed -n 's/^PI_BOT_ADMIN_PASSWORD=//p' /opt/pi-bot/.env
 
 GitHub Actions 测试通过后构建并推送 `latest` 和 commit SHA 标签。目标机的 systemd timer 每两分钟向阿里云检查 `latest`；只有镜像 ID 变化才更新。无需向 GitHub 上传服务器 SSH 私钥或应用密钥。可从 [Actions 部署文档](https://docs.github.com/en/actions/get-started/continuous-deployment)了解构建与发布流程。
 
-更新时使用文件锁避免并发，先备份数据库，保存旧 digest，停止旧 Worker / Runner，然后用不可变 digest 更新并等待健康检查。更新失败会写入 `.deployment-failed` 并暂停自动更新，避免持续重启；检查日志后手动运行 `deploy.sh` 恢复。数据库迁移可能使旧镜像不兼容，镜像回退不等于数据库回退。首次服务尚未启动时 timer 不会替代人工完成初次部署。
+更新时使用文件锁避免并发，保存旧 digest，停止旧 Worker / Runner，然后用不可变 digest 更新并等待健康检查。按当前部署约定，不自动备份数据库。更新失败会写入 `.deployment-failed` 并暂停自动更新，避免持续重启；检查日志后手动运行 `deploy.sh` 恢复。数据库迁移可能使旧镜像不兼容，镜像回退不等于数据库回退。首次服务尚未启动时 timer 不会替代人工完成初次部署。
 
 ```sh
 sudo systemctl list-timers pi-bot-update.timer
@@ -52,6 +51,6 @@ sudo /opt/pi-bot/deploy.sh <40位commit-SHA>  # 部署指定的 GitHub 构建
 sudo systemctl disable --now pi-bot-update.timer  # 暂停自动更新
 ```
 
-`.env`、`vault.json` 和数据库必须一起备份，才能恢复服务商模型 Key。`backups/` 不自动删除，需定期转移到其他机器并检查磁盘容量。切勿执行 `docker compose down -v`，它会删除持久数据卷。发布脚本只更新应用镜像；未来变更 Compose、部署脚本或 SearXNG 配置时，需重新同步本目录并运行安装脚本。
+数据库保存在 PostgreSQL 持久卷中；更新应用镜像不会清空数据，也不会生成数据库备份。已有备份文件不自动删除。切勿执行 `docker compose down -v`，它会删除持久数据卷。发布脚本只更新应用镜像；未来变更 Compose、部署脚本或 SearXNG 配置时，需重新同步本目录并运行安装脚本。
 
 该配置针对约 2GB 内存机器限制容器内存并将 Worker 并发设为 2；更大负载需增加内存和调整并发。API 仍为单实例。

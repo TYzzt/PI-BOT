@@ -37,7 +37,7 @@ npm run worker --workspace=@pi-bot/server
 
 ## 部署
 
-- Ubuntu 长期后端：[deploy/ubuntu/README.md](deploy/ubuntu/README.md)，从阿里云拉取镜像、在目标机生成 `.env`，支持数据库备份和 systemd 自动更新。
+- Ubuntu 长期后端：[deploy/ubuntu/README.md](deploy/ubuntu/README.md)，从阿里云拉取镜像、在目标机生成 `.env`，支持 systemd 自动更新；不自动备份数据库。
 - 单机：`cd server && docker compose up --build -d`（需要先生成 `server/vault.json`，并在环境里设置 `PI_BOT_ADMIN_PASSWORD`、`PI_BOT_JWT_SECRET`、`PI_BOT_RUNNER_TOKEN`）。
 - 集群：[deploy/pibot.yaml](deploy/pibot.yaml)。入口 `https://aicloud-app.lenovo.com.cn/pibot`，后台 `/pibot/admin/`；镜像由 GitHub Actions 推到 `registry.cn-beijing.aliyuncs.com/liuhx/pi-bot-server:latest`。应用前修改 `pibot` Secret 里的口令，并创建 `pibot-vault` Secret（见清单顶部注释）。
 
