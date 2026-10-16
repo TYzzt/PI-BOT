@@ -33,6 +33,8 @@ export function settings(env = process.env) {
       .positive()
       .max(60)
       .parse(env.PI_BOT_WORKER_POLL_SECONDS ?? 1),
+    /** Cloud runs one worker executes at once; delegating runs wait on their children. */
+    workerConcurrency: integer(env.PI_BOT_WORKER_CONCURRENCY, 4, 1, 64),
     historyLimit: integer(env.PI_BOT_HISTORY_LIMIT, 40, 4, 400),
     memoryThreshold: integer(env.PI_BOT_MEMORY_THRESHOLD, 60, 10, 2000),
     vaultFile: env.PI_BOT_VAULT_FILE,
@@ -43,6 +45,10 @@ export function settings(env = process.env) {
     runnerUrl: env.PI_BOT_RUNNER_URL ?? "http://runner:8001",
     runnerToken: env.PI_BOT_RUNNER_TOKEN,
     tavilyKey: env.PI_BOT_TAVILY_API_KEY,
+    searxngUrl: z.string().url().refine(value => {
+      const url = new URL(value);
+      return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash;
+    }, "SearXNG 需要 HTTP(S) 根地址").optional().parse(env.PI_BOT_SEARXNG_URL?.replace(/\/+$/, "") || undefined),
     adminDir: env.PI_BOT_ADMIN_DIR,
   };
 }

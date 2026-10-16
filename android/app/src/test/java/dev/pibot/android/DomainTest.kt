@@ -1,7 +1,9 @@
 package dev.pibot.android
 
+import dev.pibot.android.data.AgentTaskRef
 import dev.pibot.android.data.Approval
 import dev.pibot.android.data.Bot
+import dev.pibot.android.data.FromBot
 import dev.pibot.android.data.LastMessage
 import dev.pibot.android.data.Message
 import dev.pibot.android.data.Run
@@ -9,7 +11,9 @@ import dev.pibot.android.data.ToolEntry
 import dev.pibot.android.domain.Block
 import dev.pibot.android.domain.Span
 import dev.pibot.android.domain.Timeline
+import dev.pibot.android.domain.delegationLabel
 import dev.pibot.android.domain.parseInline
+import dev.pibot.android.domain.relayLabel
 import dev.pibot.android.domain.parseMarkdown
 import dev.pibot.android.domain.parseServerUrl
 import dev.pibot.android.domain.plainPreview
@@ -40,11 +44,13 @@ class DomainTest {
     }
 
     @Test
-    fun deltasOnlyGrowRunningMessages() {
+    fun deltasReplaceOnlyRunningMessagesAcrossToolRounds() {
         val t = Timeline().merge(listOf(message("u", 1), message("a", 2, status = "running", content = "你")))
         val grown = t.applyDelta("a", "你好")
         assertEquals("你好", grown.messages.last().content)
-        assertEquals(grown, grown.applyDelta("a", "你"), )
+        val cleared = grown.applyDelta("a", "")
+        assertEquals("", cleared.messages.last().content)
+        assertEquals("结果", cleared.applyDelta("a", "结果").messages.last().content)
         assertEquals(grown, grown.applyDelta("missing", "x"))
         val done = grown.merge(listOf(message("a", 2, content = "你好！")))
         assertEquals(done, done.applyDelta("a", "你好！还有"))
@@ -76,6 +82,21 @@ class DomainTest {
         assertEquals("已保存到 weekly/a_b.md，很好", plainPreview("- 已保存到 `weekly/a_b.md`，**很好**"))
         val asleep = replied.copy(lastActiveAt = "2026-10-04T07:00:00Z")
         assertEquals("睡着了 · 7 天", asleep.statusLine(now))
+    }
+
+    @Test
+    fun delegationsAreLabelledOnBothTimelines() {
+        assertEquals("来自 Pi Bot 的委托", relayLabel(FromBot("p", "Pi Bot")))
+        assertEquals("写作助手 的回报", relayLabel(FromBot("w", "写作助手", kind = "report")))
+        assertEquals("交给了 写作助手 · 进行中", delegationLabel(AgentTaskRef("t", "w", "写作助手", "running")))
+        assertEquals("交给了 写作助手 · 完成后回报", delegationLabel(AgentTaskRef("t", "w", "写作助手", "running", mode = "report")))
+        assertEquals("交给了 写作助手 · 已完成", delegationLabel(AgentTaskRef("t", "w", "写作助手", "completed", mode = "report")))
+        assertEquals("委托智能体", toolLabel("ask_agent"))
+        val json = """{"id":"m","bot_id":"b","seq":1,"role":"user","content":"写周报","status":"completed","created_at":"2026-10-11T08:00:00Z",
+            "from_bot":{"id":"p","name":"Pi Bot","avatar":{"shape":"bean","color":"orange","scheme":"light"},"kind":"task"},"agent_tasks":[]}"""
+        val parsed = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }.decodeFromString(Message.serializer(), json)
+        assertEquals("Pi Bot", parsed.fromBot?.name)
+        assertEquals("task", parsed.fromBot?.kind)
     }
 
     @Test

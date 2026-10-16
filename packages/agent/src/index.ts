@@ -1,18 +1,18 @@
 import { mkdirSync } from "node:fs";
 import {
   createAgentSession,
-  createExtensionRuntime,
+  DefaultResourceLoader,
   ModelRuntime,
   SessionManager,
   SettingsManager,
   type AgentSession,
-  type ResourceLoader,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import {
   InMemoryCredentialStore,
   InMemoryModelsStore,
 } from "@earendil-works/pi-ai";
+import { isInternalTool, SKILL_TOOLS, skillsExtension, type SkillOptions } from "./skills.js";
 
 /**
  * A model reachable through the Pi Bot model proxy. `modelId` is the Pi Bot
@@ -46,8 +46,14 @@ export interface BotAgentOptions {
   systemPrompt: string;
   history: HistoryMessage[];
   tools: ToolDefinition[];
+  /** Private skills are scoped by the authenticated run, never by model input. */
+  skills?: SkillOptions;
   redactSecrets?: string[];
   onTool?: (activity: ToolActivity) => void;
+  /** Completed, brief remarks before tool use, kept separate from the answer. */
+  onProgress?: (lines: string[]) => void;
+  /** Stop a model stream that sends no events; running tools are exempt. */
+  modelIdleTimeoutMs?: number;
 }
 export interface AgentHandle {
   tools: string[];
@@ -58,28 +64,13 @@ export interface AgentHandle {
 }
 export type AgentFactory = (options: BotAgentOptions) => Promise<AgentHandle>;
 
-export const CANCELLED = "CANCELLED";
+export { a2uiTools, UI_INSTRUCTIONS } from "./a2ui.js";
+export { webSearchTool } from "./web-search.js";
+export { askAgentTool, type AskAgentOptions } from "./ask-agent.js";
+export { isInternalTool, type SkillSummary } from "./skills.js";
 
-function resources(systemPrompt: string): ResourceLoader {
-  const extensions = {
-    extensions: [],
-    errors: [],
-    runtime: createExtensionRuntime(),
-  };
-  return {
-    getExtensions: () => extensions,
-    getSkills: () => ({ skills: [], diagnostics: [] }),
-    getPrompts: () => ({ prompts: [], diagnostics: [] }),
-    getThemes: () => ({ themes: [], diagnostics: [] }),
-    getAgentsFiles: () => ({ agentsFiles: [] }),
-    getSystemPrompt: () => systemPrompt,
-    getSystemPromptSource: () => undefined,
-    getAppendSystemPrompt: () => [],
-    getAppendSystemPromptSources: () => [],
-    extendResources: () => {},
-    reload: async () => {},
-  };
-}
+export const CANCELLED = "CANCELLED";
+export const INITIAL_PROGRESS = "好，我来看看，稍后把结果给你。";
 
 export function redactor(secrets: string[]) {
   const list = secrets.filter((s) => s.length >= 6);
@@ -92,6 +83,10 @@ const SUMMARY_KEYS = ["path", "query", "command", "pattern"];
 /** One human-readable line for a tool call, preferring its most telling argument. */
 export function summarize(value: unknown) {
   const args = value && typeof value === "object" ? (value as Record<string, unknown>) : undefined;
+  if (args && typeof args.agent === "string" && typeof args.task === "string") {
+    const task = args.task.replace(/\s+/g, " ").trim();
+    return `${args.agent}：${task.length > 60 ? `${task.slice(0, 59)}…` : task}`;
+  }
   const key = args && SUMMARY_KEYS.find((k) => typeof args[k] === "string" && args[k]);
   const text = key ? String(args![key]) : typeof value === "string" ? value : JSON.stringify(value ?? "");
   return text.length > 160 ? `${text.slice(0, 157)}…` : text;
@@ -105,6 +100,9 @@ export class PiAgent implements AgentHandle {
     private provider: string,
     private redact: (value: string) => string,
     private onTool?: BotAgentOptions["onTool"],
+    private onProgress?: BotAgentOptions["onProgress"],
+    private modelIdleTimeoutMs = 120000,
+    private privateSkills = false,
   ) {
     this.tools = session.getActiveToolNames();
   }
@@ -115,17 +113,34 @@ export class PiAgent implements AgentHandle {
     let content = "",
       failed = false,
       aborted = false,
-      settled = false;
+      settled = false,
+      renderedUi = false;
+    const progress: string[] = [INITIAL_PROGRESS];
+    let hasOpening = false;
+    let idleTimer: NodeJS.Timeout | undefined, timedOut = false;
+    const runningTools = new Set<string>();
+    const armIdleTimer = () => {
+      clearTimeout(idleTimer);
+      if (!runningTools.size) idleTimer = setTimeout(() => { timedOut = true; void this.session.abort(); }, this.modelIdleTimeoutMs);
+    };
+    armIdleTimer();
     const unsubscribe = this.session.subscribe((event) => {
       const e = event as any;
-      if (e.type === "tool_execution_start")
+      if (e.type === "tool_execution_start") runningTools.add(String(e.toolCallId ?? e.toolName));
+      if (e.type === "tool_execution_end" && e.toolName === "show_ui" && !e.isError) renderedUi = true;
+      if (e.type === "tool_execution_end") runningTools.delete(String(e.toolCallId ?? e.toolName));
+      armIdleTimer();
+      if (event.type === "message_start" && event.message.role === "assistant") {
+        content = "";
+      }
+      if (e.type === "tool_execution_start" && !isInternalTool(e.toolName))
         this.onTool?.({
           id: String(e.toolCallId ?? e.toolName),
           name: e.toolName,
           state: "running",
           summary: this.redact(summarize(e.args)),
         });
-      if (e.type === "tool_execution_end")
+      if (e.type === "tool_execution_end" && !isInternalTool(e.toolName))
         this.onTool?.({
           id: String(e.toolCallId ?? e.toolName),
           name: e.toolName,
@@ -136,7 +151,10 @@ export class PiAgent implements AgentHandle {
         event.assistantMessageEvent.type === "text_delta"
       ) {
         content += event.assistantMessageEvent.delta;
-        onText(this.redact(content));
+        // Tool calls may arrive after the opening text. Buffer private-skill
+        // sessions until the message is classified, so management remarks
+        // cannot leak through transient WebSocket deltas.
+        if (!this.privateSkills) onText(this.redact(content));
       }
       if (event.type === "message_end" && event.message.role === "assistant") {
         const msg = event.message;
@@ -144,20 +162,34 @@ export class PiAgent implements AgentHandle {
           .filter((c) => c.type === "text")
           .map((c) => c.text)
           .join("");
-        onText(this.redact(content));
+        const internal = msg.content.some(c => c.type === "toolCall" && isInternalTool(c.name));
+        if (!internal) onText(this.redact(content));
         failed = msg.stopReason === "error";
         aborted = msg.stopReason === "aborted";
+        if (!failed && !aborted && msg.content.some((c) => c.type === "toolCall")) {
+          const line = this.redact(content).trim().split(/\n|(?<=[。！？])|(?<=[.!?])\s+/u)[0]?.trim().slice(0, 200);
+          if (!internal && line && !progress.includes(line) && (!hasOpening || progress.length < 3)) {
+            if (!hasOpening) { progress[0] = line; hasOpening = true; }
+            else progress.push(line);
+            this.onProgress?.([...progress]);
+          }
+          // The next model message is a fresh answer, not a continuation of this remark.
+          content = "";
+          onText("");
+        }
       }
       if (event.type === "agent_settled") settled = true;
     });
     try {
       await this.session.prompt(text, { expandPromptTemplates: false });
       if (!settled) await this.session.waitForIdle();
+      if (timedOut) throw new Error("模型长时间没有响应，已停止本次任务，请稍后重试");
       if (aborted) throw new Error(CANCELLED);
       if (failed) throw new Error("模型请求失败，请稍后重试或联系管理员检查模型配置");
-      if (!content) throw new Error("模型未返回文本");
+      if (!content && !renderedUi) throw new Error("模型未返回文本");
       return this.redact(content);
     } finally {
+      clearTimeout(idleTimer);
       unsubscribe();
     }
   }
@@ -170,6 +202,7 @@ export class PiAgent implements AgentHandle {
 }
 
 export const createBotAgent: AgentFactory = async (o) => {
+  if (o.tools.some(tool => isInternalTool(tool.name))) throw new Error("内部工具名称不能由外部工具覆盖");
   mkdirSync(o.agentDir, { recursive: true, mode: 0o700 });
   const runtime = await ModelRuntime.create({
     credentials: new InMemoryCredentialStore(),
@@ -181,7 +214,7 @@ export const createBotAgent: AgentFactory = async (o) => {
   const provider = `pi-bot-${o.model.id}`;
   runtime.registerProvider(provider, {
     baseUrl: o.model.baseUrl,
-    api: "openai-completions",
+    api: "openai-responses",
     authHeader: true,
     models: [
       {
@@ -207,7 +240,7 @@ export const createBotAgent: AgentFactory = async (o) => {
         : {
             role: "assistant",
             content: [{ type: "text", text: m.content }],
-            api: "openai-completions",
+            api: "openai-responses",
             provider,
             model: o.model.modelId,
             usage: { ...zero, totalTokens: 0, cost: { ...zero, total: 0 } },
@@ -215,6 +248,21 @@ export const createBotAgent: AgentFactory = async (o) => {
             timestamp: Date.now(),
           },
     );
+  const settingsManager = SettingsManager.inMemory({
+    retry: { enabled: true, maxRetries: 2, provider: { timeoutMs: 120000, maxRetries: 0 } },
+    compaction: { enabled: true },
+  });
+  // Explicit factories only: never discover executable code or skills from the
+  // user's home, library, ancestors, or another bot's private directory.
+  const resourceLoader = new DefaultResourceLoader({
+    cwd: o.cwd, agentDir: o.agentDir, settingsManager, systemPrompt: o.systemPrompt,
+    noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+    appendSystemPromptOverride: () => [],
+    extensionFactories: o.skills ? [{ name: "bot-skills", factory: skillsExtension(o.skills) }] : [],
+  });
+  await resourceLoader.reload();
+  if (resourceLoader.getExtensions().errors.length) throw new Error("内部能力插件加载失败");
+  const allowed = new Set([...o.tools.map(t => t.name), ...(o.skills ? SKILL_TOOLS : [])]);
   const { session } = await createAgentSession({
     cwd: o.cwd,
     agentDir: o.agentDir,
@@ -222,16 +270,12 @@ export const createBotAgent: AgentFactory = async (o) => {
     model,
     thinkingLevel: "off",
     noTools: "all",
-    tools: o.tools.map((t) => t.name),
+    tools: [...allowed],
     customTools: o.tools,
-    resourceLoader: resources(o.systemPrompt),
+    resourceLoader,
     sessionManager,
-    settingsManager: SettingsManager.inMemory({
-      retry: { enabled: true, maxRetries: 2, provider: { timeoutMs: 120000, maxRetries: 0 } },
-      compaction: { enabled: true },
-    }),
+    settingsManager,
   });
-  const allowed = new Set(o.tools.map((t) => t.name));
   const active = session.getActiveToolNames();
   if (active.length !== allowed.size || active.some((n) => !allowed.has(n))) {
     session.dispose();
@@ -243,5 +287,8 @@ export const createBotAgent: AgentFactory = async (o) => {
     provider,
     redactor([o.apiKey, ...(o.redactSecrets ?? [])]),
     o.onTool,
+    o.onProgress,
+    o.modelIdleTimeoutMs,
+    !!o.skills,
   );
 };

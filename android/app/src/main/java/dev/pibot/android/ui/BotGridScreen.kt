@@ -140,20 +140,23 @@ private fun BotCard(bot: Bot, now: Long, onClick: () -> Unit) {
     Column(
         Modifier
             .fillMaxWidth()
-            .background(Card, RoundedCornerShape(22.dp))
+            .background(if (bot.isMain) AccentSoft else Card, RoundedCornerShape(22.dp))
             .clickable(onClick = onClick)
             .padding(14.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Box {
             PiBotFace(bot.avatar, bot.mood(now), 104.dp, seed = seedOf(bot.id))
+            if (bot.isMain) Box(Modifier.align(Alignment.BottomEnd).size(24.dp).background(Accent, CircleShape), contentAlignment = Alignment.Center) {
+                Text("★", color = Color.White, fontSize = 14.sp)
+            }
             if (waiting) Box(Modifier.align(Alignment.TopEnd).size(12.dp).background(Accent, CircleShape))
         }
         Spacer(Modifier.height(6.dp))
         Text(bot.name, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Spacer(Modifier.height(2.dp))
         Text(
-            bot.statusLine(now),
+            if (bot.isMain && bot.latestRun == null && bot.lastMessage == null) "主智能体 · 随时找我聊聊" else bot.statusLine(now),
             color = if (waiting) Accent else Muted,
             fontSize = 13.sp,
             maxLines = 2,

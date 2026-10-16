@@ -1,3 +1,4 @@
+import { ResponseStream } from "../../packages/agent/tests/responses.js";
 import { createServer, type IncomingMessage } from "node:http";
 import { generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -5,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pg from "pg";
 import WebSocket from "ws";
+import {EXAMPLE} from "@pi-bot/a2ui";
 import { sha256 } from "../src/security.js";
 
 export const TEST_DB = process.env.PI_BOT_TEST_DATABASE_URL;
@@ -32,34 +34,65 @@ async function body(req: IncomingMessage) {
   for await (const chunk of req) text += chunk;
   return text ? JSON.parse(text) : {};
 }
+/** User messages that make the mock model call `ask_agent` with these arguments. */
+const DELEGATIONS: Record<string, object> = {
+  委托链路测试: { agent: "写作助手", task: "写一份本周周报", wait: true },
+  转交链路测试: { agent: "写作助手", task: "写一份本周周报", wait: false },
+};
+const SKILLS: Record<string, { name: string; args: object }> = {
+  创建能力链路测试: { name: "skill_manage", args: { action: "create", name: "report-test", description: "整理周报时使用", instructions: "PRIVATE-WORKFLOW：先核实来源，再整理结论。", references: { "format.md": "先写结论，再写依据。" } } },
+  加载能力链路测试: { name: "skill_load", args: { name: "report-test" } },
+};
 /** OpenAI-compatible provider double that records what the proxy forwarded. */
 export async function mockProvider() {
   const requests: { headers: IncomingMessage["headers"]; body: any }[] = [];
   const server = createServer(async (req, res) => {
-    if (req.url !== "/v1/chat/completions") return void res.writeHead(404).end();
+    if (req.url !== "/v1/responses") return void res.writeHead(404).end();
     const json = await body(req);
     requests.push({ headers: req.headers, body: json });
+    const input = typeof json.input === "string" ? [{ role: "user", content: json.input }] : json.input;
     const text = (c: any): string => (Array.isArray(c) ? c.map((p) => p.text ?? "").join("") : String(c ?? ""));
-    const last = text(json.messages.filter((m: any) => m.role === "user").at(-1)?.content);
-    const all = JSON.stringify(json.messages);
-    const answer = last.includes("新增对话")
-      ? "用户喜欢蓝鲸。"
-      : last.includes("记住")
-        ? "好的，我记住了蓝鲸。"
-        : last.includes("之前")
-          ? all.includes("蓝鲸") ? "你之前说的是蓝鲸。" : "没有记录。"
-          : `收到：${last.slice(0, 20)}`;
+    const last = text(input.filter((m: any) => m.role === "user").at(-1)?.content);
+    const all = JSON.stringify(json.input);
+    const toolDone = json.input.at(-1)?.type === "function_call_output";
+    const delegation = DELEGATIONS[last];
+    const skill = SKILLS[last];
+    const answer = (() => {
+      if (last === "纯交互界面链路测试" && toolDone) return "";
+      if (last.includes("新增对话")) return "用户喜欢蓝鲸。";
+      if (skill && toolDone) return "已按方法完成任务。";
+      if (last.includes("你收到来自智能体")) return "委托结果：周报写好了";
+      if (last.includes("这是你之前委托给")) return `回报已收到：${last.includes("周报写好了") ? "周报写好了" : "没有结果"}`;
+      if (delegation && toolDone) return `综合：${text(json.input.at(-1).output)}`;
+      if (last.includes("记住")) return "好的，我记住了蓝鲸。";
+      if (last.includes("之前")) return all.includes("蓝鲸") ? "你之前说的是蓝鲸。" : "没有记录。";
+      if (last === "联网搜索链路测试" && toolDone) return `搜到：${text(json.input.at(-1).output)}`;
+      return `收到：${last.slice(0, 20)}`;
+    })();
     if (!json.stream) {
       res.writeHead(200, { "content-type": "application/json" });
-      return void res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: answer } }], usage: { prompt_tokens: 11, completion_tokens: 3 } }));
+      return void res.end(JSON.stringify({ id: "resp_sync", object: "response", status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: answer }] }], usage: { input_tokens: 11, output_tokens: 3 } }));
     }
-    res.writeHead(200, { "content-type": "text/event-stream" });
-    const chunk = (delta: object, finish: string | null = null) =>
-      res.write(`data: ${JSON.stringify({ id: "x", object: "chat.completion.chunk", created: 1, model: json.model, choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`);
-    for (const piece of Array.from(answer)) chunk({ content: piece });
-    chunk({}, "stop");
-    res.write(`data: ${JSON.stringify({ id: "x", object: "chat.completion.chunk", created: 1, model: json.model, choices: [], usage: { prompt_tokens: 42, completion_tokens: answer.length } })}\n\n`);
-    res.end("data: [DONE]\n\n");
+    const stream = new ResponseStream(res, json.model);
+    if (["交互界面链路测试","纯交互界面链路测试"].includes(last) && !toolDone) {
+      stream.tool("show_ui", { messages: EXAMPLE }, "ui_1");
+      return void stream.end();
+    }
+    if (skill && !toolDone) {
+      stream.text("内部：正在管理 skill。");
+      stream.tool(skill.name, skill.args, "skill_1");
+      return void stream.end();
+    }
+    if (last === "联网搜索链路测试" && json.input.at(-1)?.type !== "function_call_output") {
+      stream.tool("web_search", { query: "Pi Bot 搜索测试", language: "zh-CN" }, "search_1");
+      return void stream.end();
+    }
+    if (delegation && !toolDone) {
+      stream.tool("ask_agent", delegation, "ask_1");
+      return void stream.end();
+    }
+    for (const piece of Array.from(answer)) stream.text(piece);
+    stream.end(42, answer.length);
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const port = (server.address() as { port: number }).port;
@@ -67,6 +100,21 @@ export async function mockProvider() {
     url: `http://127.0.0.1:${port}/v1`,
     requests,
     close: () => new Promise<void>((r) => { server.closeAllConnections(); server.close(() => r()); }),
+  };
+}
+
+export async function mockSearch() {
+  const queries: URL[] = [];
+  const server = createServer((req, res) => {
+    const url = new URL(req.url!, "http://localhost");
+    queries.push(url);
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ results: [{ title: "Pi Bot 官方资料", url: "https://example.com/pi", content: "搜索结果用于链路测试" }], unresponsive_engines: [] }));
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  return {
+    url: `http://127.0.0.1:${(server.address() as any).port}`, queries,
+    close: () => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); }),
   };
 }
 

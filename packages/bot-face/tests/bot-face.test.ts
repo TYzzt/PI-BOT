@@ -104,6 +104,7 @@ test("run status maps to moods", () => {
   assert.equal(moodFor({ status: "running", now }), "thinking");
   assert.equal(moodFor({ status: "running", tool: "web_search", now }), "searching");
   assert.equal(moodFor({ status: "running", tool: "run_command", now }), "working");
+  assert.equal(moodFor({ status: "running", tool: "ask_agent", now }), "waiting");
   assert.equal(moodFor({ status: "waiting_approval", now }), "waiting");
   assert.equal(moodFor({ status: "completed", finishedAt: now - 1000, now }), "celebrate");
   assert.equal(moodFor({ status: "completed", finishedAt: now - 60000, now }), "idle");

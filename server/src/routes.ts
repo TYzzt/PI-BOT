@@ -18,6 +18,7 @@ import {
   botOut,
   botPatch,
   createBot,
+  ensureMainBot,
   messageOut,
   messagesPage,
   ownBot,
@@ -26,7 +27,12 @@ import {
   updateBot,
 } from "./bots.js";
 import { cancelRun, decideApproval, dispatchMac } from "./runs.js";
-import { complete, findModel, proxyChat, recordUsage } from "./llm.js";
+import { cancelTask, createTask, readTask, reportLater, TERMINAL } from "./agents.js";
+import { complete, findModel, proxyResponses, recordUsage } from "./llm.js";
+import type { WebSearch } from "./search.js";
+import { manageSkill, skillRequest } from "./skills.js";
+
+import {saveUiState,submitUiAction} from "./ui.js";
 
 export type Auth = "none" | "user" | "admin" | "device" | "actor" | "llm";
 export interface Context {
@@ -34,6 +40,7 @@ export interface Context {
   tx: Tx;
   s: Settings;
   hub: Hub;
+  webSearch: WebSearch;
   user: Row;
   device?: Row;
   llm?: LlmClaims;
@@ -55,6 +62,8 @@ export interface Route {
   query?: z.ZodType;
   /** Long-running handlers manage their own transactions. */
   tx?: false;
+  /** Internal agent operations are excluded from public API discovery. */
+  internal?: boolean;
   handler(ctx: Context): Promise<unknown>;
 }
 
@@ -141,6 +150,70 @@ async function deviceFiles(ctx: Context, method: "list" | "read") {
 
 export const routes: Route[] = [
   {
+    method: "POST", path: "/agent/skills", auth: "llm", tag: "skills", summary: "智能体私有能力管理",
+    internal: true,
+    body: skillRequest,
+    handler: async ({ tx, user, llm, body }) => manageSkill(tx, user.user_id, llm!, body),
+  },
+  {
+    method: "POST", path: "/web/search", auth: "llm", tag: "web", summary: "联网搜索：Mac 与云端共用（短期智能体令牌）",
+    tx: false,
+    body: z.object({ query: z.string().trim().min(1).max(2000), language: z.string().regex(/^(auto|all|[a-z]{2,3}(-[A-Za-z]{2,4})?)$/).default("auto") }),
+    handler: async ({ webSearch, body, reply }) => {
+      const abort = new AbortController();
+      const onClose = () => { if (!reply.raw.writableEnded) abort.abort(); };
+      reply.raw.once("close", onClose);
+      try { return await webSearch.search(body.query, body.language, abort.signal); }
+      finally { reply.raw.off("close", onClose); }
+    },
+  },
+  {
+    method: "POST", path: "/agent/tasks", auth: "llm", tag: "agents", summary: "智能体把任务委托给同一用户的另一个 Bot（短期智能体令牌）",
+    body: z.object({
+      run_id: uuid,
+      agent: z.string().trim().min(1).max(100),
+      task: z.string().trim().min(1).max(8000),
+      wait: z.boolean().default(true),
+    }),
+    handler: async ({ db, tx, s, hub, user, llm, body, after }) => {
+      const { task, run } = await createTask(tx, hub, user.user_id, llm!, body);
+      if (run?.executor === "mac") after(() => dispatchMac(db, s, hub, run.run_id));
+      return task;
+    },
+  },
+  {
+    method: "GET", path: "/agent/tasks/:id", auth: "llm", tag: "agents", summary: "查询委托；wait>0 时长轮询直到完成或超时（秒）",
+    query: z.object({ wait: z.coerce.number().int().min(0).max(30).default(0) }),
+    tx: false,
+    handler: async ({ db, user, llm, params, query, reply }) => {
+      const deadline = Date.now() + query.wait * 1000;
+      let closed = false;
+      const onClose = () => void (closed = true);
+      reply.raw.once("close", onClose);
+      try {
+        for (;;) {
+          const task = await db.tx((tx) => readTask(tx, user.user_id, llm!, params.id));
+          if (TERMINAL.includes(task.status) || Date.now() >= deadline || closed) return task;
+          await new Promise((r) => setTimeout(r, 500));
+        }
+      } finally {
+        reply.raw.off("close", onClose);
+      }
+    },
+  },
+  {
+    method: "POST", path: "/agent/tasks/:id/cancel", auth: "llm", tag: "agents", summary: "发起方停止等待并取消委托",
+    handler: async ({ tx, hub, user, llm, params, after }) => {
+      const { task, notify } = await cancelTask(tx, hub, user.user_id, llm!, params.id);
+      if (notify) after(() => notify.send({ type: "cancel", run_id: notify.runId }));
+      return task;
+    },
+  },
+  {
+    method: "POST", path: "/agent/tasks/:id/report", auth: "llm", tag: "agents", summary: "同步等待超时后改为完成后回报",
+    handler: async ({ tx, user, llm, params }) => reportLater(tx, user.user_id, llm!, params.id),
+  },
+  {
     method: "GET", path: "/health", auth: "none", tag: "system", summary: "健康检查",
     handler: async () => ({ ok: true, name: "pi-bot" }),
   },
@@ -201,7 +274,8 @@ export const routes: Route[] = [
   {
     method: "GET", path: "/bots", auth: "actor", tag: "bots", summary: "我的 Bot 列表",
     handler: async ({ tx, hub, user }) => {
-      const rows = await tx.rows("SELECT * FROM bots WHERE user_id=$1 AND archived_at IS NULL ORDER BY last_active_at DESC", [user.user_id]);
+      await ensureMainBot(tx, user.user_id);
+      const rows = await tx.rows("SELECT * FROM bots WHERE user_id=$1 AND archived_at IS NULL ORDER BY is_main DESC,last_active_at DESC", [user.user_id]);
       const bots = [];
       for (const b of rows) bots.push(await botOut(tx, b));
       return { bots, mac: await macStatus(tx, hub, user.user_id) };
@@ -230,7 +304,8 @@ export const routes: Route[] = [
   {
     method: "DELETE", path: "/bots/:id", auth: "actor", tag: "bots", summary: "归档 Bot（Mac 上的资料库文件保留）",
     handler: async ({ tx, user, params }) => {
-      await ownBot(tx, user.user_id, params.id);
+      const bot = await ownBot(tx, user.user_id, params.id);
+      if (bot.is_main) fail(409, "主智能体不能删除");
       if (await tx.one("SELECT 1 FROM bot_runs WHERE bot_id=$1 AND status IN ('queued','running','waiting_approval')", [params.id]))
         fail(409, "请先停止正在进行的任务");
       await tx.update("bots", params.id, { archived_at: new Date() });
@@ -254,7 +329,23 @@ export const routes: Route[] = [
       const { run, created } = await postMessage(tx, user.user_id, params.id, body.text, body.request_id, conn ? { deviceId: conn.deviceId } : null);
       if (created && run.executor === "mac") after(() => dispatchMac(db, s, hub, run.run_id));
       const messages = await tx.rows("SELECT * FROM bot_messages WHERE message_id = ANY($1) ORDER BY seq", [[run.user_message_id, run.assistant_message_id]]);
-      return { run: runOut(run), messages: messages.map(messageOut) };
+      return { run: runOut(run), messages: messages.map((m) => messageOut(m)) };
+    },
+  },
+  {
+    method:"POST",path:"/bots/:id/messages/:messageId/ui-state",auth:"actor",tag:"bots",summary:"保存交互界面状态（版本冲突返回 409）",
+    body:z.object({revision:z.number().int().positive(),states:z.array(z.object({surfaceId:z.string().min(1).max(80),data:z.record(z.string(),z.unknown())})).max(4)}),
+    handler:async({tx,user,params,body})=>messageOut(await saveUiState(tx,user.user_id,params.id,params.messageId,body.revision,body.states)),
+  },
+  {
+    method:"POST",path:"/bots/:id/messages/:messageId/ui-actions",auth:"actor",tag:"bots",summary:"提交界面操作并启动下一次 Bot 任务",
+    body:z.object({revision:z.number().int().positive(),request_id:z.string().uuid(),states:z.array(z.object({surfaceId:z.string().min(1).max(80),data:z.record(z.string(),z.unknown())})).max(4),action:z.object({name:z.string().min(1).max(80),surfaceId:z.string().min(1).max(80),sourceComponentId:z.string().min(1).max(80),context:z.record(z.string(),z.unknown())})}),
+    handler:async({db,tx,s,hub,user,params,body,after})=>{
+      const conn=hub.device(user.user_id);
+      const {run,created}=await submitUiAction(tx,user.user_id,params.id,params.messageId,body,conn?{deviceId:conn.deviceId}:null);
+      if(created&&run.executor==='mac')after(()=>dispatchMac(db,s,hub,run.run_id));
+      const messages=await tx.rows("SELECT * FROM bot_messages WHERE message_id=ANY($1) ORDER BY seq",[[run.user_message_id,run.assistant_message_id]]);
+      return {run:runOut(run),messages:messages.map(m=>messageOut(m))};
     },
   },
   {
@@ -290,14 +381,21 @@ export const routes: Route[] = [
     }),
   },
   {
-    method: "POST", path: "/llm/v1/chat/completions", auth: "llm", tag: "llm", summary: "模型代理：OpenAI 兼容 Chat Completions，model 填 Pi Bot 模型 ID",
+    method: "POST", path: "/llm/v1/responses", auth: "llm", tag: "llm", summary: "模型代理：Responses API，model 填 Pi Bot 模型 ID",
+    body: z.object({
+      model: z.string().optional(),
+      input: z.union([z.string(), z.array(z.unknown())]),
+      max_output_tokens: z.number().int().positive().optional(),
+      stream: z.boolean().optional(),
+    }).passthrough(),
     tx: false,
-    handler: async ({ db, s, llm, body, reply, req }) => {
-      if (!body || typeof body !== "object" || !Array.isArray(body.messages)) fail(422, "缺少 messages");
+    handler: async ({ db, s, llm, body, reply }) => {
       const model = await db.tx((tx) => findModel(tx, body.model));
       const abort = new AbortController();
-      req.raw.once("close", () => abort.abort());
-      await proxyChat(db, s, llm!, model, body, reply, abort.signal);
+      const onClose = () => abort.abort();
+      reply.raw.once("close", onClose);
+      try { await proxyResponses(db, s, llm!, model, body, reply, abort.signal); }
+      finally { reply.raw.off("close", onClose); }
       return reply;
     },
   },

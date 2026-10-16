@@ -28,6 +28,7 @@ stringData:
   PI_BOT_INTERNAL_URL: http://pibot:8000
   PI_BOT_VAULT_FILE: /run/secrets/pibot/vault.json
   PI_BOT_TAVILY_API_KEY: ""
+  PI_BOT_SEARXNG_URL: http://pibot-searxng:8080
 ---
 apiVersion: v1
 kind: Service
@@ -321,4 +322,96 @@ spec:
         - name: data
           emptyDir: {}
         - name: tmp
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pibot-searxng
+  namespace: n-88
+data:
+  settings.yml: |
+    # Private search gateway, reachable only on the deployment network.
+    use_default_settings: true
+    general:
+      instance_name: Pi Bot Search
+    search:
+      safe_search: 0
+      autocomplete: ""
+      formats:
+        - html
+        - json
+    server:
+      limiter: false
+      public_instance: false
+      image_proxy: false
+    outgoing:
+      request_timeout: 6.0
+      max_request_timeout: 10.0
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pibot-searxng
+  namespace: n-88
+spec:
+  type: ClusterIP
+  selector:
+    app: pibot-searxng
+  ports:
+    - name: search
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pibot-searxng
+  namespace: n-88
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pibot-searxng
+  template:
+    metadata:
+      labels:
+        app: pibot-searxng
+    spec:
+      containers:
+        - name: searxng
+          image: ghcr.io/searxng/searxng@sha256:ddd642cae6eac75412938fd846ddbf440a2df029cfeae8a562b8b205f4e35e25
+          ports:
+            - containerPort: 8080
+          env:
+            - name: SEARXNG_SECRET
+              valueFrom: { secretKeyRef: { name: pibot, key: PI_BOT_JWT_SECRET } }
+            - name: GRANIAN_WORKERS
+              value: "1"
+            - name: GRANIAN_BLOCKING_THREADS
+              value: "4"
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 40
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          volumeMounts:
+            - name: settings
+              mountPath: /etc/searxng/settings.yml
+              subPath: settings.yml
+              readOnly: true
+            - name: cache
+              mountPath: /var/cache/searxng
+      volumes:
+        - name: settings
+          configMap:
+            name: pibot-searxng
+        - name: cache
           emptyDir: {}

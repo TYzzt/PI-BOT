@@ -128,7 +128,7 @@ function OverviewPage() {
           <PiBot avatar={{ shape: "blob", color: "orange", scheme: "light" }} mood="waiting" size={72} />
           <div>
             <strong>还没有可用模型</strong>
-            <p className="muted">用户的 Bot 需要至少一个启用的模型才能工作。到「模型」页添加一个 OpenAI 兼容的模型。</p>
+            <p className="muted">用户的 Bot 需要至少一个启用的模型才能工作。到「模型」页添加一个 Responses API 兼容的模型。</p>
           </div>
         </div>
       )}
@@ -288,15 +288,15 @@ function ModelForm({ model, onClose, onSaved }: { model?: Model; onClose: () => 
       <form className="form" onSubmit={submit}>
         <label>
           显示名称
-          <input value={form.name} onChange={(e) => set({ name: e.target.value })} placeholder="例如：通义千问 Max" />
+          <input value={form.name} onChange={(e) => set({ name: e.target.value })} placeholder="例如：Grok" />
         </label>
         <label>
-          接口地址（OpenAI 兼容）
-          <input value={form.base_url} onChange={(e) => set({ base_url: e.target.value })} placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1" />
+          接口地址（Responses API Base URL）
+          <input value={form.base_url} onChange={(e) => set({ base_url: e.target.value })} placeholder="https://api.x.ai/v1" />
         </label>
         <label>
           服务商模型名
-          <input value={form.provider_model} onChange={(e) => set({ provider_model: e.target.value })} placeholder="qwen-max" />
+          <input value={form.provider_model} onChange={(e) => set({ provider_model: e.target.value })} placeholder="填写服务商模型 ID" />
         </label>
         <label>
           API Key{model && "（留空则保持不变）"}

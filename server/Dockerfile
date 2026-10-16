@@ -1,7 +1,7 @@
 FROM node:24-bookworm-slim AS build
 WORKDIR /app
 COPY . .
-RUN npm ci --ignore-scripts --workspace=@pi-bot/server --workspace=@pi-bot/agent --workspace=@pi-bot/bot-face --workspace=@pi-bot/admin --include-workspace-root
+RUN npm ci --ignore-scripts --workspace=@pi-bot/server --workspace=@pi-bot/agent --workspace=@pi-bot/bot-face --workspace=@pi-bot/a2ui --workspace=@pi-bot/admin --include-workspace-root
 RUN npm rebuild argon2 && npm run build --workspace=@pi-bot/admin && npm run build --workspace=@pi-bot/server
 FROM node:24-bookworm-slim
 ENV NODE_ENV=production

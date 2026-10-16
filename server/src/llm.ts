@@ -8,10 +8,11 @@ export interface Usage {
   output: number;
 }
 export function usageFrom(value: unknown): Usage | null {
-  const u = (value as Row | null)?.usage;
+  const data = value as Row | null;
+  const u = data?.response?.usage ?? data?.usage;
   if (!u || typeof u !== "object") return null;
-  const input = Number(u.prompt_tokens ?? u.input_tokens ?? 0),
-    output = Number(u.completion_tokens ?? u.output_tokens ?? 0);
+  const input = Number(u.input_tokens ?? 0),
+    output = Number(u.output_tokens ?? 0);
   return Number.isFinite(input) && Number.isFinite(output)
     ? { input, output }
     : null;
@@ -19,21 +20,32 @@ export function usageFrom(value: unknown): Usage | null {
 /** Picks the last usage block from an SSE body without buffering the whole stream. */
 export class SseUsage {
   private buffer = "";
+  private data: string[] = [];
   usage: Usage | null = null;
+  private line(line: string) {
+    if (!line) {
+      try {
+        this.usage = usageFrom(JSON.parse(this.data.join("\n"))) ?? this.usage;
+      } catch { /* comments, empty frames and non-JSON events */ }
+      this.data = [];
+    } else if (line.startsWith("data:")) {
+      this.data.push(line.slice(5).trimStart());
+    }
+  }
   push(chunk: string) {
     this.buffer += chunk;
     let i;
     while ((i = this.buffer.indexOf("\n")) >= 0) {
-      const line = this.buffer.slice(0, i).trim();
+      const line = this.buffer.slice(0, i).replace(/\r$/, "");
       this.buffer = this.buffer.slice(i + 1);
-      if (!line.startsWith("data:") || !line.includes('"usage"')) continue;
-      try {
-        this.usage = usageFrom(JSON.parse(line.slice(5))) ?? this.usage;
-      } catch {
-        /* partial or non-JSON events are ignored */
-      }
+      this.line(line);
     }
     if (this.buffer.length > 1_000_000) this.buffer = "";
+  }
+  end() {
+    if (this.buffer) this.line(this.buffer.replace(/\r$/, ""));
+    this.buffer = "";
+    this.line("");
   }
 }
 export async function findModel(tx: Tx, requested: unknown) {
@@ -46,7 +58,7 @@ export async function findModel(tx: Tx, requested: unknown) {
   if (!m) fail(404, "模型不存在或已停用");
   return m!;
 }
-export const endpoint = (m: Row) => `${m.base_url.replace(/\/+$/, "")}/chat/completions`;
+export const endpoint = (m: Row) => `${m.base_url.replace(/\/+$/, "")}/responses`;
 export async function recordUsage(
   db: Database,
   claims: LlmClaims,
@@ -69,7 +81,7 @@ export async function recordUsage(
 const openAiError = (reply: FastifyReply, status: number, message: string) =>
   reply.code(status).send({ error: { message, type: "pi_bot_proxy" } });
 
-export async function proxyChat(
+export async function proxyResponses(
   db: Database,
   s: Settings,
   claims: LlmClaims,
@@ -79,9 +91,12 @@ export async function proxyChat(
   signal: AbortSignal,
 ) {
   const key = new Vault(s.vaultFile).open(model.secret, model.model_id);
-  const payload: Row = { ...body, model: model.provider_model };
-  if (typeof payload.max_tokens === "number")
-    payload.max_tokens = Math.min(payload.max_tokens, model.max_tokens);
+  const payload: Row = {
+    ...body,
+    model: model.provider_model,
+    max_output_tokens: Math.min(body.max_output_tokens ?? model.max_tokens, model.max_tokens),
+    store: false,
+  };
   let upstream: Response;
   try {
     upstream = await fetch(endpoint(model), {
@@ -134,6 +149,8 @@ export async function proxyChat(
   } catch {
     /* client or provider closed the stream */
   } finally {
+    sse.push(decoder.decode());
+    sse.end();
     reply.raw.end();
     await recordUsage(db, claims, model.model_id, sse.usage);
   }
@@ -152,9 +169,10 @@ export async function complete(
     headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
     body: JSON.stringify({
       model: model.provider_model,
-      messages,
-      max_tokens: Math.min(maxTokens, model.max_tokens),
+      input: messages,
+      max_output_tokens: Math.min(maxTokens, model.max_tokens),
       stream: false,
+      store: false,
     }),
     signal: AbortSignal.timeout(timeoutMs),
     redirect: "error",
@@ -163,8 +181,16 @@ export async function complete(
   });
   if (!response.ok) throw new Error(`模型服务返回错误（HTTP ${response.status}）`);
   const data = (await response.json()) as Row;
+  if (data.status === "failed" || data.error)
+    throw new Error("模型生成失败");
+  if (data.status === "incomplete") throw new Error("模型输出不完整");
   return {
-    text: String(data.choices?.[0]?.message?.content ?? ""),
+    text: (data.output ?? [])
+      .filter((item: Row) => item.type === "message")
+      .flatMap((item: Row) => item.content ?? [])
+      .filter((part: Row) => part.type === "output_text")
+      .map((part: Row) => part.text)
+      .join(""),
     usage: usageFrom(data),
   };
 }

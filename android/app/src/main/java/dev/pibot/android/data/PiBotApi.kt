@@ -82,6 +82,7 @@ data class Bot(
     val persona: String = "",
     @SerialName("model_id") val modelId: String? = null,
     val avatar: Avatar = Avatar(),
+    @SerialName("is_main") val isMain: Boolean = false,
     @SerialName("last_active_at") val lastActiveAt: String,
     @SerialName("latest_run") val latestRun: Run? = null,
     @SerialName("last_message") val lastMessage: LastMessage? = null,
@@ -105,7 +106,24 @@ data class Message(
     val status: String,
     val executor: String? = null,
     val tools: List<ToolEntry> = emptyList(),
+    val progress: List<String> = emptyList(),
+    val ui: JsonObject? = null,
+    @SerialName("from_bot") val fromBot: FromBot? = null,
+    @SerialName("agent_tasks") val agentTasks: List<AgentTaskRef> = emptyList(),
     @SerialName("created_at") val createdAt: String,
+)
+
+/** Another bot wrote this `user` message: a delegated task (`task`) or the report of a hand-off (`report`). */
+@Serializable
+data class FromBot(val id: String, val name: String, val avatar: Avatar? = null, val kind: String = "task")
+
+@Serializable
+data class AgentTaskRef(
+    val id: String,
+    @SerialName("bot_id") val botId: String,
+    @SerialName("bot_name") val botName: String = "",
+    val status: String,
+    val mode: String = "wait",
 )
 
 @Serializable
@@ -187,6 +205,12 @@ class PiBotApi(private val http: OkHttpClient, private val json: Json = API_JSON
 
     fun send(url: ServerUrl, token: String, botId: String, text: String, requestId: String): SendResult =
         call(url, "POST", "/bots/$botId/messages", token, SendBody(text, requestId))
+
+    fun uiState(url: ServerUrl, token: String, botId: String, messageId: String, body: JsonObject): Message =
+        call(url, "POST", "/bots/$botId/messages/$messageId/ui-state", token, body)
+
+    fun uiAction(url: ServerUrl, token: String, botId: String, messageId: String, body: JsonObject): SendResult =
+        call(url, "POST", "/bots/$botId/messages/$messageId/ui-actions", token, body)
 
     fun cancel(url: ServerUrl, token: String, runId: String): Run = call(url, "POST", "/runs/$runId/cancel", token, EmptyBody())
 

@@ -11,7 +11,10 @@ import {
   markRunning,
   recordTool,
   setContent,
+  setProgress,
 } from "./bots.js";
+
+import {recordUi} from "./ui.js";
 
 export const MAC_OFFLINE = "Mac 已离线，可重新发送（将在云端运行）";
 
@@ -41,7 +44,9 @@ export async function dispatchMac(db: Database, s: Settings, hub: Hub, runId: st
 const live = new Map<string, { content: string; written: number }>();
 const runEvent = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("started") }),
+  z.object({ kind: z.literal("ui"), messages: z.array(z.record(z.string(),z.unknown())).min(1).max(20) }),
   z.object({ kind: z.literal("text"), text: z.string().max(400000) }),
+  z.object({ kind: z.literal("progress"), lines: z.array(z.string().max(200)).max(3) }),
   z.object({
     kind: z.literal("tool"),
     id: z.string().max(80),
@@ -118,8 +123,15 @@ export async function handleRunEvent(
       await tx.notify({ user_id: run.user_id, bot_id: run.bot_id });
       return null;
     }
+    if (e.kind === "ui") { await recordUi(tx,run,e.messages); return null; }
     if (e.kind === "tool") {
       await recordTool(tx, run, e);
+      await tx.notify({ user_id: run.user_id, bot_id: run.bot_id });
+      return null;
+    }
+    if (e.kind === "progress") {
+      live.delete(runId);
+      await setProgress(tx, run, e.lines);
       await tx.notify({ user_id: run.user_id, bot_id: run.bot_id });
       return null;
     }

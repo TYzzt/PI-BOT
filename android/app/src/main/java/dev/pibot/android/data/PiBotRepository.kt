@@ -156,6 +156,18 @@ class PiBotRepository(
         return result.run
     }
 
+    suspend fun saveUiState(botId: String, messageId: String, payload: JsonObject): JsonObject {
+        val message = authed { u, t -> api.uiState(u, t, botId, messageId, payload) }
+        _timelines.update { all -> all + (botId to (all[botId] ?: Timeline()).merge(listOf(message))) }
+        return message.ui ?: throw ApiException(422, "交互界面无效")
+    }
+
+    suspend fun submitUiAction(botId: String, messageId: String, payload: JsonObject) {
+        val result = authed { u, t -> api.uiAction(u, t, botId, messageId, payload) }
+        _timelines.update { all -> all + (botId to (all[botId] ?: Timeline()).merge(result.messages)) }
+        _bots.update { list -> list?.map { if (it.id == botId) it.copy(latestRun = result.run) else it } }
+    }
+
     suspend fun cancel(botId: String, runId: String) {
         authed { u, t -> api.cancel(u, t, runId) }
         refreshBot(botId)

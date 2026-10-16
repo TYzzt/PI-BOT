@@ -17,7 +17,7 @@ npm run dev --workspace=@pi-bot/server   # API，默认 http://127.0.0.1:8000
 
 首次启动时，如果库里还没有管理员，就用 `PI_BOT_ADMIN_USERNAME` / `PI_BOT_ADMIN_PASSWORD` 创建一个。打开 `http://127.0.0.1:8000/admin/` 登录后：
 
-1. 「模型」添加一个 OpenAI 兼容模型（地址、服务商模型名、API Key），点「测试」确认连通；第一个模型自动成为默认模型。
+1. 「模型」添加一个支持 Responses API 的模型（Base URL、服务商模型名、API Key），例如 xAI 的 `https://api.x.ai/v1`，点「测试」确认连通；第一个模型自动成为默认模型。
 2. 「用户」创建普通用户。没有注册入口。
 3. 用户在 Mac 或手机上用这个账号登录。
 
@@ -29,14 +29,20 @@ npm run runner --workspace=@pi-bot/server
 npm run worker --workspace=@pi-bot/server
 ```
 
-`PI_BOT_TAVILY_API_KEY` 不填时云端回复不联网。所有环境变量见 [.env.example](.env.example)。
+联网搜索由 API 统一代理，Mac 与云端 Runner 共用 `POST /web/search`，使用已有短期智能体令牌鉴权。配置 `PI_BOT_SEARXNG_URL` 即可，不需要搜索 API Key；未配置 SearXNG 时仍可用 `PI_BOT_TAVILY_API_KEY` 作为替代。两项都不配置时不向智能体提供搜索工具。所有环境变量见 [.env.example](.env.example)。
 
 管理后台开发：`npm run admin:dev`（Vite 把接口代理到 `PI_BOT_SERVER`，默认 `http://127.0.0.1:8000`）。
+
+每个 Bot 通过内置 Pi Extension 自行管理私有 skills，云端统一保存，Mac 和 Runner 按需读取。没有用户管理界面，内部操作不进入公开时间线；已有 skill 的变更保留版本并支持恢复。说明和接入契约见 [agent/README.md](../packages/agent/README.md)。启动时自动执行 `0005-bot-skills.sql`；启用私有 skills 的会话按完整模型消息推送文本，避免内部管理说明短暂出现在客户端。
 
 ## 部署
 
 - 单机：`cd server && docker compose up --build -d`（需要先生成 `server/vault.json`，并在环境里设置 `PI_BOT_ADMIN_PASSWORD`、`PI_BOT_JWT_SECRET`、`PI_BOT_RUNNER_TOKEN`）。
 - 集群：[deploy/pibot.yaml](deploy/pibot.yaml)。入口 `https://aicloud-app.lenovo.com.cn/pibot`，后台 `/pibot/admin/`；镜像由 GitHub Actions 推到 `registry.cn-beijing.aliyuncs.com/liuhx/pi-bot-server:latest`。应用前修改 `pibot` Secret 里的口令，并创建 `pibot-vault` Secret（见清单顶部注释）。
+
+Compose 会同时启动 SearXNG，默认内网地址 `http://searxng:8080`，不向宿主机或公网暴露搜索端口。配置文件在 [searxng/settings.yml](searxng/settings.yml)，已启用 JSON、关闭私有实例不需要的限流器（无需额外 Redis/Valkey），容器限制 512MB 内存和一个工作进程。Kubernetes 清单同样包含 SearXNG 的 Deployment、ClusterIP Service 和 ConfigMap。修改搜索引擎或网络代理配置后重启 SearXNG；Kubernetes 修改 ConfigMap 后需要滚动重启其 Deployment。
+
+SearXNG 仍需能访问上游搜索引擎；服务健康并不代表搜索源可用。Server 限制搜索为 20 秒，返回最多 8 条去重结果并缓存成功查询 5 分钟。部分来源失败时保留其余结果并提示；全部来源失败时明确返回错误。搜索返回摘要和链接，不自动抓取网页全文。
 
 API 只能单副本：Mac 的长连接、在线状态和资料库 RPC 都在进程内存里。Worker 可以多副本。Runner 只供 Worker 在内网调用。生产入口必须是 HTTPS/WSS。
 
@@ -48,3 +54,5 @@ PI_BOT_TEST_DATABASE_URL=postgresql://pibot:pibot@127.0.0.1:5432/pibot npm test
 ```
 
 集成测试会清空测试库，请用专门的数据库。接口契约导出在 `openapi.json`，修改路由后运行 `npm run openapi --workspace=@pi-bot/server`。
+
+模型调用统一使用 Responses API：Mac 与 Runner 通过 `POST /llm/v1/responses`，连通性测试和记忆摘要直接调用服务商 `/responses`。Base URL 填到 `/v1`，不含 `/responses`；模型必须支持此协议。请求使用 `input`、`max_output_tokens`，工具使用 `function_call` / `function_call_output`，流式用量从终止事件的 `response.usage` 读取。历史由客户端发送，代理强制 `store: false`。升级时需同步更新 API、Worker、Runner 和 Mac 客户端。

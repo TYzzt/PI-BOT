@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron';
+import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage } from 'electron';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
@@ -14,6 +14,7 @@ app.setPath('userData', join(dataDir, 'electron'));
 let window: BrowserWindow | null = null;
 let serviceProcess: ChildProcess | undefined;
 const page = pathToFileURL(join(__dirname, '../ui-dist/index.html')).href;
+const iconPath = join(__dirname, '../assets/pi-bot.png');
 const client = new ServiceClient(event => window?.webContents.send('agent:event', event));
 function validSender(event: Electron.IpcMainInvokeEvent) { if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame || event.senderFrame.url !== page) throw new Error('不受信任的 IPC 来源'); }
 const DEFAULT_SERVER_URL = 'https://aicloud-app.lenovo.com.cn/pibot';
@@ -48,6 +49,7 @@ else {
   if (process.platform === 'darwin') app.setActivationPolicy('regular');
   app.on('second-instance', () => { if (window) present(window); });
   app.whenReady().then(() => {
+    if (process.platform === 'darwin') app.dock?.setIcon(nativeImage.createFromPath(iconPath));
     ipcMain.handle('agent:computerName', event => { validSender(event); return computerName(); });
     ipcMain.handle('agent:defaultServerUrl', event => { validSender(event); return process.env.PI_BOT_SERVER_URL || DEFAULT_SERVER_URL; });
     ipcMain.handle('agent:call', async (event, method: Method, input: unknown) => { validSender(event); return client.call(method, parseInput(method, input)); });
@@ -59,7 +61,7 @@ else {
       if (error) throw new Error('无法在 Finder 中打开资料库');
     });
     const createWindow = () => {
-      window = new BrowserWindow({ width: 1180, height: 820, minWidth: 900, minHeight: 600, show: false, title: 'Pi Bot', backgroundColor: '#f6f4f1', titleBarStyle: 'hiddenInset', webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false } });
+      window = new BrowserWindow({ width: 1180, height: 820, minWidth: 900, minHeight: 600, show: false, icon: iconPath, title: 'Pi Bot', backgroundColor: '#f6f4f1', titleBarStyle: 'hiddenInset', webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false } });
       window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
       window.webContents.on('will-navigate', event => event.preventDefault());
       window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));

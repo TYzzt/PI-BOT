@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { Database } from "./db.js";
 import { settings } from "./config.js";
-const versions = ["0001-baseline"];
+const versions = ["0001-baseline", "0002-message-progress", "0003-main-bot", "0004-agent-tasks", "0005-bot-skills", "0006-message-ui"];
 export async function migrate(db: Database) {
   await db.tx(async (tx) => {
     await tx.rows("SELECT pg_advisory_xact_lock(7420261011)");

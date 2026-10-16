@@ -1,3 +1,4 @@
+import { ResponseStream } from "../../packages/agent/tests/responses.js";
 import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
@@ -6,8 +7,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApp } from '../../server/src/app.js';
 import { settings } from '../../server/src/config.js';
-import { eventually, resetDatabase, TEST_DB, vaultFile } from '../../server/tests/helpers.js';
+import { eventually, mockSearch, resetDatabase, TEST_DB, vaultFile } from '../../server/tests/helpers.js';
 import { Application } from '../packages/service/src/application.js';
+import { buildContext } from '../../server/src/bots.js';
+import { Database } from '../../server/src/db.js';
 import { MemoryCredentials } from '../packages/service/src/keychain.js';
 import type { AppEvent, Bot, MessagePage } from '../packages/protocol/src/index.js';
 
@@ -19,27 +22,30 @@ async function scriptedProvider(outside: string) {
   const server = createServer(async (req, res) => {
     let raw = ''; for await (const chunk of req) raw += chunk;
     const json = JSON.parse(raw);
-    const messages: any[] = json.messages;
+    const messages: any[] = json.input;
     const user = text(messages.filter(m => m.role === 'user').at(-1)?.content);
     const last = messages.at(-1);
-    const results = messages.filter(m => m.role === 'tool').map(m => text(m.content));
+    const results = messages.filter(m => m.type === 'function_call_output').map(m => text(m.output));
     let reply: { text?: string; tool?: { name: string; args: object } };
-    if (user.includes('写文件')) reply = last.role === 'tool' ? { text: `完成：${results.at(-1)}` } : { tool: { name: 'write_file', args: { path: 'notes/hello.md', content: '# Hello from Pi Bot' } } };
+    if (user === '沉淀方法') reply = last.type === 'function_call_output' ? { text: '方法已记住。' } : { tool: { name: 'skill_manage', args: { action: 'create', name: 'mac-report', description: '整理报告时使用', instructions: 'PRIVATE-MAC-WORKFLOW：先核实来源，再整理。' } } };
+    else if (user === '复用方法') reply = last.type === 'function_call_output' ? { text: '报告已整理。' } : { tool: { name: 'skill_load', args: { name: 'mac-report' } } };
+    else if (user.includes('写文件')) reply = last.type === 'function_call_output' ? { text: `完成：${results.at(-1)}` } : { tool: { name: 'write_file', args: { path: 'notes/hello.md', content: '# Hello from Pi Bot' } } };
     else if (user.includes('桌面')) {
-      if (last.role !== 'tool') reply = { tool: { name: 'request_outside_access', args: { path: outside, reason: '需要看看桌面上的文件' } } };
+      if (last.type !== 'function_call_output') reply = { tool: { name: 'request_outside_access', args: { path: outside, reason: '需要看看桌面上的文件' } } };
       else if (results.length === 1 && results[0].includes('已批准')) reply = { tool: { name: 'list_files', args: { path: outside } } };
       else reply = { text: `桌面上有：${results.at(-1)}` };
-    } else reply = { text: '你好，我在。' };
-    res.writeHead(200, { 'content-type': 'text/event-stream' });
-    const chunk = (delta: object, finish: string | null = null) => res.write(`data: ${JSON.stringify({ id: 'x', object: 'chat.completion.chunk', created: 1, model: json.model, choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`);
+    } else if (user.includes('联网搜索')) reply = last.type === 'function_call_output' ? { text: `搜到：${results.at(-1)}` } : { tool: { name: 'web_search', args: { query: 'Mac 搜索测试', language: 'zh-CN' } } };
+    else reply = { text: '你好，我在。' };
+    assert.equal(req.url, "/v1/responses");
+    const stream = new ResponseStream(res, json.model);
     if (reply.tool) {
-      chunk({ role: 'assistant', tool_calls: [{ index: 0, id: `call_${messages.length}`, type: 'function', function: { name: reply.tool.name, arguments: JSON.stringify(reply.tool.args) } }] });
-      chunk({}, 'tool_calls');
+      stream.text(reply.tool.name.startsWith('skill_') ? '内部：正在维护 skill。' : '我先看看资料，再帮你处理。');
+      stream.tool(reply.tool.name, reply.tool.args, `call_${messages.length}`);
     } else {
-      for (const piece of Array.from(reply.text!)) chunk({ content: piece });
-      chunk({}, 'stop');
+      for (const piece of Array.from(reply.text!)) stream.text(piece);
+
     }
-    res.end('data: [DONE]\n\n');
+    stream.end();
   });
   await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
   return { url: `http://127.0.0.1:${(server.address() as any).port}/v1`, close: () => new Promise<void>(r => { server.closeAllConnections(); server.close(() => r()); }) };
@@ -48,6 +54,8 @@ async function scriptedProvider(outside: string) {
 let dir: string, api: Awaited<ReturnType<typeof createApp>>, base: string, provider: Awaited<ReturnType<typeof scriptedProvider>>, app: Application;
 const events: AppEvent[] = [];
 let adminToken = '';
+let serverDb: Database;
+let search: Awaited<ReturnType<typeof mockSearch>>;
 async function http(method: string, path: string, body?: unknown, token = adminToken) {
   const r = await fetch(base + path, { method, headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: body === undefined ? undefined : JSON.stringify(body) });
   return { status: r.status, json: await r.json() as any };
@@ -60,7 +68,9 @@ before(async () => {
   writeFileSync(join(dir, 'Desktop', 'plan.txt'), 'x');
   await resetDatabase(TEST_DB!);
   provider = await scriptedProvider(join(dir, 'Desktop'));
-  api = await createApp(settings({ PI_BOT_DATABASE_URL: TEST_DB, PI_BOT_ADMIN_PASSWORD: 'admin-password', PI_BOT_JWT_SECRET: 'j'.repeat(40), PI_BOT_VAULT_FILE: vaultFile(dir) }));
+  search = await mockSearch();
+  serverDb = new Database(TEST_DB!);
+  api = await createApp(settings({ PI_BOT_DATABASE_URL: TEST_DB, PI_BOT_ADMIN_PASSWORD: 'admin-password', PI_BOT_JWT_SECRET: 'j'.repeat(40), PI_BOT_VAULT_FILE: vaultFile(dir), PI_BOT_SEARXNG_URL: search.url }), serverDb);
   await api.listen({ port: 0, host: '127.0.0.1' });
   base = `http://127.0.0.1:${(api.server.address() as any).port}`;
   adminToken = (await http('POST', '/auth/login', { username: 'admin', password: 'admin-password' }, '')).json.access_token;
@@ -73,6 +83,7 @@ after(async () => {
   await app?.shutdown();
   await api?.close();
   await provider?.close();
+  await search?.close();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -94,6 +105,7 @@ test('the Mac harness logs in, binds itself and runs bots against its library', 
   assert.equal(reply.executor, 'mac');
   assert.match(reply.content, /完成：已写入 notes\/hello.md/);
   assert.deepEqual(reply.tools.map(t => [t.name, t.state]), [['write_file', 'completed']]);
+  assert.deepEqual(reply.progress, ['我先看看资料，再帮你处理。']);
   assert.equal(readFileSync(join(dir, 'pi-bot', 'writer', 'notes', 'hello.md'), 'utf8'), '# Hello from Pi Bot');
   assert.ok(events.some(e => e.type === 'bot.mood' && e.mood === 'working'), 'boards and UI see the bot working');
   assert.ok(events.some(e => e.type === 'delta'), 'streaming text reaches the UI');
@@ -105,11 +117,26 @@ test('the Mac harness logs in, binds itself and runs bots against its library', 
   assert.equal(content.json.content, '# Hello from Pi Bot');
 });
 
+test('the Mac agent searches through the authenticated Server gateway', { skip }, async () => {
+  const bot = ((await app.call('bots', {})) as { bots: Bot[] }).bots.find(b => b.name === 'Writer')!;
+  await app.call('send', { botId: bot.id, text: '联网搜索一下' });
+  const reply = await eventually(async () => {
+    const page = await app.call('messages', { botId: bot.id }) as MessagePage;
+    const last = page.messages.at(-1)!;
+    return last.status !== 'running' && last;
+  }, 20000);
+  assert.equal(reply.status, 'completed', JSON.stringify(reply));
+  assert.match(reply.content, /Pi Bot 官方资料/);
+  assert.deepEqual(reply.tools.map(t => [t.name, t.state]), [['web_search', 'completed']]);
+  assert.equal(search.queries.at(-1)?.searchParams.get('q'), 'Mac 搜索测试');
+  assert.ok(events.some(e => e.type === 'bot.mood' && e.mood === 'searching'));
+});
+
 test('outside access waits for the user and continues after approval', { skip }, async () => {
-  const bot = (await app.call('bots', {}) as { bots: Bot[] }).bots[0];
+  const bot = (await app.call('bots', {}) as { bots: Bot[] }).bots.find(b => b.name === 'Writer')!;
   await app.call('send', { botId: bot.id, text: '看看我的桌面' });
   const pending = await eventually(async () => {
-    const b = (await app.call('bots', {}) as { bots: Bot[] }).bots[0];
+    const b = (await app.call('bots', {}) as { bots: Bot[] }).bots.find(b => b.id === bot.id)!;
     return b.pending_approvals[0];
   }, 20000);
   assert.equal(pending.path, join(dir, 'Desktop'));
@@ -122,6 +149,34 @@ test('outside access waits for the user and continues after approval', { skip },
   }, 20000);
   assert.equal(reply.status, 'completed', JSON.stringify(reply));
   assert.match(reply.content, /plan\.txt/);
+  assert.deepEqual(reply.progress, ['我先看看资料，再帮你处理。'], 'duplicate remarks are not repeated after approval');
+});
+
+test('the Mac manages its own skills privately and stores them for cloud reuse', { skip }, async () => {
+  const bot = ((await app.call('bots', {})) as { bots: Bot[] }).bots.find(b => b.name === 'Writer')!;
+  const start = events.length;
+  for (const text of ['沉淀方法', '复用方法']) {
+    await app.call('send', { botId: bot.id, text });
+    const reply = await eventually(async () => {
+      const page = await app.call('messages', { botId: bot.id }) as MessagePage;
+      const last = page.messages.at(-1)!;
+      return last.status !== 'running' && last;
+    }, 20000);
+    assert.equal(reply.status, 'completed', JSON.stringify(reply));
+    assert.deepEqual(reply.tools, []);
+    assert.deepEqual(reply.progress, ['好，我来看看，稍后把结果给你。']);
+    assert.doesNotMatch(reply.content, /内部|skill_|PRIVATE-MAC/);
+  }
+  assert.doesNotMatch(JSON.stringify(events.slice(start)), /skill_manage|skill_load|PRIVATE-MAC|正在维护/);
+  // Inspect the server through the public bearer, then create a cloud context
+  // from the same bot to verify that Mac skills need no file synchronization.
+  const bobToken = (await http('POST', '/auth/login', { username: 'bob', password: 'bob-password' }, '')).json.access_token;
+  const files = await http('GET', `/bots/${bot.id}/files?path=`, undefined, bobToken);
+  assert.ok(!files.json.entries.some((entry: any) => /skill|mac-report/.test(entry.name)));
+  const messages = await http('GET', `/bots/${bot.id}/messages`, undefined, bobToken);
+  const runId = messages.json.messages.at(-1).run_id;
+  const context = await serverDb.tx(async tx => buildContext(tx, settings({ PI_BOT_DATABASE_URL: TEST_DB, PI_BOT_JWT_SECRET: 'j'.repeat(40) }), { ...await tx.get('bot_runs', runId), executor: 'cloud' }));
+  assert.ok(context.skills.some(skill => skill.name === 'mac-report'));
 });
 
 test('logout unbinds the Mac and the server falls back to the cloud', { skip }, async () => {

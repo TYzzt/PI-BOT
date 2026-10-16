@@ -29,6 +29,7 @@ export function moodFor(a: BotActivity): Mood {
     case "queued":
       return "thinking";
     case "running":
+      if (a.tool === "ask_agent") return "waiting";
       if (a.tool) return SEARCH_TOOLS.has(a.tool) ? "searching" : "working";
       return "thinking";
     case "waiting_approval":

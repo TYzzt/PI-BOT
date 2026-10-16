@@ -1,6 +1,6 @@
 # Pi Bot for Mac
 
-Pi Bot 的 Mac 端是 Bot 们的 **harness**：登录后这台 Mac 绑定到你的账号，Bot 在这里读写资料库、执行命令。没有编程、浏览器自动化、Skills 或 MCP 的概念。
+Pi Bot 的 Mac 端是 Bot 们的 **harness**：登录后这台 Mac 绑定到你的账号，Bot 在这里读写资料库、执行命令。支持文件与命令工具，以及通过 Server 提供的联网搜索；没有浏览器自动化、Skills 或 MCP。
 
 - 每个 Bot 的资料库是 `~/pi-bot/<slug>/`，在 Finder 里就是普通文件夹。
 - Bot 默认只能碰自己的资料库；要访问外面的路径（如 `~/Desktop`）会先弹出审批，由你在 Mac 或手机上批准，只对本次任务有效。
@@ -18,7 +18,7 @@ npm run desktop:dev
 
 `npm run dev` 先构建 Swift Keychain helper、本地服务和 UI，再启动独立服务进程和 Electron。修改源码后重新执行。
 
-登录页默认服务器为 `PI_BOT_SERVER_URL`，未设置时为 `https://aicloud-app.lenovo.com.cn/pibot`。本地开发可以填 `http://localhost:8000`（只有 localhost 允许 HTTP）。
+开发启动时登录页默认服务器为 `http://localhost:8000`，可用 `PI_BOT_SERVER_URL` 覆盖；打包应用默认使用 `https://aicloud-app.lenovo.com.cn/pibot`（只有 localhost 允许 HTTP）。
 
 ## 使用
 
@@ -32,12 +32,13 @@ npm run desktop:dev
 
 | 工具 | 说明 |
 |---|---|
+| `web_search` | 通过 Server 搜索网络，返回标题、链接和摘要（服务器配置 SearXNG 或 Tavily 时可用） |
 | `list_files` / `read_file` / `search_files` | 浏览、读取、搜索资料库 |
 | `write_file` / `edit_file` | 写文件、精确替换文本 |
 | `run_command` | 用 zsh 执行命令，工作目录默认是资料库（也可以是已批准的外部目录），默认 2 分钟超时，可取消 |
 | `request_outside_access` | 申请访问资料库以外的目录或文件 |
 
-文件工具会解析符号链接，不能借链接逃出资料库；`run_command` 只限制工作目录，命令本身不做沙箱隔离，人设和审批是主要防线。联网搜索只在云端运行时提供（服务器配置了 Tavily 时）。
+文件工具会解析符号链接，不能借链接逃出资料库；`run_command` 只限制工作目录，命令本身不做沙箱隔离，人设和审批是主要防线。联网搜索由 Mac 与云端共用 Server 的鉴权接口，不在客户端保存搜索密钥，也无需在 Mac 上安装搜索服务。
 
 ## 数据位置
 
@@ -60,3 +61,7 @@ npm run pack:mac --workspace=pi-bot-desktop  # 生成 Pi Bot.app / dmg
 ```
 
 架构见 [ARCHITECTURE.md](./ARCHITECTURE.md)，需求与验收标准见 [REQUIREMENTS.md](./REQUIREMENTS.md)。
+
+应用图标由 `scripts/build-icon.ts` 从共享 Bot 绘制代码生成，Dock、安装包和主智能体均使用默认橙色小人。登录后，Pi Bot 主智能体自动固定在列表顶部，其他 Bot 按最近活动排序。
+
+A2UI 交互工具直接显示在时间线里，支持表单、实时计算、联动图表和表格。输入会保存，提交后 Bot 继续工作；组件和协议由 `packages/a2ui` 与 Android 共用。

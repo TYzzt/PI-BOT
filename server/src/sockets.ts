@@ -5,6 +5,7 @@ import type { Settings } from "./config.js";
 import { user, device } from "./security.js";
 import type { DeviceConnection, Hub } from "./hub.js";
 import { failDeviceRuns, handleRunEvent } from "./runs.js";
+import type { AgentDispatcher } from "./agents.js";
 
 const send = (ws: WebSocket, value: Row) => {
   if (ws.readyState !== 1) return;
@@ -22,6 +23,7 @@ export async function sockets(
   db: Database,
   s: Settings,
   hub: Hub,
+  dispatcher?: AgentDispatcher,
 ) {
   const listener = await db.pool.connect();
   await listener.query(`LISTEN ${CHANNEL}`);
@@ -31,14 +33,19 @@ export async function sockets(
       if (typeof c.user_id !== "string") return;
       if (c.message_id && typeof c.content === "string")
         hub.publish(c.user_id, { type: "delta", bot_id: c.bot_id, message_id: c.message_id, content: c.content });
-      else if (c.bot_id) hub.publish(c.user_id, { type: "bot", bot_id: c.bot_id });
-      else hub.publish(c.user_id, { type: "bots" });
+      else {
+        dispatcher?.kick();
+        if (c.bot_id) hub.publish(c.user_id, { type: "bot", bot_id: c.bot_id });
+        else hub.publish(c.user_id, { type: "bots" });
+      }
     } catch {
       /* malformed payloads are ignored */
     }
   });
   listener.on("error", () => {});
+  dispatcher?.start();
   app.addHook("onClose", async () => {
+    await dispatcher?.stop();
     await listener.query("UNLISTEN *").catch(() => {});
     listener.release();
     await db.close();

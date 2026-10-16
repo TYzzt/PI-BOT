@@ -7,11 +7,14 @@ import { Database } from "../src/db.js";
 import { Worker } from "../src/worker.js";
 import { createRunner } from "../src/runner.js";
 import { SseUsage } from "../src/llm.js";
-import { deviceKeys, eventually, mockProvider, resetDatabase, socket, TEST_DB, tempDir, vaultFile } from "./helpers.js";
+import { createBotAgent, INITIAL_PROGRESS } from "@pi-bot/agent";
+import { DEFAULT_AVATAR } from "@pi-bot/bot-face";
+import { deviceKeys, eventually, mockProvider, mockSearch, resetDatabase, socket, TEST_DB, tempDir, vaultFile } from "./helpers.js";
 
 const skip = !TEST_DB && "需要 PI_BOT_TEST_DATABASE_URL";
 let app: Awaited<ReturnType<typeof createApp>>, base: string, s: Settings;
 let provider: Awaited<ReturnType<typeof mockProvider>>, dir: ReturnType<typeof tempDir>;
+let search: Awaited<ReturnType<typeof mockSearch>>;
 let runner: Awaited<ReturnType<typeof createRunner>>, worker: Worker, workerDb: Database, workerLoop: Promise<void>;
 const RUNNER_TOKEN = "r".repeat(40);
 
@@ -41,7 +44,19 @@ before(async () => {
   await resetDatabase(TEST_DB!);
   dir = tempDir();
   provider = await mockProvider();
-  runner = await createRunner({ token: RUNNER_TOKEN, dir: dir.path });
+  search = await mockSearch();
+  runner = await createRunner({ token: RUNNER_TOKEN, dir: dir.path, factory: async options => {
+    const agent = await createBotAgent(options);
+    return { ...agent, tools: agent.tools, setApiKey: key => agent.setApiKey(key), abort: () => agent.abort(), dispose: () => agent.dispose(), prompt: async (text, onText) => {
+      if (text === "进度链路测试") {
+        onText("我先查查资料。");
+        options.onProgress?.(["我先查查资料。"]);
+        onText("");
+        options.onProgress?.(["我先查查资料。", "信息已核对，开始整理。"]);
+      }
+      return agent.prompt(text, onText);
+    } };
+  } });
   await runner.listen({ port: 0, host: "127.0.0.1" });
   const runnerUrl = `http://127.0.0.1:${(runner.server.address() as any).port}`;
   const env = {
@@ -54,6 +69,7 @@ before(async () => {
     PI_BOT_MEMORY_THRESHOLD: "10",
     PI_BOT_WORKER_POLL_SECONDS: "0.05",
     PI_BOT_RPC_TIMEOUT_MS: "1500",
+    PI_BOT_SEARXNG_URL: search.url,
   };
   s = settings(env);
   app = await createApp(s);
@@ -71,6 +87,7 @@ after(async () => {
   await app?.close();
   await runner?.close();
   await provider?.close();
+  await search?.close();
   dir?.cleanup();
 });
 
@@ -130,8 +147,27 @@ test("bots are per user with unique library slugs and a default avatar", { skip 
   state.bot = a.json.id;
   state.bot2 = c.json.id;
   const list = await api("GET", "/bots", { token: state.alice });
-  assert.equal(list.json.bots.length, 3);
+  assert.equal(list.json.bots.length, 4);
   assert.equal(list.json.mac.online, false);
+});
+
+test("each account gets one pinned main bot, including concurrent first loads and an existing Pi Bot slug", { skip }, async () => {
+  const lists = await Promise.all(Array.from({ length: 4 }, () => api("GET", "/bots", { token: state.alice })));
+  const main = lists[0].json.bots[0];
+  assert.equal(main.is_main, true);
+  assert.equal(main.name, "Pi Bot");
+  assert.deepEqual(main.avatar, DEFAULT_AVATAR);
+  assert.ok(lists.every(list => list.json.bots.filter((b: any) => b.is_main).length === 1 && list.json.bots[0].id === main.id));
+  assert.equal((await api("DELETE", `/bots/${main.id}`, { token: state.alice })).status, 409);
+  state.mainBot = main.id;
+
+  await api("POST", "/admin/api/users", { token: state.admin, body: { username: "charlie", password: "charlie-password" } });
+  const token = (await api("POST", "/auth/login", { body: { username: "charlie", password: "charlie-password" } })).json.access_token;
+  const custom = await api("POST", "/bots", { token, body: { name: "Pi Bot" } });
+  assert.equal(custom.json.slug, "pi-bot");
+  const firstLoads = await Promise.all(Array.from({ length: 4 }, () => api("GET", "/bots", { token })));
+  assert.ok(firstLoads.every(list => list.json.bots.length === 2 && list.json.bots[0].is_main && list.json.bots[0].slug === "pi-bot-2"));
+  assert.ok(firstLoads.every(list => list.json.bots[0].id === firstLoads[0].json.bots[0].id));
 });
 
 test("the model proxy injects the provider key, rewrites the model and records usage", { skip }, async () => {
@@ -145,24 +181,46 @@ test("the model proxy injects the provider key, rewrites the model and records u
   assert.equal(token.status, 200, JSON.stringify(token.json));
   const replay = await api("POST", "/device/llm-token", { body: { bot_id: state.bot }, headers: keys.headers("POST", "/device/llm-token", "{}") });
   assert.equal(replay.status, 401, "signature covers the body");
-  const r = await fetch(`${base}/llm/v1/chat/completions`, {
+  const r = await fetch(`${base}/llm/v1/responses`, {
     method: "POST",
     headers: { authorization: `Bearer ${token.json.token}`, "content-type": "application/json" },
-    body: JSON.stringify({ model: state.model, stream: true, stream_options: { include_usage: true }, messages: [{ role: "user", content: "你好" }] }),
+    body: JSON.stringify({ model: state.model, stream: true, max_output_tokens: 5000, input: [{ role: "user", content: "你好" }] }),
   });
   assert.equal(r.status, 200);
   const sse = await r.text();
-  assert.match(sse, /"content":"好"/);
-  assert.match(sse, /"prompt_tokens":42/);
+  assert.match(sse, /"delta":"收"/);
+  assert.match(sse, /"input_tokens":42/);
   const forwarded = provider.requests.at(-1)!;
   assert.equal(forwarded.body.model, "upstream-model");
+  assert.equal(forwarded.body.max_output_tokens, 1000);
+  assert.equal(forwarded.body.store, false);
   assert.equal(forwarded.headers.authorization, "Bearer sk-provider-secret");
-  const userToken = await fetch(`${base}/llm/v1/chat/completions`, {
+  const oneShot = await api("POST", "/llm/v1/responses", { token: token.json.token, body: { model: state.model, input: "你好", store: true } });
+  assert.equal(oneShot.status, 200);
+  assert.equal(oneShot.json.output[0].content[0].text, "收到：你好");
+  assert.equal(provider.requests.at(-1)!.body.input, "你好");
+  assert.equal(provider.requests.at(-1)!.body.max_output_tokens, 1000);
+  assert.equal(provider.requests.at(-1)!.body.store, false);
+  const requestCount = provider.requests.length;
+  for (const body of [{ messages: [] }, { input: 42 }, { input: [], max_output_tokens: -1 }]) {
+    assert.equal((await api("POST", "/llm/v1/responses", { token: token.json.token, body })).status, 422);
+  }
+  assert.equal(provider.requests.length, requestCount, "invalid Responses requests never reach the provider");
+  const userToken = await fetch(`${base}/llm/v1/responses`, {
     method: "POST",
     headers: { authorization: `Bearer ${state.alice}`, "content-type": "application/json" },
-    body: JSON.stringify({ model: state.model, messages: [] }),
+    body: JSON.stringify({ model: state.model, input: [] }),
   });
   assert.equal(userToken.status, 401, "user tokens cannot call the proxy");
+  const count = search.queries.length;
+  assert.equal((await api("POST", "/web/search", { body: { query: "未认证" } })).status, 401);
+  assert.equal((await api("POST", "/web/search", { token: state.alice, body: { query: "普通令牌" } })).status, 401);
+  assert.equal(search.queries.length, count, "unauthenticated requests never reach the search service");
+  assert.equal((await api("POST", "/web/search", { token: token.json.token, body: { query: " " } })).status, 422);
+  const searched = await api("POST", "/web/search", { token: token.json.token, body: { query: "原文 & site:gov.cn", language: "zh-CN" } });
+  assert.equal(searched.status, 200);
+  assert.equal(searched.json.results[0].title, "Pi Bot 官方资料");
+  assert.equal(search.queries.at(-1)?.searchParams.get("q"), "原文 & site:gov.cn");
   const usage = await eventually(async () => {
     const u = await api("GET", "/admin/api/usage", { token: state.admin });
     return u.json.by_user.find((x: any) => x.username === "alice" && x.input_tokens >= 42) && u.json;
@@ -181,6 +239,7 @@ test("Mac online: runs execute on the Mac with tools, approvals and file RPC", {
   const posted = await api("POST", `/bots/${state.bot}/messages`, { token: state.alice, body: { text: "整理一下桌面", request_id: requestId } });
   assert.equal(posted.status, 200, JSON.stringify(posted.json));
   assert.equal(posted.json.run.executor, "mac");
+  assert.deepEqual(posted.json.messages.at(-1).progress, [INITIAL_PROGRESS], "acknowledgement arrives in the send response before model output");
   const again = await api("POST", `/bots/${state.bot}/messages`, { token: state.alice, body: { text: "整理一下桌面", request_id: requestId } });
   assert.equal(again.json.run.id, posted.json.run.id, "request_id is idempotent");
   const busy = await api("POST", `/bots/${state.bot}/messages`, { token: state.alice, body: { text: "另一件事", request_id: randomUUID() } });
@@ -190,6 +249,7 @@ test("Mac online: runs execute on the Mac with tools, approvals and file RPC", {
   assert.equal(run.bot.slug, "research-bot");
   assert.match(run.system, /~\/pi-bot\/research-bot/);
   assert.match(run.system, /帮我整理资料/);
+  assert.match(run.system, /最多三句/);
   assert.equal(run.text, "整理一下桌面");
   const runId = run.run_id;
   mac.send({ type: "run_event", run_id: runId, event: { kind: "started" } });
@@ -197,6 +257,14 @@ test("Mac online: runs execute on the Mac with tools, approvals and file RPC", {
   mac.send({ type: "run_event", run_id: runId, event: { kind: "text", text: "正在查看" } });
   const delta = await events.next((m) => m.event?.type === "delta");
   assert.equal(delta.event.content, "正在查看");
+  mac.send({ type: "run_event", run_id: runId, event: { kind: "progress", lines: ["我先看看桌面上的文件。"] } });
+  const progressPage = await eventually(async () => {
+    const p = await api("GET", `/bots/${state.bot}/messages`, { token: state.alice });
+    const m = p.json.messages.at(-1);
+    return m.progress?.[0] === "我先看看桌面上的文件。" && m;
+  });
+  assert.deepEqual(progressPage.progress, ["我先看看桌面上的文件。"]);
+  assert.equal(progressPage.content, "", "remarks move above the answer instead of remaining in its body");
   mac.send({ type: "run_event", run_id: runId, event: { kind: "approval", request_id: "q1", path: "/Users/alice/Desktop", reason: "需要整理桌面" } });
   const created = await mac.next((m) => m.type === "approval_created");
   const detail = await eventually(async () => {
@@ -229,6 +297,7 @@ test("Mac online: runs execute on the Mac with tools, approvals and file RPC", {
   const reply = page.messages.at(-1);
   assert.equal(reply.content, "桌面已整理好。");
   assert.equal(reply.executor, "mac");
+  assert.deepEqual(reply.progress, ["我先看看桌面上的文件。"], "progress survives the final answer and reloading history");
   assert.deepEqual(reply.tools.map((t: any) => [t.name, t.state]), [["list_files", "completed"]]);
 
   await api("POST", `/bots/${state.bot}/messages`, { token: state.alice, body: { text: "再做一件事", request_id: randomUUID() } });
@@ -267,10 +336,19 @@ test("Mac offline: runs fall back to the cloud runner through the proxy, with me
   assert.equal(first.content, "好的，我记住了蓝鲸。");
   const forwarded = provider.requests.at(-1)!.body;
   assert.equal(forwarded.model, "upstream-model");
-  assert.match(forwarded.messages[0].content, /Mac 当前离线/);
-  assert.equal(forwarded.tools?.length ?? 0, 0, "cloud runs have no file or shell tools");
+  assert.match(forwarded.input[0].content, /Mac 当前离线/);
+  assert.deepEqual(forwarded.tools.map((t: any) => t.name), ["web_search", "ask_agent", "get_ui_catalog", "show_ui", "skill_manage", "skill_load"], "cloud runs get private skills, search and delegation, never file or shell tools");
   const second = await send("之前说了什么？");
   assert.equal(second.content, "你之前说的是蓝鲸。");
+  assert.deepEqual(second.progress, [INITIAL_PROGRESS], "even a silent model has an immediate acknowledgement");
+  const progressReply = await send("进度链路测试");
+  assert.equal(progressReply.content, "收到：进度链路测试");
+  assert.deepEqual(progressReply.progress, ["我先查查资料。", "信息已核对，开始整理。"], "Runner progress is persisted by the worker");
+  const searched = await send("联网搜索链路测试");
+  assert.equal(searched.status, "completed", JSON.stringify(searched));
+  assert.match(searched.content, /Pi Bot 官方资料/);
+  assert.deepEqual(searched.tools.map((t: any) => [t.name, t.state]), [["web_search", "completed"]]);
+  assert.equal(search.queries.at(-1)?.searchParams.get("language"), "zh-CN");
 
   for (let i = 0; i < 5; i++) await send(`第 ${i} 件事`);
   const memory = await eventually(async () => {
@@ -282,6 +360,151 @@ test("Mac offline: runs fall back to the cloud runner through the proxy, with me
   assert.equal(after.content, "你之前说的是蓝鲸。", "memory summary reaches the prompt");
 });
 
+test("the main bot can chat using the default model and stays pinned after other bots run", { skip }, async () => {
+  const posted = await api("POST", `/bots/${state.mainBot}/messages`, { token: state.alice, body: { text: "你好主智能体", request_id: randomUUID() } });
+  assert.equal(posted.status, 200);
+  const reply = await eventually(async () => {
+    const page = await api("GET", `/bots/${state.mainBot}/messages`, { token: state.alice });
+    const last = page.json.messages.at(-1);
+    return last.status !== "running" && last;
+  });
+  assert.equal(reply.status, "completed");
+  assert.equal(reply.content, "收到：你好主智能体");
+  assert.equal((await api("GET", "/bots", { token: state.alice })).json.bots[0].id, state.mainBot);
+});
+
+const userText = (r: any) => {
+  if (typeof r.body.input === "string") return r.body.input;
+  const m = r.body.input.filter((x: any) => x.role === "user").at(-1)?.content;
+  return Array.isArray(m) ? m.map((p: any) => p.text ?? "").join("") : String(m ?? "");
+};
+const systemText = (r: any) => String(r.body.input[0]?.content ?? "");
+
+test("bots delegate in the cloud: a synchronous wait returns the result, a hand-off reports back later", { skip }, async () => {
+  const writer = await api("POST", "/bots", { token: state.alice, body: { name: "写作助手", persona: "擅长写周报和总结" } });
+  state.writer = writer.json.id;
+  const settled = (botId: string, done: (messages: any[]) => boolean) =>
+    eventually(async () => {
+      const p = await api("GET", `/bots/${botId}/messages`, { token: state.alice });
+      return p.json.messages.at(-1).status !== "running" && done(p.json.messages) && p.json.messages;
+    }, 20000);
+
+  const posted = await api("POST", `/bots/${state.mainBot}/messages`, { token: state.alice, body: { text: "委托链路测试", request_id: randomUUID() } });
+  assert.equal(posted.json.run.executor, "cloud");
+  const main = await settled(state.mainBot, (ms) => ms.at(-2).content === "委托链路测试");
+  const reply = main.at(-1);
+  assert.equal(reply.status, "completed", JSON.stringify(reply));
+  assert.match(reply.content, /^综合：「写作助手」的结果：\n委托结果：周报写好了/, "the parent waited for the child inside one run");
+  assert.deepEqual(reply.agent_tasks.map((t: any) => [t.bot_id, t.bot_name, t.status, t.mode]), [[state.writer, "写作助手", "completed", "wait"]]);
+  assert.deepEqual(reply.tools.map((t: any) => [t.name, t.state, t.summary]), [["ask_agent", "completed", "写作助手：写一份本周周报"]]);
+  const parent = provider.requests.find((r) => userText(r) === "委托链路测试")!;
+  assert.match(systemText(parent), /ask_agent/);
+  assert.match(systemText(parent), /- 写作助手：擅长写周报和总结/, "the roster carries each bot's persona");
+  const child = provider.requests.find((r) => userText(r).includes("你收到来自智能体「Pi Bot」的委托"))!;
+  assert.match(userText(child), /写一份本周周报/);
+  assert.match(systemText(child), /只能用 wait=true/, "a delegated bot may only delegate synchronously");
+  const writerPage = (await api("GET", `/bots/${state.writer}/messages`, { token: state.alice })).json.messages;
+  assert.deepEqual(writerPage.map((m: any) => [m.role, m.content, m.from_bot?.name ?? null, m.from_bot?.kind ?? null]), [
+    ["user", "写一份本周周报", "Pi Bot", "task"],
+    ["assistant", "委托结果：周报写好了", null, null],
+  ], "the task lives on the target's own timeline");
+
+  await api("POST", `/bots/${state.mainBot}/messages`, { token: state.alice, body: { text: "转交链路测试", request_id: randomUUID() } });
+  const reported = await settled(state.mainBot, (ms) => ms.at(-1).content.startsWith("回报已收到"));
+  const [handoff, report, followUp] = reported.slice(-4).slice(1);
+  assert.match(handoff.content, /^综合：已转交给「写作助手」/, "the hand-off run ends without waiting");
+  assert.deepEqual(handoff.agent_tasks.map((t: any) => [t.status, t.mode]), [["completed", "report"]]);
+  assert.equal(report.role, "user");
+  assert.deepEqual([report.from_bot.name, report.from_bot.kind], ["写作助手", "report"]);
+  assert.match(report.content, /「写作助手」完成了你委托的任务。[\s\S]*委托结果：周报写好了/);
+  assert.equal(followUp.content, "回报已收到：周报写好了", "the report starts a new run on the delegating bot");
+});
+
+test("delegation rules: other users, cycles, depth, mutual waits, quotas and cascading cancels", { skip }, async () => {
+  const mac = socket(base.replace("http", "ws") + "/ws/device", state.keys.headers("GET", "/ws/device"));
+  await mac.next((m) => m.type === "hello");
+  const bot = async (name: string) => (await api("POST", "/bots", { token: state.alice, body: { name } })).json.id as string;
+  const [A, B, C, D] = [await bot("甲"), await bot("乙"), await bot("丙"), await bot("丁")];
+  const charlie = (await api("POST", "/auth/login", { body: { username: "charlie", password: "charlie-password" } })).json.access_token;
+  await api("POST", "/bots", { token: charlie, body: { name: "查理的秘书" } });
+  const macToken = async (botId: string) => {
+    const body = { bot_id: botId };
+    return (await api("POST", "/device/llm-token", { body, headers: state.keys.headers("POST", "/device/llm-token", JSON.stringify(body)) })).json.token as string;
+  };
+  const delegate = (token: string, runId: string, agent: string, wait = true) =>
+    api("POST", "/agent/tasks", { token, body: { run_id: runId, agent, task: `请${agent}帮忙`, wait } });
+  const start = async (botId: string, text: string) => {
+    await api("POST", `/bots/${botId}/messages`, { token: state.alice, body: { text, request_id: randomUUID() } });
+    return (await mac.next((m) => m.type === "run" && m.run.bot.id === botId)).run;
+  };
+  const done = (runId: string, state: string, text?: string) =>
+    mac.send({ type: "run_event", run_id: runId, event: { kind: "done", state, text } });
+
+  const runA = await start(A, "开始协作");
+  assert.equal(runA.agents_enabled, true);
+  assert.match(runA.system, /- 乙/);
+  const tA = await macToken(A), tB = await macToken(B), tC = await macToken(C), tD = await macToken(D);
+  assert.equal((await delegate(tA, runA.run_id, "甲")).status, 422, "no self-delegation");
+  const unknown = await delegate(tA, runA.run_id, "不存在的");
+  assert.equal(unknown.status, 404);
+  assert.match(unknown.json.detail, /可以委托的有：.*乙/);
+  assert.equal((await delegate(tA, runA.run_id, "查理的秘书")).status, 404, "other users' bots are invisible");
+  assert.equal((await delegate(tB, runA.run_id, "乙")).status, 404, "a token only acts for its own bot's run");
+
+  const ab = await delegate(tA, runA.run_id, "乙");
+  assert.equal(ab.status, 200, JSON.stringify(ab.json));
+  assert.equal(ab.json.status, "running");
+  const runB = (await mac.next((m) => m.type === "run" && m.run.bot.id === B)).run;
+  assert.match(runB.text, /你收到来自智能体「甲」的委托/);
+  assert.equal(runB.agents_enabled, true);
+  assert.equal((await delegate(tB, runB.run_id, "甲")).status, 422, "delegating back up the chain would be a cycle");
+  assert.equal((await delegate(tB, runB.run_id, "丙", false)).status, 422, "nested delegation must wait");
+  const bc = await delegate(tB, runB.run_id, "丙");
+  assert.equal(bc.status, 200);
+  const runC = (await mac.next((m) => m.type === "run" && m.run.bot.id === C)).run;
+  assert.equal(runC.agents_enabled, false, "the deepest level gets no ask_agent tool");
+  assert.doesNotMatch(runC.system, /ask_agent/);
+  assert.equal((await delegate(tC, runC.run_id, "丁")).status, 422, "depth limit is enforced by the server too");
+  assert.equal((await api("POST", `/agent/tasks/${bc.json.id}/report`, { token: tB })).status, 422);
+
+  const before = Date.now();
+  const polled = await api("GET", `/agent/tasks/${ab.json.id}?wait=1`, { token: tA });
+  assert.equal(polled.json.status, "running");
+  assert.ok(Date.now() - before >= 900, "long poll holds until the window ends");
+  assert.equal((await api("GET", `/agent/tasks/${ab.json.id}`, { token: tD })).status, 404, "tasks are visible only to the delegating bot");
+
+  const runD = await start(D, "丁的工作");
+  const da = await delegate(tD, runD.run_id, "甲");
+  assert.equal(da.json.status, "queued", "a busy target queues the task");
+  assert.equal((await delegate(tA, runA.run_id, "丁")).status, 409, "waiting on a bot that waits on you would deadlock");
+  for (let i = 0; i < 4; i++) assert.equal((await delegate(tA, runA.run_id, "丁", false)).json.status, "queued");
+  assert.equal((await delegate(tA, runA.run_id, "丙", false)).status, 422, "five delegations per run");
+
+  await api("POST", `/runs/${runA.run_id}/cancel`, { token: state.alice });
+  await mac.next((m) => m.type === "cancel" && m.run_id === runA.run_id);
+  done(runA.run_id, "cancelled");
+  await mac.next((m) => m.type === "cancel" && m.run_id === runB.run_id);
+  done(runB.run_id, "cancelled");
+  await mac.next((m) => m.type === "cancel" && m.run_id === runC.run_id);
+  done(runC.run_id, "cancelled");
+  const cancelled = await eventually(async () => {
+    const page = (await api("GET", `/bots/${A}/messages`, { token: state.alice })).json.messages;
+    const tasks = page.find((m: any) => m.role === "assistant" && m.run_id === runA.run_id).agent_tasks;
+    return tasks.length === 5 && tasks.every((t: any) => t.status === "cancelled") && tasks;
+  });
+  assert.equal(cancelled[0].bot_name, "乙");
+
+  const runA2 = (await mac.next((m) => m.type === "run" && m.run.bot.id === A)).run;
+  assert.match(runA2.text, /来自智能体「丁」的委托/, "the queued task starts once its target is idle");
+  done(runA2.run_id, "completed", "甲完成了");
+  const finished = await api("GET", `/agent/tasks/${da.json.id}?wait=5`, { token: tD });
+  assert.deepEqual([finished.json.status, finished.json.result, finished.json.agent.name], ["completed", "甲完成了", "甲"]);
+  done(runD.run_id, "completed", "丁完成了");
+  await eventually(async () => (await api("GET", `/bots/${D}`, { token: state.alice })).json.latest_run.status === "completed");
+  mac.close();
+  await eventually(async () => !(await api("GET", "/me", { token: state.alice })).json.mac.online);
+});
+
 test("users only see their own bots and Mac; a Mac dropping mid-run fails the run", { skip }, async () => {
   await api("POST", "/admin/api/users", { token: state.admin, body: { username: "bob", password: "bob-password" } });
   const bob = (await api("POST", "/auth/login", { body: { username: "bob", password: "bob-password" } })).json.access_token;
@@ -289,7 +512,9 @@ test("users only see their own bots and Mac; a Mac dropping mid-run fails the ru
   await mac.next((m) => m.type === "hello");
   const bobEvents = socket(base.replace("http", "ws") + "/ws/events", { authorization: `Bearer ${bob}` });
   assert.equal((await bobEvents.next((m) => m.type === "hello")).mac_online, false, "presence is per user");
-  assert.deepEqual((await api("GET", "/bots", { token: bob })).json.bots, []);
+  const bobBots = (await api("GET", "/bots", { token: bob })).json.bots;
+  assert.equal(bobBots.length, 1);
+  assert.equal(bobBots[0].is_main, true, "each user sees their own main bot");
   for (const [method, path] of [
     ["GET", `/bots/${state.bot}`],
     ["GET", `/bots/${state.bot}/messages`],
@@ -330,12 +555,12 @@ test("admin can disable users and revoke devices", { skip }, async () => {
   await api("PATCH", `/admin/api/users/${state.aliceId}`, { token: state.admin, body: { disabled: true } });
   assert.equal((await api("GET", "/me", { token: state.alice })).status, 401);
   const overview = await api("GET", "/admin/api/overview", { token: state.admin });
-  assert.equal(overview.json.users, 3);
+  assert.equal(overview.json.users, 4);
 });
 
 test("SSE usage parser keeps the last usage block across chunk boundaries", () => {
   const p = new SseUsage();
-  const line = `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 7, completion_tokens: 2 } })}\n\n`;
+  const line = `data: ${JSON.stringify({ type: "response.completed", response: { usage: { input_tokens: 7, output_tokens: 2 } } })}\n\n`;
   p.push(line.slice(0, 20));
   p.push(line.slice(20));
   assert.deepEqual(p.usage, { input: 7, output: 2 });

@@ -1,11 +1,10 @@
 package dev.pibot.android.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -20,7 +19,6 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -58,19 +56,20 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.pibot.android.data.Approval
 import dev.pibot.android.data.Bot
+import dev.pibot.android.data.FromBot
 import dev.pibot.android.data.Message
 import dev.pibot.android.data.PiBotRepository
-import dev.pibot.android.data.ToolEntry
 import dev.pibot.android.domain.Timeline
+import dev.pibot.android.domain.delegationLabel
 import dev.pibot.android.domain.mood
-import dev.pibot.android.domain.toolLabel
+import dev.pibot.android.domain.relayLabel
 import dev.pibot.android.face.PiBotFace
 import dev.pibot.android.face.seedOf
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun TimelineScreen(repository: PiBotRepository, botId: String, onBack: () -> Unit, onEdit: () -> Unit, onFiles: () -> Unit) {
+fun TimelineScreen(repository: PiBotRepository, botId: String, onBack: () -> Unit, onEdit: () -> Unit, onFiles: () -> Unit, onOpenBot: (String) -> Unit) {
     val bot by repository.bot(botId).collectAsStateWithLifecycle(null)
     val timeline by repository.timeline(botId).collectAsStateWithLifecycle(Timeline())
     val mac by repository.mac.collectAsStateWithLifecycle()
@@ -140,7 +139,7 @@ fun TimelineScreen(repository: PiBotRepository, botId: String, onBack: () -> Uni
                         scope.launch { runCatching { repository.decide(approval, approve) }.onFailure { error = errorText(it) } }
                     }
                 }
-                items(reversed, key = { it.id }) { message -> MessageItem(message) }
+                items(reversed, key = { it.id }) { message -> MessageItem(message, onOpenBot, repository, active) }
                 if (timeline.loaded && timeline.messages.isEmpty()) {
                     item { Intro(current) }
                 }
@@ -171,11 +170,54 @@ private fun Intro(bot: Bot) {
 }
 
 @Composable
-private fun MessageItem(message: Message) {
+private fun RelayItem(message: Message, from: FromBot, onOpenBot: (String) -> Unit) {
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.Start) {
+        Row(
+            Modifier.clickable { onOpenBot(from.id) }.padding(vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            from.avatar?.let { PiBotFace(it, "happy", 22.dp, seed = seedOf(from.id)) }
+            Spacer(Modifier.size(6.dp))
+            Text(relayLabel(from), fontSize = 12.sp, color = Muted)
+        }
+        Spacer(Modifier.height(4.dp))
+        Box(
+            Modifier.widthIn(max = 320.dp)
+                .background(AccentSoft, RoundedCornerShape(18.dp))
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+        ) { MarkdownText(message.content) }
+        Spacer(Modifier.height(3.dp))
+        Text(dayLabel(message.createdAt) + " " + clockTime(message.createdAt), fontSize = 11.sp, color = Muted)
+    }
+}
+
+@Composable
+private fun MessageItem(message: Message, onOpenBot: (String) -> Unit, repository: PiBotRepository, active: Boolean) {
+    val from = message.fromBot
+    if (message.role == "user" && from != null) return RelayItem(message, from, onOpenBot)
     val user = message.role == "user"
     Column(Modifier.fillMaxWidth(), horizontalAlignment = if (user) Alignment.End else Alignment.Start) {
-        if (!user && message.tools.isNotEmpty()) {
-            ToolChips(message.tools)
+        if (!user && message.progress.isNotEmpty()) {
+            Column(Modifier.widthIn(max = 320.dp).padding(horizontal = 14.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                for (line in message.progress.take(3)) Text(line, color = Muted, fontSize = 13.sp, lineHeight = 20.sp)
+            }
+            Spacer(Modifier.height(6.dp))
+        }
+        if (!user && message.agentTasks.isNotEmpty()) {
+            Column(Modifier.padding(horizontal = 14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                for (task in message.agentTasks) {
+                    val live = task.status == "queued" || task.status == "running"
+                    Text(
+                        delegationLabel(task) + " ›",
+                        fontSize = 12.sp,
+                        color = if (task.status == "failed") Danger else if (live) Accent else Muted,
+                        modifier = Modifier
+                            .background(if (live) AccentSoft else Card, RoundedCornerShape(999.dp))
+                            .clickable { onOpenBot(task.botId) }
+                            .padding(horizontal = 10.dp, vertical = 3.dp),
+                    )
+                }
+            }
             Spacer(Modifier.height(6.dp))
         }
         val bubble = Modifier
@@ -190,6 +232,10 @@ private fun MessageItem(message: Message) {
                 else -> MarkdownText(message.content)
             }
         }
+        if (!user && message.ui != null) {
+            Spacer(Modifier.height(8.dp))
+            A2uiContent(message, repository, active || message.status != "completed")
+        }
         Spacer(Modifier.height(3.dp))
         val note = when (message.status) {
             "failed" -> "失败"
@@ -197,32 +243,6 @@ private fun MessageItem(message: Message) {
             else -> if (!user && message.executor == "cloud") "云端" else null
         }
         Text(listOfNotNull(dayLabel(message.createdAt) + " " + clockTime(message.createdAt), note).joinToString(" · "), fontSize = 11.sp, color = if (message.status == "failed") Danger else Muted)
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun ToolChips(tools: List<ToolEntry>) {
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.widthIn(max = 340.dp)) {
-        for (tool in tools) {
-            val dot = when (tool.state) {
-                "running" -> Accent
-                "failed" -> Danger
-                else -> Good
-            }
-            Row(
-                Modifier.background(Color(0xFFEFEBE5), RoundedCornerShape(50)).padding(horizontal = 10.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Box(Modifier.size(6.dp).background(dot, CircleShape))
-                Spacer(Modifier.size(6.dp))
-                Text(toolLabel(tool.name), fontSize = 12.sp)
-                tool.summary?.takeIf { it.isNotBlank() }?.let {
-                    Spacer(Modifier.size(6.dp))
-                    Text(it, fontSize = 11.sp, color = Muted, fontFamily = FontFamily.Monospace, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 180.dp))
-                }
-            }
-        }
     }
 }
 

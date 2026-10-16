@@ -60,9 +60,34 @@ val copyBotFaceSpec = tasks.register<CopyBotFaceSpec>("copyBotFaceSpec") {
     spec.set(botFaceSpec)
 }
 
+// Both clients ship the same A2UI renderer; no UI code is downloaded from the agent.
+val buildA2ui = tasks.register<Exec>("buildA2ui") {
+    workingDir(rootProject.projectDir.parentFile)
+    val nodePath = rootProject.projectDir.resolve("../desktop/node_modules/node/bin/node").absolutePath
+    commandLine(nodePath, "packages/a2ui/scripts/build.mjs")
+    inputs.dir(rootProject.projectDir.resolve("../packages/a2ui/src"))
+    inputs.dir(rootProject.projectDir.resolve("../packages/a2ui/web"))
+    inputs.file(rootProject.projectDir.resolve("../package-lock.json"))
+    outputs.dir(rootProject.projectDir.resolve("../packages/a2ui/dist"))
+}
+abstract class CopyA2ui : DefaultTask() {
+    @get:InputDirectory abstract val sourceDir: DirectoryProperty
+    @get:OutputDirectory abstract val outputDir: DirectoryProperty
+    @TaskAction fun copy() {
+        val target = outputDir.get().asFile.resolve("a2ui")
+        target.deleteRecursively()
+        sourceDir.get().asFile.copyRecursively(target, overwrite = true)
+    }
+}
+val copyA2ui = tasks.register<CopyA2ui>("copyA2ui") {
+    dependsOn(buildA2ui)
+    sourceDir.set(rootProject.layout.projectDirectory.dir("../packages/a2ui/dist"))
+}
+
 androidComponents {
     onVariants { variant ->
         variant.sources.assets?.addGeneratedSourceDirectory(copyBotFaceSpec, CopyBotFaceSpec::outputDir)
+        variant.sources.assets?.addGeneratedSourceDirectory(copyA2ui, CopyA2ui::outputDir)
     }
 }
 

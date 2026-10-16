@@ -3,14 +3,15 @@ import { z } from "zod";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { timingSafeEqual } from "node:crypto";
-import { Type } from "typebox";
 import {
+  a2uiTools,
+  askAgentTool,
   CANCELLED,
   createBotAgent,
+  webSearchTool,
   type AgentFactory,
   type AgentHandle,
 } from "@pi-bot/agent";
-import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 
 const requestSchema = z.object({
   run: z.object({
@@ -25,36 +26,18 @@ const requestSchema = z.object({
     system: z.string(),
     history: z.array(z.object({ role: z.enum(["user", "assistant"]), content: z.string() })),
     text: z.string().min(1),
+    search_enabled: z.boolean().default(false),
+    agents_enabled: z.boolean().default(false),
+    skills: z.array(z.object({ name: z.string().max(64), description: z.string().max(1024), version: z.number().int().positive() })).max(64).default([]),
   }),
   base_url: z.string().url(),
   token: z.string().min(16),
-  search_key: z.string().optional(),
 });
 
-export function searchTool(key: string): ToolDefinition {
-  return {
-    name: "web_search",
-    label: "联网搜索",
-    description: "搜索网络信息并返回标题、链接和摘要。",
-    parameters: Type.Object({ query: Type.String({ minLength: 1, maxLength: 2000 }) }),
-    execute: async (_id: string, args: any, signal?: AbortSignal) => {
-      const response = await fetch("https://api.tavily.com/search", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ api_key: key, query: args.query, max_results: 5 }),
-        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30000)]) : AbortSignal.timeout(30000),
-      });
-      if (!response.ok) throw new Error("联网搜索失败");
-      const data = (await response.json()) as any;
-      const results = (data.results ?? []).map((r: any) => ({ title: r.title, url: r.url, content: String(r.content ?? "").slice(0, 2000) }));
-      return { content: [{ type: "text" as const, text: JSON.stringify(results) }], details: {} };
-    },
-  } as ToolDefinition;
-}
-
 /**
- * Cloud execution for bots whose Mac is offline: conversation and optional web
- * search only. It has no file system or shell tools and never sees provider keys.
+ * Cloud execution for bots whose Mac is offline: conversation, optional web
+ * search and delegation to other bots only. It has no file system or shell
+ * tools and never sees provider keys.
  */
 export async function createRunner(options: { token: string; dir: string; factory?: AgentFactory }) {
   if (options.token.length < 32) throw new Error("Runner token 至少 32 字符");
@@ -96,6 +79,12 @@ export async function createRunner(options: { token: string; dir: string; factor
     try {
       const cwd = join(options.dir, "empty");
       await mkdir(cwd, { recursive: true, mode: 0o700 });
+      const api = p.base_url.replace(/\/llm\/v1\/?$/, "");
+      const tools = [
+        ...(p.run.search_enabled ? [webSearchTool(api, () => p.token)] : []),
+        ...(p.run.agents_enabled ? [askAgentTool(api, () => p.token, p.run.run_id)] : []),
+      ];
+      tools.push(...a2uiTools(messages => { emit({ type: "ui", messages }); }));
       state.agent = await factory({
         model: {
           id: p.run.model.id,
@@ -107,12 +96,13 @@ export async function createRunner(options: { token: string; dir: string; factor
         },
         apiKey: p.token,
         cwd,
-        agentDir: join(options.dir, "pi"),
+        agentDir: join(options.dir, "pi", "bots", p.run.bot.id),
         systemPrompt: p.run.system,
         history: p.run.history,
-        tools: p.search_key ? [searchTool(p.search_key)] : [],
-        redactSecrets: [p.search_key ?? ""],
+        tools,
+        skills: { baseUrl: api, token: () => p.token, runId: p.run.run_id, catalog: p.run.skills },
         onTool: (t) => emit({ type: "tool", ...t }),
+        onProgress: (lines) => emit({ type: "progress", lines }),
       });
       if (state.cancelled) throw new Error(CANCELLED);
       const text = await state.agent.prompt(p.run.text, (t) => emit({ type: "text", text: t }));

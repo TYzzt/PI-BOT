@@ -21,6 +21,8 @@ const keys: Record<string, string> = {
   bot_messages: "message_id",
   bot_memories: "bot_id",
   approvals: "approval_id",
+  agent_tasks: "task_id",
+  bot_skills: "skill_id",
 };
 export const CHANNEL = "pibot_changes";
 export interface Change {

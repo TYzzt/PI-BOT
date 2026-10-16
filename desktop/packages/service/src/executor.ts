@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import { CANCELLED, createBotAgent, type AgentFactory, type AgentHandle, type ToolActivity } from '@pi-bot/agent';
+import { a2uiTools, askAgentTool, CANCELLED, createBotAgent, webSearchTool, type AgentFactory, type AgentHandle, type ToolActivity, type SkillSummary } from '@pi-bot/agent';
 import type { Mood } from '@pi-bot/bot-face';
 import { libraryDir, libraryTools, Sandbox } from './library.js';
 
@@ -13,6 +13,9 @@ export interface RunContext {
   system: string;
   history: { role: 'user' | 'assistant'; content: string }[];
   text: string;
+  search_enabled?: boolean;
+  agents_enabled?: boolean;
+  skills?: SkillSummary[];
 }
 export interface ExecutorDeps {
   libraryRoot: string;
@@ -35,7 +38,7 @@ interface Active {
   approvals: Map<string, string>;
   early: Map<string, boolean>;
 }
-const SEARCH = new Set(['list_files', 'read_file', 'search_files']);
+const SEARCH = new Set(['list_files', 'read_file', 'search_files', 'web_search']);
 const TOKEN_REFRESH_MS = 10 * 60 * 1000;
 
 export class Executor {
@@ -54,7 +57,7 @@ export class Executor {
     const flush = () => { clearTimeout(pendingText); pendingText = undefined; lastSent = Date.now(); event({ kind: 'text', text: latest }); };
     try {
       const sandbox = new Sandbox(await libraryDir(this.deps.libraryRoot, run.bot.slug));
-      const token = await this.deps.llmToken(run.bot.id);
+      let token = await this.deps.llmToken(run.bot.id);
       const tools = libraryTools(sandbox, {
         requestOutside: (path, reason, signal) => new Promise<boolean>(resolve => {
           const requestId = randomUUID();
@@ -71,22 +74,33 @@ export class Executor {
           event({ kind: 'approval', request_id: requestId, path, reason });
         }),
       });
+      const api = this.deps.proxyUrl.replace(/\/llm\/v1\/?$/, '');
+      if (run.search_enabled) tools.push(webSearchTool(api, () => token));
+      if (run.agents_enabled) tools.push(askAgentTool(api, () => token, run.run_id));
+      tools.push(...a2uiTools(messages => { event({ kind: 'ui', messages }); }));
       const onTool = (t: ToolActivity) => {
         event({ kind: 'tool', ...t });
-        this.deps.activity(run, t.state === 'running' ? t.name : null, t.state === 'running' ? (SEARCH.has(t.name) ? 'searching' : 'working') : 'thinking');
+        const mood: Mood = t.name === 'ask_agent' ? 'waiting' : SEARCH.has(t.name) ? 'searching' : 'working';
+        this.deps.activity(run, t.state === 'running' ? t.name : null, t.state === 'running' ? mood : 'thinking');
       };
       state.agent = await (this.deps.factory ?? createBotAgent)({
         model: { id: run.model.id, name: run.model.name, baseUrl: this.deps.proxyUrl, modelId: run.model.id, contextWindow: run.model.context_window, maxTokens: run.model.max_tokens },
         apiKey: token,
         cwd: sandbox.root,
-        agentDir: this.deps.agentDir,
+        agentDir: join(this.deps.agentDir, 'bots', run.bot.id),
         systemPrompt: run.system,
         history: run.history,
         tools,
+        skills: { baseUrl: api, token: () => token, runId: run.run_id, catalog: run.skills ?? [] },
         onTool,
+        onProgress: lines => {
+          clearTimeout(pendingText); pendingText = undefined;
+          latest = '';
+          event({ kind: 'progress', lines });
+        },
       });
       if (state.cancelled) throw new Error(CANCELLED);
-      refresh = setInterval(() => { void this.deps.llmToken(run.bot.id).then(t => state.agent?.setApiKey(t)).catch(() => {}); }, TOKEN_REFRESH_MS);
+      refresh = setInterval(() => { void this.deps.llmToken(run.bot.id).then(t => { token = t; return state.agent?.setApiKey(t); }).catch(() => {}); }, TOKEN_REFRESH_MS);
       const final = await state.agent.prompt(run.text, text => {
         latest = text;
         if (Date.now() - lastSent > 150) flush();

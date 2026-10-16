@@ -3,8 +3,10 @@ import { Database, type Row } from "./db.js";
 import { settings, type Settings } from "./config.js";
 import { issueLlmToken, Vault } from "./security.js";
 import { migrate } from "./migrate.js";
-import { buildContext, finishRun, markRunning, recordTool, resolveModel, setContent, type RunContext } from "./bots.js";
+import { modelMessageContent, buildContext, finishRun, markRunning, recordTool, resolveModel, setContent, setProgress, type RunContext } from "./bots.js";
 import { complete, recordUsage } from "./llm.js";
+
+import {recordUi} from "./ui.js";
 
 const RUN_LIMIT_MS = 30 * 60 * 1000;
 
@@ -15,7 +17,8 @@ const RUN_LIMIT_MS = 30 * 60 * 1000;
 export class Worker {
   readonly id = randomUUID();
   private stopped = false;
-  private abort?: AbortController;
+  private controllers = new Set<AbortController>();
+  private running = new Set<Promise<void>>();
   constructor(
     readonly db: Database,
     readonly s: Settings,
@@ -24,7 +27,7 @@ export class Worker {
   }
   stop() {
     this.stopped = true;
-    this.abort?.abort();
+    for (const c of this.controllers) c.abort();
   }
   async claim(): Promise<RunContext | undefined> {
     return this.db.tx(async (tx) => {
@@ -48,7 +51,7 @@ export class Worker {
       await markRunning(tx, run.run_id);
       await tx.notify({ user_id: run.user_id, bot_id: run.bot_id });
       try {
-        return await buildContext(tx, this.s, run, { search: !!this.s.tavilyKey });
+        return await buildContext(tx, this.s, run);
       } catch {
         await finishRun(tx, run.run_id, "failed", "管理员尚未配置可用模型");
       }
@@ -57,8 +60,12 @@ export class Worker {
   async runOnce() {
     const job = await this.claim();
     if (!job) return false;
+    await this.execute(job);
+    return true;
+  }
+  private async execute(job: RunContext) {
     const controller = new AbortController();
-    this.abort = controller;
+    this.controllers.add(controller);
     const owner = await this.db.tx((tx) => tx.get("bot_runs", job.run_id));
     let content = "",
       state: "completed" | "failed" | "cancelled" = "failed",
@@ -106,7 +113,7 @@ export class Worker {
       const response = await fetch(`${this.s.runnerUrl}/runs`, {
         method: "POST",
         headers,
-        body: JSON.stringify({ run: job, base_url: `${this.s.internalUrl}/llm/v1`, token, search_key: this.s.tavilyKey }),
+        body: JSON.stringify({ run: job, base_url: `${this.s.internalUrl}/llm/v1`, token }),
         signal: controller.signal,
       });
       if (!response.ok || !response.body) throw new Error("Runner unavailable");
@@ -129,6 +136,17 @@ export class Worker {
                 await tx.notify({ user_id: r.user_id, bot_id: r.bot_id, message_id: r.assistant_message_id, content });
               });
             }
+          } else if (e.type === "ui") {
+            await this.db.tx(async tx => { const r=await tx.get("bot_runs",job.run_id); if(ours(r)) await recordUi(tx,r,e.messages); });
+          } else if (e.type === "progress") {
+            content = "";
+            written = 0;
+            await this.db.tx(async (tx) => {
+              const r = await tx.get("bot_runs", job.run_id);
+              if (!ours(r)) return;
+              await setProgress(tx, r, e.lines);
+              await tx.notify({ user_id: r.user_id, bot_id: r.bot_id });
+            });
           } else if (e.type === "tool")
             await this.db.tx(async (tx) => {
               const r = await tx.get("bot_runs", job.run_id);
@@ -155,7 +173,7 @@ export class Worker {
     } finally {
       clearInterval(timer);
       clearTimeout(deadline);
-      this.abort = undefined;
+      this.controllers.delete(controller);
     }
     if (!lost)
       await this.db.tx(async (tx) => {
@@ -163,7 +181,6 @@ export class Worker {
         if (!ours(r)) return;
         await finishRun(tx, job.run_id, state, error, content);
       });
-    return true;
   }
 
   /** Folds old messages into the bot's long-term summary once the tail grows past the threshold. */
@@ -180,7 +197,7 @@ export class Worker {
       if (!b) return null;
       const until = b.next_seq - 1 - Math.min(20, Math.floor(this.s.memoryThreshold / 2));
       const messages = await tx.rows(
-        "SELECT seq, role, content FROM bot_messages WHERE bot_id=$1 AND seq>$2 AND seq<=$3 AND content<>'' ORDER BY seq",
+        "SELECT seq, role, content, ui_action FROM bot_messages WHERE bot_id=$1 AND seq>$2 AND seq<=$3 AND content<>'' ORDER BY seq",
         [b.bot_id, b.through_seq, until],
       );
       const model = await resolveModel(tx, b);
@@ -195,7 +212,7 @@ export class Worker {
     });
     if (!job) return false;
     const transcript = job.messages
-      .map((m) => `${m.role === "user" ? "用户" : job.bot.name}：${m.content.slice(0, 4000)}`)
+      .map((m) => `${m.role === "user" ? "用户" : job.bot.name}：${modelMessageContent(m).slice(0, 4000)}`)
       .join("\n\n")
       .slice(-job.model.context_window * 2);
     try {
@@ -227,13 +244,23 @@ export class Worker {
   async runForever() {
     while (!this.stopped) {
       try {
-        if (await this.runOnce()) continue;
+        if (this.running.size < this.s.workerConcurrency) {
+          const job = await this.claim();
+          if (job) {
+            const p: Promise<void> = this.execute(job)
+              .catch(() => console.error("cloud run failed"))
+              .finally(() => this.running.delete(p));
+            this.running.add(p);
+            continue;
+          }
+        }
         if (await this.compactOnce()) continue;
       } catch {
         console.error("cloud worker cycle failed");
       }
       await new Promise((resolve) => setTimeout(resolve, this.s.pollSeconds * 1000));
     }
+    await Promise.all(this.running);
   }
 }
 

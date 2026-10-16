@@ -13,6 +13,8 @@ import { Hub } from "./hub.js";
 import { routes, type Context, type Route } from "./routes.js";
 import { sockets } from "./sockets.js";
 import { failOrphanedMacRuns } from "./runs.js";
+import { WebSearch } from "./search.js";
+import { AgentDispatcher } from "./agents.js";
 
 export async function bootstrapAdmin(db: Database, s: Settings) {
   await db.tx(async (tx) => {
@@ -98,6 +100,7 @@ export async function createApp(
   await bootstrapAdmin(db, s);
   await failOrphanedMacRuns(db);
   const app = Fastify({ logger: false, bodyLimit: 8 * 1024 * 1024 });
+  const webSearch = new WebSearch(s);
   app.removeContentTypeParser("application/json");
   app.addContentTypeParser(
     "application/json",
@@ -132,7 +135,7 @@ export async function createApp(
         for (const [k, v] of Object.entries(params))
           if (k === "id" && !/^[0-9a-f-]{36}$/i.test(v)) fail(404, "记录不存在");
         const after: (() => unknown)[] = [];
-        const base = { db, s, hub, query, params, req, reply, after: (fn: () => unknown) => void after.push(fn) };
+        const base = { db, s, hub, webSearch, query, params, req, reply, after: (fn: () => unknown) => void after.push(fn) };
         let result: unknown;
         if (route.tx === false) {
           const who = await db.tx((tx) => authenticate(tx, route, req, raw, s));
@@ -172,7 +175,7 @@ export async function createApp(
   app.get("/admin/*", serveAdmin);
 
   await app.register(websocket, { options: { maxPayload: 8 * 1024 * 1024 } });
-  await sockets(app, db, s, hub);
+  await sockets(app, db, s, hub, new AgentDispatcher(db, s, hub));
   return Object.assign(app, { hub, db });
 }
 
@@ -188,6 +191,7 @@ export function openapi() {
     llm: [{ LlmBearer: [] }],
   };
   for (const r of routes) {
+    if (r.internal) continue;
     const path = r.path.replace(/:(\w+)/g, "{$1}");
     const parameters: Row[] = [...r.path.matchAll(/:(\w+)/g)].map((m) => ({
       name: m[1], in: "path", required: true, schema: { type: "string", format: "uuid" },

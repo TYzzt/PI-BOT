@@ -2,7 +2,7 @@
 
 多用户的个人 Bot 平台。每个 Bot 有自己的名字、人设、形象和一条连续的时间线，会记住你们聊过的事；你的 Mac 是 Bot 们干活的电脑，手机随时可以和 Bot 说话、批准请求、看它们产出的文件。
 
-- **云端**：管理员在后台创建用户、配置模型和 Key；所有模型调用都经云端代理，客户端拿不到 Key。Mac 离线时，Bot 在云端回复（只能对话和联网搜索）。
+- **云端**：管理员在后台创建用户、配置模型和 Key；所有模型调用都经云端代理，客户端拿不到 Key。Mac 离线时，Bot 在云端回复（对话、联网搜索和交互工具）。
 - **Mac**：登录即绑定为你的 harness。每个 Bot 的资料库是 `~/pi-bot/<slug>/`，Bot 在里面读写文件、执行命令；要碰资料库以外的路径必须先经你批准。
 - **手机**：Bot 网格、时间线、审批、资料库浏览、新建和编辑 Bot。
 - **角色**：一份共享的角色规格（8 种造型、10 种颜色、9 种表情），表情跟着 Bot 的运行状态变化。
@@ -39,3 +39,9 @@ npm run typecheck
 PI_BOT_TEST_DATABASE_URL=postgresql://pibot:pibot@127.0.0.1:5432/pibot npm test   # 会清空该库
 (cd android && ./gradlew :app:testDebugUnitTest)
 ```
+
+## 交互工具（A2UI）
+
+可以让 Bot 按当前需求生成可操作的表单、计算器和图表。Mac 和 Android 使用同一套 A2UI 目录，输入会保存，点击提交后 Bot 继续处理。普通问答和解释默认使用文字，不提供预置界面。
+
+升级时需同时更新 API、Worker、Runner、Mac 和 Android；Server 自动应用 `0006-message-ui` 迁移。实现和构建说明见 [packages/a2ui](packages/a2ui/README.md)。

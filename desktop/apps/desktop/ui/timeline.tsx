@@ -3,13 +3,11 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { PiBot } from '@pi-bot/bot-face/react';
 import type { Mood } from '@pi-bot/bot-face';
-import type { Approval, Bot, Message, ToolEntry } from '../../../packages/protocol/src/index.js';
+import type { AgentTaskRef, Approval, Bot, FromBot, Message, MessagePage } from '../../../packages/protocol/src/index.js';
+import { UiView } from '@pi-bot/a2ui/react';
+import '@pi-bot/a2ui/styles';
 import { bridge, call, errorText } from './bridge.js';
 
-const TOOL_LABELS: Record<string, string> = {
-  list_files: '查看目录', read_file: '读取文件', search_files: '搜索文件', write_file: '写入文件', edit_file: '修改文件',
-  run_command: '执行命令', request_outside_access: '申请访问', web_search: '联网搜索',
-};
 const time = (iso: string) => new Date(iso).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
 const day = (iso: string) => new Date(iso).toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' });
 
@@ -21,15 +19,40 @@ const Markdown = memo(function Markdown({ text }: { text: string }) {
   );
 });
 
-function Tools({ tools }: { tools: ToolEntry[] }) {
-  if (!tools.length) return null;
+function Progress({ lines }: { lines: string[] }) {
+  if (!lines.length) return null;
   return (
-    <div className="tools">
-      {tools.map(t => (
-        <span key={t.id} className={`tool ${t.state}`} title={t.summary}>
-          <i />{TOOL_LABELS[t.name] ?? t.name}{t.summary ? <em>{t.summary}</em> : null}
-        </span>
+    <div className="progress" aria-label="任务进度">
+      {lines.slice(0, 3).map((line, i) => <p key={i}>{line}</p>)}
+    </div>
+  );
+}
+
+const TASK_STATE: Record<AgentTaskRef['status'], string> = { queued: '排队中', running: '进行中', completed: '已完成', failed: '未完成', cancelled: '已取消' };
+
+function Delegations({ tasks, onOpenBot }: { tasks: AgentTaskRef[]; onOpenBot(id: string): void }) {
+  if (!tasks.length) return null;
+  return (
+    <div className="delegations">
+      {tasks.map(t => (
+        <button key={t.id} className={`delegation ${t.status}`} onClick={() => onOpenBot(t.bot_id)} title={`打开 ${t.bot_name} 的时间线`}>
+          交给了 {t.bot_name} · {t.mode === 'report' && t.status === 'running' ? '完成后回报' : TASK_STATE[t.status]} ›
+        </button>
       ))}
+    </div>
+  );
+}
+
+function RelayMessage({ m, onOpenBot }: { m: Message & { from_bot: FromBot }; onOpenBot(id: string): void }) {
+  const from = m.from_bot;
+  return (
+    <div className="msg relay">
+      <button className="relay-head" onClick={() => onOpenBot(from.id)} title={`打开 ${from.name} 的时间线`}>
+        {from.avatar && <PiBot avatar={from.avatar} mood="happy" size={22} />}
+        <span>{from.kind === 'report' ? `${from.name} 的回报` : `来自 ${from.name} 的委托`}</span>
+      </button>
+      <div className="bubble markdown"><Markdown text={m.content} /></div>
+      <span className="meta">{time(m.created_at)}</span>
     </div>
   );
 }
@@ -55,7 +78,7 @@ function ApprovalCard({ approval }: { approval: Approval }) {
   );
 }
 
-export function Timeline({ bot, messages, hasMore, mood, online, onLoadMore }: { bot: Bot; messages: Message[]; hasMore: boolean; mood: Mood; online: boolean; onLoadMore(): void }) {
+export function Timeline({ bot, messages, hasMore, mood, online, onLoadMore, onSent, onOpenBot }: { bot: Bot; messages: Message[]; hasMore: boolean; mood: Mood; online: boolean; onLoadMore(): void; onSent(page: MessagePage): void; onOpenBot(id: string): void }) {
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const [text, setText] = useState('');
@@ -72,7 +95,11 @@ export function Timeline({ bot, messages, hasMore, mood, online, onLoadMore }: {
     if (!value || busy) return;
     setError('');
     stick.current = true;
-    try { await call('send', { botId: bot.id, text: value }); setText(''); } catch (e) { setError(errorText(e)); }
+    try {
+      const result = await call<{ messages: Message[] }>('send', { botId: bot.id, text: value });
+      onSent({ messages: result.messages, has_more: hasMore });
+      setText('');
+    } catch (e) { setError(errorText(e)); }
   };
   const key = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void send(); }
@@ -85,21 +112,27 @@ export function Timeline({ bot, messages, hasMore, mood, online, onLoadMore }: {
         {!messages.length && (
           <div className="intro">
             <PiBot avatar={bot.avatar} mood={mood === 'idle' ? 'happy' : mood} size={150} followPointer />
-            <h2>我是 {bot.name}</h2>
-            <p className="muted">{bot.persona ? bot.persona.slice(0, 140) : '告诉我你想做什么。我的资料都放在自己的资料库里，随时可以在 Finder 中查看。'}</p>
+            <h2>{bot.is_main ? '有什么想做的，告诉我' : `我是 ${bot.name}`}</h2>
+            <p className="muted">{bot.is_main ? '我是 Pi Bot，你的主智能体。查资料、写作、整理文件，或只是聊聊天，都可以直接找我。' : bot.persona ? bot.persona.slice(0, 140) : '告诉我你想做什么。我的资料都放在自己的资料库里，随时可以在 Finder 中查看。'}</p>
           </div>
         )}
         {messages.map(m => {
           const d = day(m.created_at);
           const separator = d !== lastDay ? <div className="day" key={`d-${m.id}`}><span>{d}</span></div> : null;
           lastDay = d;
-          return [separator, m.role === 'user' ? (
+          return [separator, m.role === 'user' && m.from_bot ? (
+            <RelayMessage key={m.id} m={m as Message & { from_bot: FromBot }} onOpenBot={onOpenBot} />
+          ) : m.role === 'user' ? (
             <div className="msg user" key={m.id}><div className="bubble">{m.content}</div><span className="meta">{time(m.created_at)}</span></div>
           ) : (
             <div className="msg bot" key={m.id}>
               <div className="body">
-                <Tools tools={m.tools} />
+                <Progress lines={m.progress ?? []} />
+                <Delegations tasks={m.agent_tasks ?? []} onOpenBot={onOpenBot} />
                 {m.content ? <div className="bubble markdown"><Markdown text={m.content} /></div> : m.status === 'running' ? <div className="typing"><i /><i /><i /></div> : null}
+                {m.ui && <UiView key={m.id} document={m.ui} disabled={busy || !online || m.status !== 'completed'}
+                  save={async (states, revision) => { const saved = await call<Message>('uiState', { botId: bot.id, messageId: m.id, states, revision }); return saved.ui!; }}
+                  action={async input => { const result=await call<{messages:Message[]}>('uiAction',{botId:bot.id,messageId:m.id,...input}); onSent({messages:result.messages,has_more:hasMore}); }} />}
                 <span className="meta">
                   {time(m.created_at)}
                   {m.executor === 'cloud' && <span className="tag" title="Mac 离线时在云端运行，只能对话和联网搜索">云端</span>}

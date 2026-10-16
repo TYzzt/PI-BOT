@@ -8,7 +8,11 @@ private const val AFTERGLOW_MS = 6_000L
 fun moodFor(status: String?, tool: String? = null, finishedAt: Long? = null, lastActiveAt: Long? = null, now: Long = System.currentTimeMillis()): String {
     when (status) {
         "queued" -> return "thinking"
-        "running" -> return if (tool != null) (if (tool in SEARCH_TOOLS) "searching" else "working") else "thinking"
+        "running" -> return when {
+            tool == "ask_agent" -> "waiting"
+            tool != null -> if (tool in SEARCH_TOOLS) "searching" else "working"
+            else -> "thinking"
+        }
         "waiting_approval" -> return "waiting"
         "completed" -> if (finishedAt != null && now - finishedAt < AFTERGLOW_MS) return "celebrate"
         "failed" -> if (finishedAt != null && now - finishedAt < AFTERGLOW_MS) return "error"

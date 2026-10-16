@@ -11,15 +11,15 @@ Pi Bot 是多用户的个人 Bot 平台。每个用户有若干个 Bot，每个 
                          │   /admin/api   用户、模型、设备、用量                       │
   Android ── HTTPS ─────▶│   /ws/events   给手机推送变更（用户令牌）                   │
           ◀── WSS ───────│   /ws/device   Mac 的长连接（设备签名）                     │
-                         │   /llm/v1      OpenAI 兼容模型代理（短期令牌）              │
+                         │   /llm/v1      Responses API 兼容模型代理（短期令牌）              │
   Mac ───── 签名 HTTPS ─▶│   内存 Hub：在线 Mac、事件订阅、文件 RPC                    │
       ◀──── WSS ─────────│                                                           │
-                         │ Worker ── Runner（Mac 离线时在云端运行，仅对话 + 联网搜索）  │
+                         │ Worker ── Runner（Mac 离线时在云端运行，对话、搜索、委托）   │
                          │ PostgreSQL 16（LISTEN/NOTIFY pibot_changes）               │
                          └──────────────────────────┬────────────────────────────────┘
                                                     │ 服务商 API Key 只在这里
                                                     ▼
-                                         OpenAI 兼容的模型服务
+                                         Responses API 兼容的模型服务
 ```
 
 ## 概念
@@ -29,11 +29,13 @@ Pi Bot 是多用户的个人 Bot 平台。每个用户有若干个 Bot，每个 
 | 用户 | 管理员在后台创建，没有注册入口。角色为 `admin` 或 `user`，可被禁用 |
 | Mac 设备 | 每个用户最多一台。Mac 登录时生成 Ed25519 密钥并绑定，新绑定会吊销旧设备 |
 | Bot | 属于一个用户：名字、人设、模型（为空则跟随默认模型）、形象（造型/颜色/深浅色）、资料库 `slug`。改名不改 `slug`；归档不删 Mac 上的文件 |
+| 主智能体 | 每个用户自动拥有一个 Pi Bot，使用默认橙色小人头像和默认模型，带星标置顶，不能归档；普通 Bot 和已有历史继续保留 |
 | 时间线 | 每个 Bot 一条，消息按 `seq` 递增。没有「会话」或「项目」 |
 | 运行（run） | 一条用户消息触发一次运行，执行者是 `mac` 或 `cloud`。同一个 Bot 同时只能有一个运行 |
+| 协作 | 一个 Bot 在运行中用 `ask_agent` 把任务委托给同一用户的另一个 Bot（`agent_tasks`）；委托作为一次普通运行出现在对方时间线上，可同步等结果或完成后回报 |
 | 长期记忆 | 时间线超过阈值后，Worker 把较早的消息压缩成摘要（`bot_memories`），运行时作为系统提示的一部分 |
 | 审批 | Mac 上的 Bot 想访问资料库以外的路径时创建，用户在 Mac 或手机上批准/拒绝，默认 15 分钟过期 |
-| 模型 | 管理员配置的 OpenAI 兼容模型（地址、服务商模型名、API Key、上下文长度），其中一个是默认模型 |
+| 模型 | 管理员配置的 Responses API 兼容模型（地址、服务商模型名、API Key、上下文长度），其中一个是默认模型 |
 
 ## 组成
 
@@ -52,12 +54,12 @@ Pi Bot 是多用户的个人 Bot 平台。每个用户有若干个 Bot，每个 
 ### 进程
 
 - **API**（`server/src/main.ts`）：REST、WebSocket、模型代理、管理后台静态文件。**必须单副本**：Mac 的 `/ws/device` 连接、在线状态和文件 RPC 都在进程内存里（`hub.ts`）。数据库变更通过 `NOTIFY pibot_changes` 广播，API 收到后推送给该用户的订阅者。
-- **Worker**（`server/src/worker.ts`）：认领 `executor='cloud'` 的运行，签发代理令牌后交给 Runner 执行；带租约，Worker 崩溃后超时的运行标为失败。同时负责长期记忆压缩。
-- **Runner**（`server/src/runner.ts`）：无数据库、无 vault，只接受带 `PI_BOT_RUNNER_TOKEN` 的请求，用 `createBotAgent` 跑一次运行；工具只有 `web_search`（配置了 Tavily 时）。容器只读根文件系统、去掉全部 capabilities。
+- **Worker**（`server/src/worker.ts`）：认领 `executor='cloud'` 的运行，签发代理令牌后交给 Runner 执行；每个 Worker 同时执行最多 `PI_BOT_WORKER_CONCURRENCY`（默认 4）个运行，同步委托的父运行和子运行可以同时进行；带租约，Worker 崩溃后超时的运行标为失败。同时负责长期记忆压缩。
+- **Runner**（`server/src/runner.ts`）：无数据库、无 vault，只接受带 `PI_BOT_RUNNER_TOKEN` 的请求，用 `createBotAgent` 跑一次运行；工具只有 `web_search`（API 配置了 SearXNG 或 Tavily 时）和 `ask_agent`（可以委托时），都通过短期智能体令牌调用 API（`/web/search`、`/agent/tasks`），不接触搜索来源密钥。容器只读根文件系统、去掉全部 capabilities。
 
 ### 数据
 
-一份基线迁移 `server/migrations/0001-baseline.sql`：`users`、`devices`、`device_nonces`、`models`、`bots`、`bot_runs`、`bot_messages`、`bot_memories`、`approvals`、`usage_logs`。模型 API Key 用 vault 文件（`PI_BOT_VAULT_FILE`，`scripts/vault-key.ts` 生成，可轮换）加密后入库。
+基线迁移 `server/migrations/0001-baseline.sql`：`users`、`devices`、`device_nonces`、`models`、`bots`、`bot_runs`、`bot_messages`、`bot_memories`、`approvals`、`usage_logs`。`0004-agent-tasks.sql` 增加 `agent_tasks`，以及 `bot_runs.origin`（`user` / `agent` / `report`）、`bot_runs.task_id` 和 `bot_messages.from_bot_id`（这条用户消息由哪个 Bot 写入）。模型 API Key 用 vault 文件（`PI_BOT_VAULT_FILE`，`scripts/vault-key.ts` 生成，可轮换）加密后入库。
 
 ### 鉴权
 
@@ -73,7 +75,7 @@ Pi Bot 是多用户的个人 Bot 平台。每个用户有若干个 Bot，每个 
 
 ### 模型代理
 
-`/llm/v1/chat/completions` 与 OpenAI 兼容。请求里的 `model` 是 Pi Bot 模型 ID，代理换成服务商模型名、注入服务商 API Key 后转发，流式透传，并从响应里解析 token 用量写入 `usage_logs`。Mac 用 `POST /device/llm-token` 换取令牌（默认 15 分钟，运行中每 10 分钟刷新）；Worker 为每次云端运行签发覆盖运行时长的令牌。用户令牌不能调用代理，客户端永远拿不到服务商地址和 Key。
+`/llm/v1/responses` 采用 Responses API（`input` / `output`、`max_output_tokens`）。请求里的 `model` 是 Pi Bot 模型 ID，代理换成服务商模型名、注入服务商 API Key 后转发，流式透传，并从 `response.completed.response.usage` 解析 token 用量写入 `usage_logs`。Mac 用 `POST /device/llm-token` 换取令牌（默认 15 分钟，运行中每 10 分钟刷新）；Worker 为每次云端运行签发覆盖运行时长的令牌。用户令牌不能调用代理，客户端永远拿不到服务商地址和 Key。
 
 ### 实时事件
 
@@ -87,12 +89,40 @@ Pi Bot 是多用户的个人 Bot 平台。每个用户有若干个 Bot，每个 
 - **Mac 在线**：`executor='mac'`，事务提交后经 `/ws/device` 下发 `run`，内容包括 Bot 信息、模型、系统提示（人设 + 长期记忆 + 资料库位置）、最近的历史和本条消息。如果下发时 Mac 刚好掉线，运行改为云端执行。
 - **Mac 离线**：`executor='cloud'`，Worker 认领后交给 Runner。系统提示会告诉模型 Mac 离线、看不到资料库。
 
-Mac 回传的 `run_event`：`started`、`text`（完整文本，API 每秒最多落库一次并推送 `delta`）、`tool`（工具名、状态、一行摘要）、`approval`、`done`。
+Mac 回传的 `run_event`：`started`、`text`（完整文本，API 每秒最多落库一次并推送 `delta`）、`progress`（最多三句简短进度）、`tool`（工具名、状态、一行摘要）、`approval`、`done`。
+
+`0002-message-progress.sql` 为消息增加 `progress` 数组。发送消息时先保存一句简短回应，随发送结果立即返回；Agent 生成具体开场后替换这句回应，将工具调用前的自然语言说明与最终回答分开；Mac 和云端都保存进度并通知客户端刷新。聊天页隐藏工具执行标签，在回答上方保留开头及关键转折的两三句进度，工具记录继续用于运行状态和角色表情。
 
 - **停止**：`POST /runs/:id/cancel`。Mac 运行转发 `cancel` 给 Mac；排队中的云端运行直接取消，执行中的由 Worker 检测后中止 Runner。
 - **Mac 中途掉线**：它的运行全部标为失败，保留已生成的文本，提示「Mac 已离线，可重新发送（将在云端运行）」。API 重启后，残留的 Mac 运行同样标为失败。
 - **审批**：Mac 发 `approval` → API 创建审批、运行变为 `waiting_approval`、回 `approval_created` → 用户 `POST /approvals/:id` → API 把决定下发给 Mac → 运行继续。过期或重复决定返回 409。
 - **资料库浏览**：`GET /bots/:id/files?path=`、`/files/content?path=` 经 `rpc` 转给 Mac，Mac 离线返回 503，超时返回 504。
+
+## 智能体协作
+
+运行上下文带 `agents_enabled`；可以委托时，系统提示列出同一用户的其他 Bot（名字和人设前 160 字，最多 20 个），并说明何时委托、任务要自包含。工具 `ask_agent({ agent, task, wait })`（`packages/agent/src/ask-agent.ts`）在 Mac 和云端都可用，用运行自己的短期智能体令牌调用 API：
+
+| 接口 | 作用 |
+|---|---|
+| `POST /agent/tasks` | 校验令牌的 Bot、执行端、设备与运行一致且运行进行中，按名字或 ID 找到目标，写入 `agent_tasks`；目标空闲就立即在目标时间线写入 `from_bot_id=发起方` 的消息并创建 `origin='agent'` 的运行（执行端照常选 Mac 或云端），否则排队 |
+| `GET /agent/tasks/:id?wait=` | 长轮询，任务结束或超时返回 `{status, result, error}` |
+| `POST /agent/tasks/:id/report` | 同步等待超过 10 分钟后改为完成后回报 |
+| `POST /agent/tasks/:id/cancel` | 发起方的工具被中止时取消任务 |
+
+- **同步（`wait=true`）**：工具长轮询到对方运行结束，把结果（最多 20KB）交回模型，发起方在同一次运行里继续回答。
+- **回报（`wait=false`）**：工具立即返回，发起方本次运行正常结束；对方完成后，API 进程里的 `AgentDispatcher` 等发起方空闲，在它的时间线写入 `from_bot_id=对方` 的回报消息并创建 `origin='report'` 的运行，让发起方把结果转告用户。
+- **规则**：委托链最多 2 层（用户 → A → B → C，C 不再有 `ask_agent`）；不能委托给自己或链上的祖先；不能同步等待一个正在（间接）等自己的 Bot；被委托的运行只能同步委托；每次运行最多 5 个委托。违反时返回中文说明，模型可据此改为自己完成。
+- **排队与级联**：目标 Bot 忙时任务停在 `queued`，`AgentDispatcher`（收到 `pibot_changes` 时和每 5 秒）在目标空闲后启动。子运行结束时把结果写回任务；发起方运行取消或失败时，未完成的委托逐层取消（Mac 上的子运行由 `AgentDispatcher` 转发 `cancel`）。
+- **展示**：消息带 `from_bot`（`{id, name, avatar, kind: task | report}`），回复带 `agent_tasks`（交给了谁、状态、模式）；客户端据此显示「来自 X 的委托」「X 的回报」和「交给了 X」标签，点击打开对方时间线。`ask_agent` 运行时角色表情为等待。
+- 每个 Bot 仍只读写自己的资料库，委托只传文本；对方在结果里给出文件路径。
+
+## 私有 skills
+
+平台通过内置 Pi Extension 为每个 Bot 注册 `skill_manage` 和 `skill_load`。`buildContext` 只传该 Bot 已启用 skill 的名称、描述、版本，模型按需读取正文和参考资料。云端数据库是唯一持久存储，Mac 与 Runner 共用内部 `POST /agent/skills`；接口验证智能体令牌和当前运行的用户、Bot、执行端、设备、状态，不接受模型传入的 Bot 身份，不提供用户管理界面，也不进入公开 OpenAPI。
+
+`0005-bot-skills.sql` 增加当前 skill 与版本快照表，支持创建、更新、启停、软删除与恢复，写操作校验 `expected_version`。智能体只沉淀经过验证的可复用工作方法，偏好和对话事实继续走长期记忆。第一版提供说明与参考资料，不安装或执行代码，不扩大现有权限。Mac 和 Runner 的 Pi 状态目录按 `bot_id` 分开；skills 不存进资料库。
+
+内部工具事件、工具调用前的管理说明不进入公开时间线；agent 层先缓存完整模型消息并分类，含内部工具的消息不推送，其他消息完成后推送。启用私有 skills 的会话不逐 token 推送，任务状态、普通进度和最终回答照常展示。详细约束与测试见 [agent/README.md](../packages/agent/README.md)。
 
 ## Mac 端
 
@@ -105,7 +135,7 @@ Mac 回传的 `run_event`：`started`、`text`（完整文本，API 每秒最多
                                            ▼
 ┌──────── 本地服务 (packages/service) ───────────┐
 │ Application  账号、设备身份、CloudSocket         │──WSS──▶ /ws/device
-│ Executor     每个 run 一个 Pi agent            │──HTTPS─▶ /llm/v1/chat/completions
+│ Executor     每个 run 一个 Pi agent            │──HTTPS─▶ /llm/v1/responses
 │ library.ts   资料库沙箱与工具                   │
 └──────────────────── ~/pi-bot/<slug>/ ─────────┘
 ```
@@ -114,7 +144,7 @@ Mac 回传的 `run_event`：`started`、`text`（完整文本，API 每秒最多
 - **本地服务**（`packages/service/src/server.ts`）：`/tmp/pi-bot-<uid>-<hash>/service.sock` 上的 JSON 行协议，先用数据目录里的 `ipc-token` 认证。方法和事件类型在 `packages/protocol`。
 - **登录**：`POST /auth/login` 拿用户令牌 → 本地生成 Ed25519 密钥 → `POST /devices/register` 绑定 → 丢弃用户令牌。之后所有云端请求都用设备签名，Mac 和手机调用同一套 `actor` 接口。私钥在钥匙串（`dev.pi-bot.device`），开发模式下在 0600 的 `secrets.json`。收到 401 或 4401 进入 `revoked`，需要重新登录；4409 后至少等 5 秒再重连。
 - **Executor**：`libraryDir(root, slug)` 创建资料库（拒绝符号链接作资料库本身）→ `createBotAgent` 用历史作种子建立内存会话，工具来自 `libraryTools(new Sandbox(dir))` → 回传 `run_event`（文本 150ms 节流）。取消时中止 agent 并结束命令的整个进程组。
-- **工具**：`list_files`、`read_file`、`search_files`、`write_file`、`edit_file`、`run_command`（zsh，默认 2 分钟超时，输出保留尾部 30KB）、`request_outside_access`。
+- **工具**：`list_files`、`read_file`、`search_files`、`write_file`、`edit_file`、`run_command`（zsh，默认 2 分钟超时，输出保留尾部 30KB）、`request_outside_access`，以及可选的 `web_search`、`ask_agent`。
 - **沙箱**：`Sandbox` 维护允许的根目录（初始只有资料库）。路径展开 `~`、相对路径以资料库为基准，再对最近的已存在祖先取 realpath，符号链接和尚未创建的文件都逃不出允许的根。`request_outside_access` 批准后只对当前运行有效；拒绝授权 `/` 和整个家目录。`run_command` 只限制工作目录，命令本身不做隔离。
 - **文件预览**：`files.list` / `files.read` RPC 只读资料库内的内容（文本 ≤512KB，图片 ≤4MB）。
 - **本地事件**：`account`、`bots` / `bot` / `delta`（云端转发）、`activity` 与 `bot.mood`（本机正在执行的工具和表情，`boards/` 的桥接程序也订阅它）。
@@ -139,7 +169,7 @@ Mac 回传的 `run_event`：`started`、`text`（完整文本，API 每秒最多
 
 ## 部署
 
-- 本地完整栈：`server/docker-compose.yml`（Postgres、API、Worker、Runner）。
+- 本地完整栈：`server/docker-compose.yml`（Postgres、API、Worker、Runner、SearXNG）。
 - 集群：`server/deploy/pibot.yaml`（命名空间 `n-88`，入口 `https://aicloud-app.lenovo.com.cn/pibot`，管理后台在 `/pibot/admin/`）。镜像 `registry.cn-beijing.aliyuncs.com/liuhx/pi-bot-server`。需要先创建 `pibot` 与 `pibot-vault` 两个 Secret。
 - API 单副本；Worker 可多副本（`FOR UPDATE SKIP LOCKED` 认领）；Runner 只在内网可达。
 
@@ -152,3 +182,16 @@ Mac 回传的 `run_event`：`started`、`text`（完整文本，API 每秒最多
 5. 时间线超过阈值后长期记忆生效，较早提过的事情仍能被回答。
 6. 两个用户的 Bot、消息、文件、审批、Mac 在线状态互不可见。
 7. 管理员禁用用户或吊销设备后，对应客户端立即被登出。
+8. 让 Pi Bot 把周报交给「写作助手」：同步委托时 Pi Bot 在同一次回复里给出结果；`wait=false` 时 Pi Bot 先说已转交，写作助手完成后 Pi Bot 的时间线出现回报并自动转告。写作助手的时间线里能看到「来自 Pi Bot 的委托」。
+
+联网搜索：Mac 与云端共享 `packages/agent/src/web-search.ts` 的 `web_search` 工具。API `/web/search` 校验已有短期智能体令牌，再请求内网 SearXNG（优先）或 Tavily；`RunContext.search_enabled` 由服务配置决定，未配置时不注册工具。API 对成功查询缓存 5 分钟，最多返回 8 条去重结果，部分搜索源失败时提示；SearXNG 只在部署内网开放，Compose 和 Kubernetes 均包含配置。
+
+## A2UI 交互工具
+
+Agent 可以通过 `get_ui_catalog` 查询组件 / 函数，并用 `show_ui` 在回复中创建、更新或删除 A2UI surface。Mac 执行器用 `run_event(kind=ui)` 回传消息；云端 Runner 用 NDJSON `type=ui` 回传，Worker 执行相同验证和保存。`packages/a2ui` 是两端共享的目录和实现，采用 v0.9 协议与官方 React 渲染器。
+
+`bot_messages.ui` 保存组件和数据的有界快照，不存无限增长的重放日志。组件引用、类型、数据深度、尺寸、展开数量和计算函数均受验证。Mac 时间线直接渲染；Android 加载 APK 内固定的同一渲染器，WebView 禁止外部页面、文件与通用原生访问，桥接不包含账号凭据。
+
+`POST /bots/:id/messages/:messageId/ui-state` 按 revision 保存输入；冲突返回 409。`POST /bots/:id/messages/:messageId/ui-actions` 验证已发布按钮与表单校验，从当前数据重新解析操作参数，再通过原有消息 / 任务路径交给 Bot，request_id 保证重试幂等。跨端更新沿用已有 bot 事件，客户端重新加载消息。
+
+可读的操作描述展示在聊天中；完整操作保存在 `ui_action`，只注入 Agent 上下文。动作不会绕过文件 / 命令审批。表单、计算、图表、表格和布局由目录里的可信组件 / 函数组合，Agent 不生成可执行页面代码。

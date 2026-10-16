@@ -1,6 +1,8 @@
 package dev.pibot.android.domain
 
+import dev.pibot.android.data.AgentTaskRef
 import dev.pibot.android.data.Bot
+import dev.pibot.android.data.FromBot
 import dev.pibot.android.data.Message
 import dev.pibot.android.face.moodFor
 import dev.pibot.android.face.sleepLabel
@@ -19,7 +21,7 @@ data class Timeline(val messages: List<Message> = emptyList(), val hasMore: Bool
     /** Streaming text for a running reply; ignored once the message has finished. */
     fun applyDelta(messageId: String, content: String): Timeline {
         val i = messages.indexOfFirst { it.id == messageId }
-        if (i < 0 || messages[i].status != "running" || messages[i].content.length > content.length) return this
+        if (i < 0 || messages[i].status != "running") return this
         return copy(messages = messages.toMutableList().also { it[i] = it[i].copy(content = content) })
     }
 
@@ -67,6 +69,20 @@ val TOOL_LABELS = mapOf(
     "run_command" to "执行命令",
     "request_outside_access" to "申请访问",
     "web_search" to "联网搜索",
+    "ask_agent" to "委托智能体",
+    "get_ui_catalog" to "查看界面组件",
+    "show_ui" to "展示交互界面",
 )
 
 fun toolLabel(name: String) = TOOL_LABELS[name] ?: name.ifBlank { "工具" }
+
+/** Header above a message another bot wrote into this timeline. */
+fun relayLabel(from: FromBot) = if (from.kind == "report") "${from.name} 的回报" else "来自 ${from.name} 的委托"
+
+private val TASK_STATES = mapOf("queued" to "排队中", "running" to "进行中", "completed" to "已完成", "failed" to "未完成", "cancelled" to "已取消")
+
+/** Chip under a reply for each bot it handed work to. */
+fun delegationLabel(task: AgentTaskRef): String {
+    val state = if (task.mode == "report" && task.status == "running") "完成后回报" else TASK_STATES[task.status] ?: task.status
+    return "交给了 ${task.botName} · $state"
+}

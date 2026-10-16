@@ -1,0 +1,26 @@
+{
+  "name": "@pi-bot/a2ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./react": "./src/renderer.tsx",
+    "./styles": "./src/style.css"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@a2ui/web_core": "0.13.0",
+    "@a2ui/react": "0.13.0",
+    "@a2ui/markdown-it": "0.2.1",
+    "zod": "3.25.76",
+    "zod-to-json-schema": "3.25.2"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }
+}

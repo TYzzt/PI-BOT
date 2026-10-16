@@ -61,6 +61,7 @@ private fun Signed(repository: PiBotRepository) {
                 onBack = { nav.popBackStack() },
                 onEdit = { nav.navigate("editor/$id") },
                 onFiles = { nav.navigate("files/$id") },
+                onOpenBot = { other -> if (other != id) nav.navigate("bot/$other") },
             )
         }
         composable("files/{id}") { entry ->

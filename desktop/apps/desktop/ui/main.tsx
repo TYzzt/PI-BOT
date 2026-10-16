@@ -1,14 +1,14 @@
 import { StrictMode, useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 import { PiBot } from '@pi-bot/bot-face/react';
-import { moodFor, sleepLabel, type Mood } from '@pi-bot/bot-face';
+import { DEFAULT_AVATAR, moodFor, sleepLabel, type Mood } from '@pi-bot/bot-face';
 import type { AccountState, AppEvent, Bot, LocalActivity, Message, MessagePage, ModelOption } from '../../../packages/protocol/src/index.js';
 import { bridge, call, errorText } from './bridge.js';
 import { BotEditor } from './editor.js';
 import { Timeline } from './timeline.js';
 import './style.css';
 
-const ORANGE = { shape: 'blob', color: 'orange', scheme: 'light' } as const;
+const ORANGE = DEFAULT_AVATAR;
 
 function Login({ state }: { state: AccountState }) {
   const [serverUrl, setServerUrl] = useState(state.serverUrl ?? '');
@@ -120,18 +120,31 @@ function App() {
     setPages(p => ({ ...p, [botId]: { messages: [...page.messages, ...p[botId].messages], hasMore: page.has_more } }));
   };
 
-  useEffect(() => bridge.subscribe((event: AppEvent) => {
-    if (event.type === 'service.status') { setService(event.connected); if (event.connected) void call<AccountState & { activities: LocalActivity[] }>('status').then(s => { setAccount(s); setActivities(Object.fromEntries(s.activities.map(a => [a.botId, a]))); }); }
-    else if (event.type === 'account') setAccount(event.state);
-    else if (event.type === 'bots') void loadBots();
-    else if (event.type === 'bot') { void loadBots(); if (event.bot_id === selectedRef.current) void loadTail(event.bot_id); }
-    else if (event.type === 'delta') setPages(p => {
-      const page = p[event.bot_id];
-      if (!page) return p;
-      return { ...p, [event.bot_id]: { ...page, messages: page.messages.map(m => (m.id === event.message_id ? { ...m, content: event.content } : m)) } };
+  useEffect(() => {
+    let disposed = false;
+    const loadStatus = () => {
+      void call<AccountState & { activities: LocalActivity[] }>('status').then(s => {
+        if (disposed) return;
+        setService(true); setAccount(s);
+        setActivities(Object.fromEntries(s.activities.map(a => [a.botId, a])));
+      }).catch(() => { /* A later connection event retries if the service is not ready. */ });
+    };
+    const unsubscribe = bridge.subscribe((event: AppEvent) => {
+      if (event.type === 'service.status') { setService(event.connected); if (event.connected) loadStatus(); }
+      else if (event.type === 'account') setAccount(event.state);
+      else if (event.type === 'bots') void loadBots();
+      else if (event.type === 'bot') { void loadBots(); if (event.bot_id === selectedRef.current) void loadTail(event.bot_id); }
+      else if (event.type === 'delta') setPages(p => {
+        const page = p[event.bot_id];
+        if (!page) return p;
+        return { ...p, [event.bot_id]: { ...page, messages: page.messages.map(m => (m.id === event.message_id ? { ...m, content: event.content } : m)) } };
+      });
+      else if (event.type === 'activity') setActivities(a => { const next = { ...a }; if (event.activity) next[event.botId] = event.activity; else delete next[event.botId]; return next; });
     });
-    else if (event.type === 'activity') setActivities(a => { const next = { ...a }; if (event.activity) next[event.botId] = event.activity; else delete next[event.botId]; return next; });
-  }), [loadBots, loadTail]);
+    // The service may connect before the renderer subscribes to its events.
+    loadStatus();
+    return () => { disposed = true; unsubscribe(); };
+  }, [loadBots, loadTail]);
   useEffect(() => {
     if (!online) return;
     void loadBots();
@@ -155,11 +168,14 @@ function App() {
           {bots.map(b => {
             const mood = botMood(b, activities[b.id], now);
             return (
-              <button key={b.id} className={`bot-item ${b.id === selected ? 'active' : ''}`} onClick={() => setSelected(b.id)}>
-                <PiBot avatar={b.avatar} mood={mood} size={44} />
+              <button key={b.id} className={`bot-item ${b.is_main ? 'main-bot' : ''} ${b.id === selected ? 'active' : ''}`} onClick={() => setSelected(b.id)}>
+                <span className="bot-avatar">
+                  <PiBot avatar={b.avatar} mood={mood} size={b.is_main ? 64 : 44} />
+                  {b.is_main && <span className="main-star" aria-label="主智能体">★</span>}
+                </span>
                 <span className="bot-text">
                   <strong>{b.name}</strong>
-                  <span className={b.pending_approvals.length ? 'attention' : ''}>{statusLine(b, mood, now)}</span>
+                  <span className={b.pending_approvals.length ? 'attention' : ''}>{b.is_main && !b.latest_run && !b.last_message ? '主智能体 · 有什么想做的，告诉我' : statusLine(b, mood, now)}</span>
                 </span>
                 {b.pending_approvals.length > 0 && <i className="badge-dot" />}
               </button>
@@ -183,12 +199,19 @@ function App() {
               <PiBot avatar={bot.avatar} mood={botMood(bot, activities[bot.id], now)} size={52} followPointer />
               <div className="bot-title">
                 <h1>{bot.name}</h1>
-                <span className="muted small">{models.find(m => m.id === bot.model_id)?.name ?? '默认模型'} · ~/pi-bot/{bot.slug}</span>
+                <span className="muted small">{bot.is_main ? '主智能体 · ' : ''}{models.find(m => m.id === bot.model_id)?.name ?? '默认模型'} · ~/pi-bot/{bot.slug}</span>
               </div>
               <button className="ghost" onClick={() => bridge.openLibrary(bot.slug).catch(e => alert(errorText(e)))}>在 Finder 中打开资料库</button>
               <button className="ghost" disabled={!online} onClick={() => setEditor(bot)}>编辑</button>
             </header>
-            <Timeline bot={bot} messages={page?.messages ?? []} hasMore={page?.hasMore ?? false} mood={botMood(bot, activities[bot.id], now)} online={online} onLoadMore={() => loadMore(bot.id)} />
+            <Timeline bot={bot} messages={page?.messages ?? []} hasMore={page?.hasMore ?? false} mood={botMood(bot, activities[bot.id], now)} online={online} onLoadMore={() => loadMore(bot.id)} onOpenBot={id => { if (bots.some(b => b.id === id)) setSelected(id); }} onSent={sent => {
+              setPages(p => {
+                const old = p[bot.id];
+                const byId = new Map((old?.messages ?? []).map(m => [m.id, m]));
+                for (const m of sent.messages) byId.set(m.id, m);
+                return { ...p, [bot.id]: { messages: [...byId.values()].sort((a, b) => a.seq - b.seq), hasMore: old?.hasMore ?? sent.has_more } };
+              });
+            }} />
           </>
         ) : (
           <div className="empty">
