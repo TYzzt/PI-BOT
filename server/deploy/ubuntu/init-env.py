@@ -23,7 +23,7 @@ if not env.exists():
         "PI_BOT_ADMIN_PASSWORD": secrets.token_hex(16),
         "PI_BOT_JWT_SECRET": secrets.token_hex(32),
         "PI_BOT_RUNNER_TOKEN": secrets.token_hex(32),
-        "PI_BOT_SEARXNG_SECRET": secrets.token_hex(32),
+        "PI_BOT_TAVILY_API_KEY": "",
         "PI_BOT_VAULT_KEY_ID": str(uuid.uuid4()),
         "PI_BOT_VAULT_KEY": base64.b64encode(secrets.token_bytes(32)).decode(),
         "PI_BOT_WORKER_CONCURRENCY": "2",
@@ -44,11 +44,11 @@ else:
     env.chmod(0o600)
 
 # Add new optional settings without replacing existing deployment credentials.
-defaults = {"LANGFUSE_TRACING_ENABLED": "false", "LANGFUSE_BASE_URL": "", "LANGFUSE_PUBLIC_KEY": "", "LANGFUSE_SECRET_KEY": "", "LANGFUSE_TRACING_ENVIRONMENT": "production"}
+defaults = {"PI_BOT_TAVILY_API_KEY": "", "LANGFUSE_TRACING_ENABLED": "false", "LANGFUSE_BASE_URL": "", "LANGFUSE_PUBLIC_KEY": "", "LANGFUSE_SECRET_KEY": "", "LANGFUSE_TRACING_ENVIRONMENT": "production"}
 missing = {key: value for key, value in defaults.items() if key not in values}
 if missing:
     with env.open("a") as out:
-        out.write("\n# Cloud Worker observability\n")
+        out.write("\n# Optional service settings\n")
         out.writelines(f"{key}={value}\n" for key, value in missing.items())
     values.update(missing)
 

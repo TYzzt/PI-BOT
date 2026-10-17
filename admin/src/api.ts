@@ -98,6 +98,18 @@ export interface Usage {
   by_model: UsageRow[];
   by_day: { day: string; source: string; calls: number; tokens: number }[];
 }
+export interface SearchUsage {
+  configured: boolean;
+  status: "not_configured" | "available" | "exhausted" | "unavailable";
+  plan: string | null;
+  plan_used: number | null;
+  plan_limit: number | null;
+  key_used: number | null;
+  key_limit: number | null;
+  remaining: number | null;
+  checked_at: string | null;
+  error: string | null;
+}
 export type ModelInput = Omit<Model, "id" | "updated_at"> & { api_key?: string };
 
 export const api = {
@@ -120,4 +132,5 @@ export const api = {
   devices: () => request<Device[]>(adminApi, "devices"),
   revokeDevice: (id: string) => request(adminApi, `devices/${id}/revoke`, "POST"),
   usage: (days: number) => request<Usage>(adminApi, `usage?days=${days}`),
+  searchUsage: () => request<SearchUsage>(adminApi, "search/usage"),
 };

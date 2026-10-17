@@ -29,7 +29,7 @@ npm run runner --workspace=@pi-bot/server
 npm run worker --workspace=@pi-bot/server
 ```
 
-联网搜索由 API 统一代理，Mac 与云端 Runner 共用 `POST /web/search`，使用已有短期智能体令牌鉴权。配置 `PI_BOT_SEARXNG_URL` 即可，不需要搜索 API Key；未配置 SearXNG 时仍可用 `PI_BOT_TAVILY_API_KEY` 作为替代。两项都不配置时不向智能体提供搜索工具。所有环境变量见 [.env.example](.env.example)。
+联网搜索由 API 统一代理，Mac 与云端 Runner 共用 `POST /web/search`，使用已有短期智能体令牌鉴权。只调用 Tavily SaaS（`https://api.tavily.com`），从服务端环境变量 `PI_BOT_TAVILY_API_KEY` 读取 Key；未配置时不向智能体提供搜索工具。所有环境变量见 [.env.example](.env.example)。
 
 管理后台开发：`npm run admin:dev`（Vite 把接口代理到 `PI_BOT_SERVER`，默认 `http://127.0.0.1:8000`）。
 
@@ -41,9 +41,14 @@ npm run worker --workspace=@pi-bot/server
 - 单机：`cd server && docker compose up --build -d`（需要先生成 `server/vault.json`，并在环境里设置 `PI_BOT_ADMIN_PASSWORD`、`PI_BOT_JWT_SECRET`、`PI_BOT_RUNNER_TOKEN`）。
 - 集群：[deploy/pibot.yaml](deploy/pibot.yaml)。入口 `https://aicloud-app.lenovo.com.cn/pibot`，后台 `/pibot/admin/`；镜像由 GitHub Actions 推到 `registry.cn-beijing.aliyuncs.com/liuhx/pi-bot-server:latest`。应用前修改 `pibot` Secret 里的口令，并创建 `pibot-vault` Secret（见清单顶部注释）。
 
-Compose 会同时启动 SearXNG，默认内网地址 `http://searxng:8080`，不向宿主机或公网暴露搜索端口。配置文件在 [searxng/settings.yml](searxng/settings.yml)，已启用 JSON、关闭私有实例不需要的限流器（无需额外 Redis/Valkey），容器限制 512MB 内存和一个工作进程。Kubernetes 清单同样包含 SearXNG 的 Deployment、ClusterIP Service 和 ConfigMap。修改搜索引擎或网络代理配置后重启 SearXNG；Kubernetes 修改 ConfigMap 后需要滚动重启其 Deployment。
+联网搜索统一使用 Tavily `fast` 模式，每次消耗 1 credit；关闭自动参数升级，不请求生成答案或网页全文。Server 限制搜索为 20 秒，返回最多 8 条去重结果，对有结果的查询缓存 5 分钟。
 
-SearXNG 仍需能访问上游搜索引擎；服务健康并不代表搜索源可用。Server 限制搜索为 20 秒，返回最多 8 条去重结果并缓存成功查询 5 分钟。部分来源失败时保留其余结果并提示；全部来源失败时明确返回错误。搜索返回摘要和链接，不自动抓取网页全文。
+在 [Tavily 控制台](https://app.tavily.com/) 获取 API Key，写入服务端 `.env` 的 `PI_BOT_TAVILY_API_KEY=tvly-...`，重新启动 API 和 Worker。Compose 需要重新创建容器以加载新环境变量，Kubernetes 通过 `pibot` Secret 提供。Key 只保存在服务器，不会返回给后台、Mac 或 Runner。
+
+管理员在「用量」页查看搜索剩余 credits、套餐用量、Key 上限和同步时间，也可调用 `GET /admin/api/search/usage`。通过 [Tavily Usage API](https://docs.tavily.com/documentation/api-reference/endpoint/usage) 最多每分钟同步一次；成功搜索后在本进程扣减，并为进行中的搜索预留 credit。可用额度取账号套餐剩余额度与当前 Key 剩余额度的较小值（Key 未单独设限时仅使用套餐额度），不使用 pay-as-you-go 额度。达到上限时 `/web/search` 返回 HTTP 402、`detail: "搜索额度到了"`，包括已有缓存的查询；Tavily 的 432/433 响应也映射为同一错误。工具提示模型停止重试或创建重复任务。用量查询失败或搜索连接中断导致余额不确定时暂停新搜索，直到下一次成功同步；后台显示查询失败，不把未知额度当作零；429 限流、无效 Key 与额度耗尽分别提示。额度恢复后在下一次同步时恢复搜索。
+
+用量是按分钟同步的快照；同一账号或 Key 在其他应用消耗额度时，可能在下一次同步或 Tavily 拒绝请求后才反映。本地计数只负责本服务的预留和扣减，账号总账以 Tavily 为准。旧版 SearXNG 环境变量不再使用；Compose 升级会移除旧搜索容器但保留卷，Kubernetes 迁移时可另行删除旧 `pibot-searxng` Deployment、Service 和 ConfigMap。
+
 
 API 只能单副本：Mac 的长连接、在线状态和资料库 RPC 都在进程内存里。Worker 可以多副本。Runner 只供 Worker 在内网调用。生产入口必须是 HTTPS/WSS。
 

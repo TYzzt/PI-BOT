@@ -438,7 +438,7 @@ export function systemPrompt(
   ].join("\n"));
   parts.push("默认用中文回答；用户使用其他语言时跟随用户。");
   parts.push(UI_INSTRUCTIONS);
-  if (options.search) parts.push("联网检索请优先使用 web_search，支持中文查询和 site: 域名限定；它返回标题、链接和摘要。重要结论要核对原始来源，不要把搜索摘要当作已读过网页全文。搜索失败时及时说明，不要反复重试同一查询。");
+  if (options.search) parts.push("联网检索请优先使用 web_search，支持中文查询和 site: 域名限定；它返回标题、链接和摘要。重要结论要核对原始来源，不要把搜索摘要当作已读过网页全文。搜索失败时及时说明，不要反复重试同一查询。工具返回‘搜索额度到了’时，直接告知用户搜索额度到了，停止搜索，不要重试或重新创建搜索任务。");
   if (options.agents?.length) parts.push(collaborationPrompt(options.agents, options.depth ?? 0));
   parts.push([
     "任务进度：需要使用工具或进行较长任务时，先结合用户当前的问题和对话上下文，用一句简短、自然的话回应具体诉求，再说明接下来要做什么，然后立即开始行动。能判断的问题先给出有依据的简短回应，不要在核实前编造结论或声称已经完成。",

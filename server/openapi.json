@@ -1889,6 +1889,27 @@
         }
       }
     },
+    "/admin/api/search/usage": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Tavily 搜索剩余额度",
+        "security": [
+          {
+            "UserBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "default": {
+            "description": "{ detail }"
+          }
+        }
+      }
+    },
     "/admin/api/usage": {
       "get": {
         "tags": [

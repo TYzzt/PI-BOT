@@ -7,6 +7,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApp } from '../../server/src/app.js';
 import { settings } from '../../server/src/config.js';
+import { WebSearch } from '../../server/src/search.js';
+import { Hub } from '../../server/src/hub.js';
 import { eventually, mockSearch, resetDatabase, TEST_DB, vaultFile } from '../../server/tests/helpers.js';
 import { Application } from '../packages/service/src/application.js';
 import { buildContext } from '../../server/src/bots.js';
@@ -76,7 +78,8 @@ before(async () => {
   provider = await scriptedProvider(join(dir, 'Desktop'));
   search = await mockSearch();
   serverDb = new Database(TEST_DB!);
-  api = await createApp(settings({ PI_BOT_DATABASE_URL: TEST_DB, PI_BOT_ADMIN_PASSWORD: 'admin-password', PI_BOT_JWT_SECRET: 'j'.repeat(40), PI_BOT_VAULT_FILE: vaultFile(dir), PI_BOT_SEARXNG_URL: search.url }), serverDb);
+  const config = settings({ PI_BOT_DATABASE_URL: TEST_DB, PI_BOT_ADMIN_PASSWORD: 'admin-password', PI_BOT_JWT_SECRET: 'j'.repeat(40), PI_BOT_VAULT_FILE: vaultFile(dir), PI_BOT_TAVILY_API_KEY: 'tvly-test-key' });
+  api = await createApp(config, serverDb, new Hub(), new WebSearch(config, search.fetch));
   await api.listen({ port: 0, host: '127.0.0.1' });
   base = `http://127.0.0.1:${(api.server.address() as any).port}`;
   adminToken = (await http('POST', '/auth/login', { username: 'admin', password: 'admin-password' }, '')).json.access_token;
@@ -136,7 +139,7 @@ test('the Mac agent searches through the authenticated Server gateway', { skip }
   assert.equal(reply.status, 'completed', JSON.stringify(reply));
   assert.match(reply.content, /Pi Bot 官方资料/);
   assert.deepEqual(reply.tools, [], 'search executes in a private worker');
-  assert.equal(search.queries.at(-1)?.searchParams.get('q'), 'Mac 搜索测试');
+  assert.equal(search.queries.at(-1)?.query, 'Mac 搜索测试');
   assert.ok(events.some(e => e.type === 'bot.mood' && e.mood === 'searching'));
 });
 

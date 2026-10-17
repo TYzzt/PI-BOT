@@ -1,10 +1,10 @@
 # Ubuntu Docker 后端
 
-运行 API（含 `/admin/`）、Worker、Runner、PostgreSQL 和 SearXNG。从阿里云拉取 GitHub 构建的镜像，服务器不编译项目。只有 API 的 8000 端口对外开放，数据库、Runner 和搜索服务只在 Compose 网络内通信。
+运行 API（含 `/admin/`）、Worker、Runner、PostgreSQL。从阿里云拉取 GitHub 构建的镜像，服务器不编译项目。只有 API 的 8000 端口对外开放，数据库和 Runner 只在 Compose 网络内通信；联网搜索调用 Tavily SaaS。
 
 ## 首次部署
 
-将 `server/deploy/ubuntu` 和 `server/searxng/settings.yml` 按仓库相对结构复制到 Ubuntu，执行：
+将 `server/deploy/ubuntu` 复制到 Ubuntu，执行：
 
 ```sh
 sudo bash server/deploy/ubuntu/install.sh
@@ -19,12 +19,12 @@ sudo systemctl enable --now pi-bot-update.timer
 
 | 文件 | 内容 |
 |---|---|
-| `.env` | 管理员账号、数据库密码、JWT、Runner token、SearXNG secret、vault key；权限 600 |
+| `.env` | 管理员账号、数据库密码、JWT、Runner token、Tavily API Key、vault key；权限 600 |
 | `vault.json` | 从 `.env` 生成的模型密钥加密文件；权限 400，UID 1000 供容器读取 |
 | `.release.env` | 本次部署的不可变镜像 digest |
 | `.previous-release.env` | 上次部署的镜像 digest |
 
-管理员和数据库密码由 16 个随机字节生成（32 个十六进制字符）；JWT、Runner 和 SearXNG 使用 32 个随机字节（64 个十六进制字符）；AES-256 vault key 是 32 个随机字节的 Base64。全部在目标机生成。重复运行 `init-env.py` 保留原密钥，遇到 vault 不一致时拒绝覆盖。
+管理员和数据库密码由 16 个随机字节生成（32 个十六进制字符）；JWT 和 Runner 使用 32 个随机字节（64 个十六进制字符）；AES-256 vault key 是 32 个随机字节的 Base64。全部在目标机生成。重复运行 `init-env.py` 保留原密钥，遇到 vault 不一致时拒绝覆盖。
 
 管理员初始账号是 `admin`。在服务器本地查看密码：
 
@@ -33,6 +33,8 @@ sudo sed -n 's/^PI_BOT_ADMIN_PASSWORD=//p' /opt/pi-bot/.env
 ```
 
 访问 `http://服务器IP:8000/admin/`。IP + HTTP 用于首次连通验证；正式接入客户端时配置域名、HTTPS 和 WebSocket 转发。可在 `.env` 将绑定地址改为 `127.0.0.1`，由同机反向代理提供入口。
+
+联网搜索只使用 Tavily SaaS。在 `/opt/pi-bot/.env` 填写 `PI_BOT_TAVILY_API_KEY=tvly-...`，留空则不提供搜索工具；运行下方部署命令重新创建服务加载环境变量。后台「用量」页显示剩余 credits，达到套餐或 Key 上限后返回「搜索额度到了」，不使用按量付费额度。升级后旧的 SearXNG 容器会移除，已有数据卷保留。
 
 已有管理员密码保存在数据库中；修改 `.env` 的引导密码不会重置已有账号。
 
@@ -51,6 +53,6 @@ sudo /opt/pi-bot/deploy.sh <40位commit-SHA>  # 部署指定的 GitHub 构建
 sudo systemctl disable --now pi-bot-update.timer  # 暂停自动更新
 ```
 
-数据库保存在 PostgreSQL 持久卷中；更新应用镜像不会清空数据，也不会生成数据库备份。已有备份文件不自动删除。切勿执行 `docker compose down -v`，它会删除持久数据卷。发布脚本只更新应用镜像；未来变更 Compose、部署脚本或 SearXNG 配置时，需重新同步本目录并运行安装脚本。
+数据库保存在 PostgreSQL 持久卷中；更新应用镜像不会清空数据，也不会生成数据库备份。已有备份文件不自动删除。切勿执行 `docker compose down -v`，它会删除持久数据卷。发布脚本只更新应用镜像；未来变更 Compose 或部署脚本时，需重新同步本目录并运行安装脚本。
 
 该配置针对约 2GB 内存机器限制容器内存并将 Worker 并发设为 2；更大负载需增加内存和调整并发。API 仍为单实例。

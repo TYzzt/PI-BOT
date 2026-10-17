@@ -95,12 +95,12 @@ export async function createApp(
   s: Settings = settings(),
   db = new Database(s.databaseUrl),
   hub = new Hub(),
+  webSearch = new WebSearch(s),
 ) {
   await migrate(db);
   await bootstrapAdmin(db, s);
   await failOrphanedMacRuns(db);
   const app = Fastify({ logger: false, bodyLimit: 8 * 1024 * 1024 });
-  const webSearch = new WebSearch(s);
   app.removeContentTypeParser("application/json");
   app.addContentTypeParser(
     "application/json",

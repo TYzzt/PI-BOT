@@ -589,6 +589,11 @@ export const routes: Route[] = [
     },
   },
   {
+    method: "GET", path: "/admin/api/search/usage", auth: "admin", tag: "admin", summary: "Tavily 搜索剩余额度",
+    tx: false,
+    handler: async ({ webSearch }) => webSearch.usage(),
+  },
+  {
     method: "GET", path: "/admin/api/usage", auth: "admin", tag: "admin", summary: "用量统计",
     query: z.object({ days: z.coerce.number().int().min(1).max(90).default(7) }),
     handler: async ({ tx, query }) => {

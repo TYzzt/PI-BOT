@@ -39,7 +39,7 @@ compose=(docker compose --env-file .env --env-file .release.env -f compose.yml)
 touch .deployment-failed
 # A worker must not keep using the previous API/schema during the update.
 "${compose[@]}" stop -t 90 worker runner
-if ! "${compose[@]}" up -d --wait --wait-timeout 240; then
+if ! "${compose[@]}" up -d --remove-orphans --wait --wait-timeout 240; then
   "${compose[@]}" stop -t 90 worker runner
   echo 'Deployment failed. Automatic updates are paused; inspect docker compose logs.' >&2
   exit 1

@@ -46,11 +46,7 @@ export function settings(env = process.env) {
     ),
     runnerUrl: env.PI_BOT_RUNNER_URL ?? "http://runner:8001",
     runnerToken: env.PI_BOT_RUNNER_TOKEN,
-    tavilyKey: env.PI_BOT_TAVILY_API_KEY,
-    searxngUrl: z.string().url().refine(value => {
-      const url = new URL(value);
-      return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash;
-    }, "SearXNG 需要 HTTP(S) 根地址").optional().parse(env.PI_BOT_SEARXNG_URL?.replace(/\/+$/, "") || undefined),
+    tavilyKey: env.PI_BOT_TAVILY_API_KEY?.trim() || undefined,
     adminDir: env.PI_BOT_ADMIN_DIR,
   };
 }

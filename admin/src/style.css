@@ -75,6 +75,7 @@ main { padding: 32px 40px; max-width: 1180px; width: 100%; }
 
 .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
 .toolbar p { margin: 0; }
+.search-usage { margin-bottom: 28px; padding-bottom: 20px; border-bottom: 1px solid var(--line); }
 
 .stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; margin-bottom: 20px; }
 .stat { background: var(--panel); border-radius: var(--radius); padding: 16px 18px; display: grid; gap: 4px; }

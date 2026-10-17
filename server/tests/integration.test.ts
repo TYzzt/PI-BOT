@@ -10,6 +10,8 @@ import { SseUsage } from "../src/llm.js";
 import { insertRun } from "../src/bots.js";
 import { dispatchMac } from "../src/runs.js";
 import { createBotAgent } from "@pi-bot/agent";
+import { WebSearch } from "../src/search.js";
+import { Hub } from "../src/hub.js";
 import { DEFAULT_AVATAR } from "@pi-bot/bot-face";
 import { deviceKeys, eventually, mockProvider, mockSearch, resetDatabase, socket, TEST_DB, tempDir, vaultFile } from "./helpers.js";
 
@@ -71,10 +73,10 @@ before(async () => {
     PI_BOT_MEMORY_THRESHOLD: "10",
     PI_BOT_WORKER_POLL_SECONDS: "0.05",
     PI_BOT_RPC_TIMEOUT_MS: "1500",
-    PI_BOT_SEARXNG_URL: search.url,
+    PI_BOT_TAVILY_API_KEY: "tvly-test-key",
   };
   s = settings(env);
-  app = await createApp(s);
+  app = await createApp(s, undefined, new Hub(), new WebSearch(s, search.fetch));
   await app.listen({ port: 0, host: "127.0.0.1" });
   base = `http://127.0.0.1:${(app.server.address() as any).port}`;
   s = settings({ ...env, PI_BOT_INTERNAL_URL: base });
@@ -223,7 +225,13 @@ test("the model proxy injects the provider key, rewrites the model and records u
   const searched = await api("POST", "/web/search", { token: token.json.token, body: { query: "原文 & site:gov.cn", language: "zh-CN" } });
   assert.equal(searched.status, 200);
   assert.equal(searched.json.results[0].title, "Pi Bot 官方资料");
-  assert.equal(search.queries.at(-1)?.searchParams.get("q"), "原文 & site:gov.cn");
+  assert.equal(search.queries.at(-1)?.query, "原文 & site:gov.cn");
+  assert.equal((await api("GET", "/admin/api/search/usage", { token: state.alice })).status, 403);
+  const searchUsage = await api("GET", "/admin/api/search/usage", { token: state.admin });
+  assert.equal(searchUsage.status, 200);
+  assert.equal(searchUsage.json.remaining, 999);
+  assert.equal(searchUsage.json.plan, "Researcher");
+  assert.ok(!JSON.stringify(searchUsage.json).includes("tvly-test-key"));
   const usage = await eventually(async () => {
     const u = await api("GET", "/admin/api/usage", { token: state.admin });
     return u.json.by_user.find((x: any) => x.username === "alice" && x.input_tokens >= 42) && u.json;
@@ -352,7 +360,7 @@ test("Mac offline: runs fall back to the cloud runner through the proxy, with me
   assert.equal(searched.status, "completed", JSON.stringify(searched));
   assert.match(searched.content, /Pi Bot 官方资料/);
   assert.deepEqual(searched.tools, [], "search tools execute privately and the result is a separate report");
-  assert.equal(search.queries.at(-1)?.searchParams.get("language"), "zh-CN");
+  assert.equal(search.queries.at(-1)?.language, "zh-cn");
 
   for (let i = 0; i < 5; i++) await send(`第 ${i} 件事`);
   const memory = await eventually(async () => {

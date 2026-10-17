@@ -1,0 +1,21 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Pi Bot Desktop (Mac)",
+      "type": "node",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "desktop:dev"],
+      "env": {
+        "PI_BOT_SERVER_URL": "http://39.109.110.167:8000",
+        "PI_BOT_HTTP_SERVER_URL": "http://39.109.110.167:8000",
+        "PI_BOT_DATA_DIR": "/Users/liuhx/Library/Application Support/Pi Bot Ubuntu",
+        "PI_BOT_LIBRARY_ROOT": "/Users/liuhx/pi-bot-ubuntu"
+      },
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"]
+    }
+  ]
+}

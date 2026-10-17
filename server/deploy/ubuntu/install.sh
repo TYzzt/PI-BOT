@@ -26,7 +26,6 @@ fi
 systemctl enable --now docker
 install -d -m 0700 /opt/pi-bot
 install -m 0600 "$source_dir/compose.yml" /opt/pi-bot/compose.yml
-install -m 0600 "$source_dir/../../searxng/settings.yml" /opt/pi-bot/searxng.yml
 install -m 0700 "$source_dir/deploy.sh" /opt/pi-bot/deploy.sh
 python3 "$source_dir/init-env.py" /opt/pi-bot
 install -m 0644 "$source_dir/pi-bot-update.service" /etc/systemd/system/pi-bot-update.service

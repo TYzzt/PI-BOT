@@ -55,7 +55,7 @@ Pi Bot 是多用户的个人 Bot 平台。每个用户有若干个 Bot，每个 
 
 - **API**（`server/src/main.ts`）：REST、WebSocket、模型代理、管理后台静态文件。**必须单副本**：Mac 的 `/ws/device` 连接、在线状态和文件 RPC 都在进程内存里（`hub.ts`）。数据库变更通过 `NOTIFY pibot_changes` 广播，API 收到后推送给该用户的订阅者。
 - **Worker**（`server/src/worker.ts`）：认领 `executor='cloud'` 的运行，签发代理令牌后交给 Runner 执行；每个 Worker 提供 `PI_BOT_WORKER_CONCURRENCY`（默认 4）个后台名额和独立的 `PI_BOT_CONVERSATION_CONCURRENCY`（默认 4）个对话名额；同步等待的父运行释放后台名额，取得名额后才恢复；带租约，Worker 崩溃后超时的运行标为失败。同时负责长期记忆压缩。
-- **Runner**（`server/src/runner.ts`）：无数据库、无 vault，只接受带 `PI_BOT_RUNNER_TOKEN` 的请求，用 `createBotAgent` 跑一次运行；工具只有 `web_search`（API 配置了 SearXNG 或 Tavily 时）和 `ask_agent`（可以委托时），都通过短期智能体令牌调用 API（`/web/search`、`/agent/tasks`），不接触搜索来源密钥。容器只读根文件系统、去掉全部 capabilities。
+- **Runner**（`server/src/runner.ts`）：无数据库、无 vault，只接受带 `PI_BOT_RUNNER_TOKEN` 的请求，用 `createBotAgent` 跑一次运行；工具只有 `web_search`（API 配置了 Tavily Key 时）和 `ask_agent`（可以委托时），都通过短期智能体令牌调用 API（`/web/search`、`/agent/tasks`），不接触搜索来源密钥。容器只读根文件系统、去掉全部 capabilities。
 
 ### 数据
 
@@ -176,7 +176,7 @@ Mac 回传的 `run_event`：`started`、`instruction_ack`、`text`（完整文�
 
 ## 部署
 
-- 本地完整栈：`server/docker-compose.yml`（Postgres、API、Worker、Runner、SearXNG）。
+- 本地完整栈：`server/docker-compose.yml`（Postgres、API、Worker、Runner）。
 - 集群：`server/deploy/pibot.yaml`（命名空间 `n-88`，入口 `https://aicloud-app.lenovo.com.cn/pibot`，管理后台在 `/pibot/admin/`）。镜像 `registry.cn-beijing.aliyuncs.com/liuhx/pi-bot-server`。需要先创建 `pibot` 与 `pibot-vault` 两个 Secret。
 - API 单副本；Worker 可多副本（`FOR UPDATE SKIP LOCKED` 认领）；Runner 只在内网可达。
 
@@ -191,7 +191,7 @@ Mac 回传的 `run_event`：`started`、`instruction_ack`、`text`（完整文�
 7. 管理员禁用用户或吊销设备后，对应客户端立即被登出。
 8. 让 Pi Bot 把周报交给「写作助手」：同步委托时 Pi Bot 在同一次回复里给出结果；`wait=false` 时 Pi Bot 先说已转交，写作助手完成后 Pi Bot 的时间线出现回报并自动转告。写作助手的时间线里能看到「来自 Pi Bot 的委托」。
 
-联网搜索：Mac 与云端共享 `packages/agent/src/web-search.ts` 的 `web_search` 工具。API `/web/search` 校验已有短期智能体令牌，再请求内网 SearXNG（优先）或 Tavily；`RunContext.search_enabled` 由服务配置决定，未配置时不注册工具。API 对成功查询缓存 5 分钟，最多返回 8 条去重结果，部分搜索源失败时提示；SearXNG 只在部署内网开放，Compose 和 Kubernetes 均包含配置。
+联网搜索：Mac 与云端共享 `packages/agent/src/web-search.ts` 的 `web_search` 工具。API `/web/search` 校验已有短期智能体令牌，再以环境变量 `PI_BOT_TAVILY_API_KEY` 调用 Tavily SaaS，固定 `fast` 模式（1 credit）；未配置 Key 时不注册工具。API 对成功查询缓存 5 分钟，最多返回 8 条去重结果。`GET /admin/api/search/usage` 仅管理员可调用，后台「用量」页展示剩余 credits；Tavily 用量最多每分钟同步一次，本进程预留并扣减搜索额度。额度取套餐与 Key 剩余额度的较小值，不使用按量付费额度；耗尽返回 402「搜索额度到了」，用量未知时暂停搜索。
 
 ## A2UI 交互工具
 

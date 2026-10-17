@@ -441,6 +441,45 @@ function DevicesPage() {
 
 const SOURCES: Record<string, string> = { mac: "Mac", cloud: "云端", memory: "记忆整理", test: "测试" };
 
+function SearchUsagePanel() {
+  const load = useCallback(() => api.searchUsage(), []);
+  const { data, error, reload } = useLoad(load);
+  useEffect(() => {
+    const timer = setInterval(reload, 60_000);
+    return () => clearInterval(timer);
+  }, [reload]);
+  const number = (value: number | null) => value === null ? "—" : fmt(value);
+  return (
+    <section className="search-usage" aria-label="Tavily 搜索额度">
+      <div className="toolbar">
+        <div>
+          <h2>Tavily 搜索额度</h2>
+          <p className="muted small">账号与当前 Key 共用的可用额度，每次搜索消耗 1 credit。</p>
+        </div>
+        <button onClick={reload}>刷新额度</button>
+      </div>
+      {error && <p className="error" role="alert">无法刷新搜索额度：{error}</p>}
+      {!data && !error && <p className="muted">正在获取搜索额度…</p>}
+      {data?.status === "not_configured" && <p className="muted">尚未配置 Tavily Key。请在服务端环境变量 PI_BOT_TAVILY_API_KEY 中填写后重启服务。</p>}
+      {data?.configured && <>
+        <div className="stats">
+          <div className="stat"><span className="muted">剩余可用 credits</span><strong className={data.status === "exhausted" ? "error" : ""}>{number(data.remaining)}</strong></div>
+          <div className="stat"><span className="muted">本月账号已用</span><strong>{number(data.plan_used)}</strong></div>
+          <div className="stat"><span className="muted">本月套餐上限</span><strong>{number(data.plan_limit)}</strong></div>
+        </div>
+        {data.status === "exhausted" && <p className="error" role="alert">搜索额度到了</p>}
+        {data.status === "unavailable" && <p className="error" role="alert">{data.error}；额度恢复查询前暂停搜索。</p>}
+        <p className="muted small">
+          {data.plan && `套餐：${data.plan} · `}
+          {data.key_used !== null && `当前 Key 已用：${fmt(data.key_used)} / ${data.key_limit === null ? "未单独设限" : fmt(data.key_limit)} · `}
+          {data.checked_at ? `用量同步：${new Date(data.checked_at).toLocaleString("zh-CN", { hour12: false })}` : "尚未取得用量数据"}
+        </p>
+        <p className="muted small">每分钟同步额度，成功搜索后更新剩余数量。达到套餐或 Key 上限即停止，不使用按量付费额度。</p>
+      </>}
+    </section>
+  );
+}
+
 function UsagePage() {
   const [days, setDays] = useState(7);
   const load = useCallback(() => api.usage(days), [days]);
@@ -479,6 +518,7 @@ function UsagePage() {
   );
   return (
     <>
+      <SearchUsagePanel />
       <div className="toolbar">
         <div className="segmented">
           {[1, 7, 30].map((d) => (

@@ -113,16 +113,26 @@ export async function mockProvider() {
 }
 
 export async function mockSearch() {
-  const queries: URL[] = [];
-  const server = createServer((req, res) => {
+  const queries: { query: string; language?: string }[] = [];
+  let used = 0;
+  const server = createServer(async (req, res) => {
     const url = new URL(req.url!, "http://localhost");
-    queries.push(url);
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ results: [{ title: "Pi Bot 官方资料", url: "https://example.com/pi", content: "搜索结果用于链路测试" }], unresponsive_engines: [] }));
+    if (url.pathname === "/usage") {
+      res.end(JSON.stringify({ key: { usage: used, limit: null }, account: { current_plan: "Researcher", plan_usage: used, plan_limit: 1000 } }));
+    } else {
+      queries.push(await body(req));
+      used++;
+      res.end(JSON.stringify({ results: [{ title: "Pi Bot 官方资料", url: "https://example.com/pi", content: "搜索结果用于链路测试" }], usage: { credits: 1 } }));
+    }
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   return {
-    url: `http://127.0.0.1:${(server.address() as any).port}`, queries,
+    fetch: ((input, init) => {
+      const url = new URL(String(input));
+      if (url.origin !== "https://api.tavily.com") throw new Error("Unexpected search provider");
+      return fetch(`http://127.0.0.1:${(server.address() as any).port}${url.pathname}`, init);
+    }) as typeof fetch, queries,
     close: () => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); }),
   };
 }

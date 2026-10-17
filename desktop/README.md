@@ -38,7 +38,7 @@ npm run desktop:dev
 
 | 工具 | 说明 |
 |---|---|
-| `web_search` | 通过 Server 搜索网络，返回标题、链接和摘要（服务器配置 SearXNG 或 Tavily 时可用） |
+| `web_search` | 通过 Server 调用 Tavily SaaS，返回标题、链接和摘要（服务器配置 Tavily Key 时可用） |
 | `list_files` / `read_file` / `search_files` | 浏览、读取、搜索资料库 |
 | `write_file` / `edit_file` | 写文件、精确替换文本 |
 | `run_command` | 用 zsh 执行命令，工作目录默认是资料库（也可以是已批准的外部目录），默认 2 分钟超时，可取消 |

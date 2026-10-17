@@ -1,4 +1,4 @@
-# 本地完整栈：Postgres + API（含 /admin 管理后台）+ Worker + Runner + SearXNG。
+# 本地完整栈：Postgres + API（含 /admin 管理后台）+ Worker + Runner。
 # 先生成模型密钥加密文件：node --import tsx server/scripts/vault-key.ts "$PWD/server/vault.json"
 services:
   postgres:
@@ -26,13 +26,11 @@ services:
       PI_BOT_JWT_SECRET: ${PI_BOT_JWT_SECRET:?set PI_BOT_JWT_SECRET (>= 32 chars)}
       PI_BOT_VAULT_FILE: /run/secrets/pibot-vault.json
       PI_BOT_APPROVAL_TTL_SECONDS: ${PI_BOT_APPROVAL_TTL_SECONDS:-900}
-      PI_BOT_SEARXNG_URL: ${PI_BOT_SEARXNG_URL:-http://searxng:8080}
       PI_BOT_TAVILY_API_KEY: ${PI_BOT_TAVILY_API_KEY:-}
     volumes: ["./vault.json:/run/secrets/pibot-vault.json:ro"]
     ports: ["8000:8000"]
     depends_on:
       postgres: {condition: service_healthy}
-      searxng: {condition: service_healthy}
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 5s
@@ -79,26 +77,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 12
-  searxng:
-    image: ghcr.io/searxng/searxng@sha256:ddd642cae6eac75412938fd846ddbf440a2df029cfeae8a562b8b205f4e35e25
-    environment:
-      SEARXNG_SECRET: ${PI_BOT_JWT_SECRET:?set PI_BOT_JWT_SECRET}
-      GRANIAN_WORKERS: 1
-      GRANIAN_BLOCKING_THREADS: 4
-    volumes:
-      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
-      - searxngdata:/var/cache/searxng
-    # No published ports: API accesses http://searxng:8080 on the Compose network.
-    restart: unless-stopped
-    mem_limit: 512m
-    cpus: 1
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"]
-      interval: 10s
-      timeout: 5s
-      retries: 6
-      start_period: 20s
+
 volumes:
   pgdata:
   runnerdata:
-  searxngdata:

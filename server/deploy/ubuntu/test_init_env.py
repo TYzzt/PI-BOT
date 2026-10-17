@@ -58,10 +58,12 @@ class DeploymentComposeTest(unittest.TestCase):
                 self.assertIn(key, services["worker"]["environment"])
                 for service in ["api", "runner"]:
                     self.assertNotIn(key, services[service]["environment"])
+            self.assertNotIn("searxng", services)
+            self.assertEqual(services["api"]["environment"]["PI_BOT_TAVILY_API_KEY"], "")
             self.assertEqual(services["runner"]["tmpfs"], ["/tmp:rw,nosuid,nodev"])
             self.assertTrue(services["runner"]["read_only"])
             self.assertEqual(services["api"]["ports"][0]["published"], "8000")
-            for name in ["postgres", "runner", "worker", "searxng"]:
+            for name in ["postgres", "runner", "worker"]:
                 self.assertFalse(services[name].get("ports"), f"{name} must stay internal")
 
 
