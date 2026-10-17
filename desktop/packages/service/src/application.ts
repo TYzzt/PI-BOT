@@ -37,6 +37,7 @@ export class Application {
   private executor: Executor | null = null;
   private connection: Connection = 'signed_out';
   private activities = new Map<string, LocalActivity>();
+  private afterglow = new Map<string, NodeJS.Timeout>();
   constructor(private o: ApplicationOptions) {}
   private get accountFile() { return join(this.o.dataDir, 'account.json'); }
 
@@ -60,6 +61,7 @@ export class Application {
     this.o.emit({ type: 'account', state: this.state() });
   }
   private connect(account: Account, privateKey: string) {
+    checkServerUrl(account.serverUrl);
     this.account = account;
     this.sign = signer(account.deviceId, privateKey);
     this.executor = new Executor({
@@ -79,16 +81,26 @@ export class Application {
         if (authFailed) { this.socket?.stop(); this.setConnection('revoked'); }
         else this.setConnection('offline');
       },
-      message: m => void this.onMessage(m),
+      message: m => { void this.onMessage(m).catch(() => {}); },
     }, this.o.backoff);
     this.setConnection('connecting');
     this.socket.start();
   }
   private activity(run: RunContext, tool: string | null, mood: Mood | null) {
+    clearTimeout(this.afterglow.get(run.bot.id));
+    this.afterglow.delete(run.bot.id);
     const activity = mood ? { botId: run.bot.id, runId: run.run_id, tool, mood } : null;
-    if (activity) this.activities.set(run.bot.id, activity); else this.activities.delete(run.bot.id);
-    this.o.emit({ type: 'activity', botId: run.bot.id, activity });
-    this.o.emit({ type: 'bot.mood', bot_id: run.bot.id, name: run.bot.name, mood: mood ?? 'idle' });
+    if (activity) this.activities.set(run.run_id, activity); else this.activities.delete(run.run_id);
+    if (mood === 'celebrate' || mood === 'error') this.activities.delete(run.run_id);
+    const others = [...this.activities.values()].filter(a => a.botId === run.bot.id);
+    const aggregate = others.find(a => a.mood === 'waiting') ?? others.find(a => a.tool) ?? others.at(-1) ?? activity;
+    this.o.emit({ type: 'activity', botId: run.bot.id, activity: aggregate });
+    this.o.emit({ type: 'bot.mood', bot_id: run.bot.id, name: run.bot.name, mood: aggregate?.mood ?? 'idle' });
+    if (!others.length && (mood === 'celebrate' || mood === 'error')) this.afterglow.set(run.bot.id, setTimeout(() => {
+      this.afterglow.delete(run.bot.id);
+      this.o.emit({ type: 'activity', botId: run.bot.id, activity: null });
+      this.o.emit({ type: 'bot.mood', bot_id: run.bot.id, name: run.bot.name, mood: 'idle' });
+    }, 6000));
   }
   private async onMessage(m: Record<string, any>) {
     const executor = this.executor;
@@ -98,6 +110,10 @@ export class Application {
         this.o.log?.('run.started', { run: String(m.run?.run_id) });
         await executor.start(m.run as RunContext);
         this.o.log?.('run.finished', { run: String(m.run?.run_id) });
+        return;
+      case 'task_message':
+        if (await executor.message(m.run_id, m.instruction_id, m.text))
+          this.socket?.send({ type: 'run_event', run_id: m.run_id, event: { kind: 'instruction_ack', id: m.instruction_id } });
         return;
       case 'cancel': executor.cancel(m.run_id); return;
       case 'approval_created': executor.approvalCreated(m.run_id, m.request_id, m.approval_id); return;
@@ -152,6 +168,8 @@ export class Application {
     rmSync(this.accountFile, { force: true });
     this.account = null; this.sign = null; this.socket = null; this.executor = null;
     this.activities.clear();
+    for (const timer of this.afterglow.values()) clearTimeout(timer);
+    this.afterglow.clear();
     this.setConnection('signed_out');
     return this.state();
   }
@@ -166,7 +184,7 @@ export class Application {
       case 'botUpdate': { const { id, ...patch } = input; return this.cloud<Bot>('PATCH', `/bots/${id}`, patch); }
       case 'botDelete': return this.cloud('DELETE', `/bots/${input.id}`);
       case 'messages': return this.cloud<MessagePage>('GET', `/bots/${input.botId}/messages?limit=50${input.before ? `&before=${input.before}` : ''}`);
-      case 'send': return this.cloud('POST', `/bots/${input.botId}/messages`, { text: input.text, request_id: randomUUID() });
+      case 'send': return this.cloud('POST', `/bots/${input.botId}/messages`, { text: input.text, request_id: input.request_id ?? randomUUID() });
       case 'uiState': return this.cloud('POST', `/bots/${input.botId}/messages/${input.messageId}/ui-state`, { revision: input.revision, states: input.states });
       case 'uiAction': return this.cloud('POST', `/bots/${input.botId}/messages/${input.messageId}/ui-actions`, { revision: input.revision, states: input.states, action: input.action, request_id: input.request_id });
       case 'cancel': this.executor?.cancel(input.runId); return this.cloud('POST', `/runs/${input.runId}/cancel`);
@@ -174,5 +192,5 @@ export class Application {
     }
     throw new Error('未知方法');
   }
-  async shutdown() { this.executor?.stopAll(); this.socket?.stop(); }
+  async shutdown() { this.executor?.stopAll(); this.socket?.stop(); for (const timer of this.afterglow.values()) clearTimeout(timer); this.afterglow.clear(); }
 }

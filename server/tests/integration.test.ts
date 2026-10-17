@@ -7,7 +7,9 @@ import { Database } from "../src/db.js";
 import { Worker } from "../src/worker.js";
 import { createRunner } from "../src/runner.js";
 import { SseUsage } from "../src/llm.js";
-import { createBotAgent, INITIAL_PROGRESS } from "@pi-bot/agent";
+import { insertRun } from "../src/bots.js";
+import { dispatchMac } from "../src/runs.js";
+import { createBotAgent } from "@pi-bot/agent";
 import { DEFAULT_AVATAR } from "@pi-bot/bot-face";
 import { deviceKeys, eventually, mockProvider, mockSearch, resetDatabase, socket, TEST_DB, tempDir, vaultFile } from "./helpers.js";
 
@@ -126,6 +128,7 @@ test("admin bootstraps from env, creates users and models; users cannot reach ad
   const tested = await api("POST", `/admin/api/models/${state.model}/test`, { token: state.admin });
   assert.equal(tested.json.ok, true, JSON.stringify(tested.json));
   assert.equal(provider.requests.at(-1)!.headers.authorization, "Bearer sk-provider-secret");
+  assert.equal(provider.requests.at(-1)!.body.max_output_tokens, 1000, "connectivity tests allow the configured reasoning/output budget");
   const models = await api("GET", "/models", { token: state.alice });
   assert.deepEqual(models.json.map((m: any) => m.name), ["测试模型"]);
   assert.equal("base_url" in models.json[0], false, "users never see provider details");
@@ -239,11 +242,12 @@ test("Mac online: runs execute on the Mac with tools, approvals and file RPC", {
   const posted = await api("POST", `/bots/${state.bot}/messages`, { token: state.alice, body: { text: "整理一下桌面", request_id: requestId } });
   assert.equal(posted.status, 200, JSON.stringify(posted.json));
   assert.equal(posted.json.run.executor, "mac");
-  assert.deepEqual(posted.json.messages.at(-1).progress, [INITIAL_PROGRESS], "acknowledgement arrives in the send response before model output");
+  assert.deepEqual(posted.json.messages.at(-1).progress, [], "queued replies wait for model text instead of inserting a canned acknowledgement");
   const again = await api("POST", `/bots/${state.bot}/messages`, { token: state.alice, body: { text: "整理一下桌面", request_id: requestId } });
   assert.equal(again.json.run.id, posted.json.run.id, "request_id is idempotent");
   const busy = await api("POST", `/bots/${state.bot}/messages`, { token: state.alice, body: { text: "另一件事", request_id: randomUUID() } });
-  assert.equal(busy.status, 409);
+  assert.equal(busy.status, 200, "a second conversation is accepted and queued");
+  await api("POST", `/runs/${busy.json.run.id}/cancel`, { token: state.alice });
 
   const { run } = await mac.next((m) => m.type === "run");
   assert.equal(run.bot.slug, "research-bot");
@@ -260,7 +264,7 @@ test("Mac online: runs execute on the Mac with tools, approvals and file RPC", {
   mac.send({ type: "run_event", run_id: runId, event: { kind: "progress", lines: ["我先看看桌面上的文件。"] } });
   const progressPage = await eventually(async () => {
     const p = await api("GET", `/bots/${state.bot}/messages`, { token: state.alice });
-    const m = p.json.messages.at(-1);
+    const m = p.json.messages.find((m: any) => m.run_id === runId && m.role === "assistant");
     return m.progress?.[0] === "我先看看桌面上的文件。" && m;
   });
   assert.deepEqual(progressPage.progress, ["我先看看桌面上的文件。"]);
@@ -292,9 +296,9 @@ test("Mac online: runs execute on the Mac with tools, approvals and file RPC", {
   mac.send({ type: "run_event", run_id: runId, event: { kind: "done", state: "completed", text: "桌面已整理好。" } });
   const page = await eventually(async () => {
     const p = await api("GET", `/bots/${state.bot}/messages`, { token: state.alice });
-    return p.json.messages.at(-1).status === "completed" && p.json;
+    return p.json.messages.find((m: any) => m.run_id === runId && m.role === "assistant")?.status === "completed" && p.json;
   });
-  const reply = page.messages.at(-1);
+  const reply = page.messages.find((m: any) => m.run_id === runId && m.role === "assistant");
   assert.equal(reply.content, "桌面已整理好。");
   assert.equal(reply.executor, "mac");
   assert.deepEqual(reply.progress, ["我先看看桌面上的文件。"], "progress survives the final answer and reloading history");
@@ -328,7 +332,7 @@ test("Mac offline: runs fall back to the cloud runner through the proxy, with me
     return eventually(async () => {
       const p = await api("GET", `/bots/${state.bot2}/messages`, { token: state.alice });
       const last = p.json.messages.at(-1);
-      return last.status !== "running" && last;
+      return last.status !== "running" && (text !== "联网搜索链路测试" || last.task_id) && last;
     }, 20000);
   };
   const first = await send("记住蓝鲸");
@@ -337,17 +341,17 @@ test("Mac offline: runs fall back to the cloud runner through the proxy, with me
   const forwarded = provider.requests.at(-1)!.body;
   assert.equal(forwarded.model, "upstream-model");
   assert.match(forwarded.input[0].content, /Mac 当前离线/);
-  assert.deepEqual(forwarded.tools.map((t: any) => t.name), ["web_search", "ask_agent", "get_ui_catalog", "show_ui", "skill_manage", "skill_load"], "cloud runs get private skills, search and delegation, never file or shell tools");
+  assert.deepEqual(forwarded.tools.map((t: any) => t.name), ["start_task", "task_status", "task_message", "cancel_task", "ask_agent", "get_ui_catalog", "show_ui", "skill_manage", "skill_load"], "cloud runs get private skills, search and delegation, never file or shell tools");
   const second = await send("之前说了什么？");
   assert.equal(second.content, "你之前说的是蓝鲸。");
-  assert.deepEqual(second.progress, [INITIAL_PROGRESS], "even a silent model has an immediate acknowledgement");
+  assert.deepEqual(second.progress, [], "direct answers have no extra acknowledgement");
   const progressReply = await send("进度链路测试");
   assert.equal(progressReply.content, "收到：进度链路测试");
   assert.deepEqual(progressReply.progress, ["我先查查资料。", "信息已核对，开始整理。"], "Runner progress is persisted by the worker");
   const searched = await send("联网搜索链路测试");
   assert.equal(searched.status, "completed", JSON.stringify(searched));
   assert.match(searched.content, /Pi Bot 官方资料/);
-  assert.deepEqual(searched.tools.map((t: any) => [t.name, t.state]), [["web_search", "completed"]]);
+  assert.deepEqual(searched.tools, [], "search tools execute privately and the result is a separate report");
   assert.equal(search.queries.at(-1)?.searchParams.get("language"), "zh-CN");
 
   for (let i = 0; i < 5; i++) await send(`第 ${i} 件事`);
@@ -380,44 +384,29 @@ const userText = (r: any) => {
 };
 const systemText = (r: any) => String(r.body.input[0]?.content ?? "");
 
-test("bots delegate in the cloud: a synchronous wait returns the result, a hand-off reports back later", { skip }, async () => {
+test("conversation delegation is asynchronous and reports a private specialist result back later", { skip }, async () => {
   const writer = await api("POST", "/bots", { token: state.alice, body: { name: "写作助手", persona: "擅长写周报和总结" } });
   state.writer = writer.json.id;
-  const settled = (botId: string, done: (messages: any[]) => boolean) =>
-    eventually(async () => {
-      const p = await api("GET", `/bots/${botId}/messages`, { token: state.alice });
-      return p.json.messages.at(-1).status !== "running" && done(p.json.messages) && p.json.messages;
+  for (const text of ["委托链路测试", "转交链路测试"]) {
+    const posted = await api("POST", `/bots/${state.mainBot}/messages`, { token: state.alice, body: { text, request_id: randomUUID() } });
+    assert.equal(posted.json.run.executor, "cloud");
+    const messages = await eventually(async () => {
+      const p = await api("GET", `/bots/${state.mainBot}/messages`, { token: state.alice });
+      return p.json.messages.find((m: any) => m.run_id === posted.json.run.id && m.role === "assistant")?.agent_tasks.some((t: any) => t.status === "completed") &&
+        p.json.messages.at(-1)?.content === "回报已收到：周报写好了" && p.json.messages;
     }, 20000);
-
-  const posted = await api("POST", `/bots/${state.mainBot}/messages`, { token: state.alice, body: { text: "委托链路测试", request_id: randomUUID() } });
-  assert.equal(posted.json.run.executor, "cloud");
-  const main = await settled(state.mainBot, (ms) => ms.at(-2).content === "委托链路测试");
-  const reply = main.at(-1);
-  assert.equal(reply.status, "completed", JSON.stringify(reply));
-  assert.match(reply.content, /^综合：「写作助手」的结果：\n委托结果：周报写好了/, "the parent waited for the child inside one run");
-  assert.deepEqual(reply.agent_tasks.map((t: any) => [t.bot_id, t.bot_name, t.status, t.mode]), [[state.writer, "写作助手", "completed", "wait"]]);
-  assert.deepEqual(reply.tools.map((t: any) => [t.name, t.state, t.summary]), [["ask_agent", "completed", "写作助手：写一份本周周报"]]);
-  const parent = provider.requests.find((r) => userText(r) === "委托链路测试")!;
-  assert.match(systemText(parent), /ask_agent/);
-  assert.match(systemText(parent), /- 写作助手：擅长写周报和总结/, "the roster carries each bot's persona");
-  const child = provider.requests.find((r) => userText(r).includes("你收到来自智能体「Pi Bot」的委托"))!;
-  assert.match(userText(child), /写一份本周周报/);
-  assert.match(systemText(child), /只能用 wait=true/, "a delegated bot may only delegate synchronously");
-  const writerPage = (await api("GET", `/bots/${state.writer}/messages`, { token: state.alice })).json.messages;
-  assert.deepEqual(writerPage.map((m: any) => [m.role, m.content, m.from_bot?.name ?? null, m.from_bot?.kind ?? null]), [
-    ["user", "写一份本周周报", "Pi Bot", "task"],
-    ["assistant", "委托结果：周报写好了", null, null],
-  ], "the task lives on the target's own timeline");
-
-  await api("POST", `/bots/${state.mainBot}/messages`, { token: state.alice, body: { text: "转交链路测试", request_id: randomUUID() } });
-  const reported = await settled(state.mainBot, (ms) => ms.at(-1).content.startsWith("回报已收到"));
-  const [handoff, report, followUp] = reported.slice(-4).slice(1);
-  assert.match(handoff.content, /^综合：已转交给「写作助手」/, "the hand-off run ends without waiting");
-  assert.deepEqual(handoff.agent_tasks.map((t: any) => [t.status, t.mode]), [["completed", "report"]]);
-  assert.equal(report.role, "user");
-  assert.deepEqual([report.from_bot.name, report.from_bot.kind], ["写作助手", "report"]);
-  assert.match(report.content, /「写作助手」完成了你委托的任务。[\s\S]*委托结果：周报写好了/);
-  assert.equal(followUp.content, "回报已收到：周报写好了", "the report starts a new run on the delegating bot");
+    const ack = messages.find((m: any) => m.run_id === posted.json.run.id && m.role === "assistant");
+    assert.match(ack.content, /^综合：已转交给「写作助手」/);
+    assert.deepEqual(ack.agent_tasks.map((t: any) => [t.bot_id, t.status, t.mode]), [[state.writer, "completed", "report"]]);
+    assert.equal(messages.at(-1).role, "assistant");
+    assert.ok(messages.at(-1).task_id);
+    assert.equal(messages.filter((m: any) => m.role === "user" && m.from_bot?.kind === "report").length, 0, "internal reports never impersonate user messages");
+  }
+  const parent = provider.requests.find(r => userText(r) === "委托链路测试")!;
+  assert.match(systemText(parent), /- 写作助手：擅长写周报和总结/);
+  const child = provider.requests.find(r => userText(r).includes("你收到来自智能体「Pi Bot」的委托"))!;
+  assert.match(systemText(child), /只能用 wait=true/);
+  assert.deepEqual((await api("GET", `/bots/${state.writer}/messages`, { token: state.alice })).json.messages, [], "specialist execution records are private");
 });
 
 test("delegation rules: other users, cycles, depth, mutual waits, quotas and cascading cancels", { skip }, async () => {
@@ -434,8 +423,13 @@ test("delegation rules: other users, cycles, depth, mutual waits, quotas and cas
   const delegate = (token: string, runId: string, agent: string, wait = true) =>
     api("POST", "/agent/tasks", { token, body: { run_id: runId, agent, task: `请${agent}帮忙`, wait } });
   const start = async (botId: string, text: string) => {
-    await api("POST", `/bots/${botId}/messages`, { token: state.alice, body: { text, request_id: randomUUID() } });
-    return (await mac.next((m) => m.type === "run" && m.run.bot.id === botId)).run;
+    const run = await workerDb.tx(async tx => {
+      const b = await tx.get("bots", botId);
+      const d = await tx.one("SELECT device_id FROM devices WHERE user_id=$1 AND revoked_at IS NULL", [b.user_id]);
+      return insertRun(tx, { userId: b.user_id, botId, text, requestId: randomUUID(), mac: { deviceId: d!.device_id }, lane: "task" });
+    });
+    await dispatchMac(workerDb, s, (app as any).hub, run.run_id);
+    return (await mac.next((m) => m.type === "run" && m.run.run_id === run.run_id)).run;
   };
   const done = (runId: string, state: string, text?: string) =>
     mac.send({ type: "run_event", run_id: runId, event: { kind: "done", state, text } });
@@ -453,7 +447,7 @@ test("delegation rules: other users, cycles, depth, mutual waits, quotas and cas
 
   const ab = await delegate(tA, runA.run_id, "乙");
   assert.equal(ab.status, 200, JSON.stringify(ab.json));
-  assert.equal(ab.json.status, "running");
+  assert.equal(ab.json.status, "queued", "creation returns before execution starts");
   const runB = (await mac.next((m) => m.type === "run" && m.run.bot.id === B)).run;
   assert.match(runB.text, /你收到来自智能体「甲」的委托/);
   assert.equal(runB.agents_enabled, true);
@@ -487,9 +481,16 @@ test("delegation rules: other users, cycles, depth, mutual waits, quotas and cas
   done(runB.run_id, "cancelled");
   await mac.next((m) => m.type === "cancel" && m.run_id === runC.run_id);
   done(runC.run_id, "cancelled");
+  const extraChildren = await workerDb.tx(tx => tx.rows("SELECT t.child_run_id FROM agent_tasks t WHERE t.parent_run_id=$1 AND t.child_run_id IS NOT NULL AND t.child_run_id<>$2", [runA.run_id, runB.run_id]));
+  for (const child of extraChildren) {
+    const r = await workerDb.tx(tx => tx.get("bot_runs", child.child_run_id));
+    if (r.status !== "cancelled") {
+      await mac.next(m => m.type === "cancel" && m.run_id === child.child_run_id);
+      done(child.child_run_id, "cancelled");
+    }
+  }
   const cancelled = await eventually(async () => {
-    const page = (await api("GET", `/bots/${A}/messages`, { token: state.alice })).json.messages;
-    const tasks = page.find((m: any) => m.role === "assistant" && m.run_id === runA.run_id).agent_tasks;
+    const tasks = await workerDb.tx(tx => tx.rows("SELECT t.*, b.name AS bot_name FROM agent_tasks t JOIN bots b ON b.bot_id=t.target_bot_id WHERE parent_run_id=$1 ORDER BY t.created_at", [runA.run_id]));
     return tasks.length === 5 && tasks.every((t: any) => t.status === "cancelled") && tasks;
   });
   assert.equal(cancelled[0].bot_name, "乙");
@@ -500,7 +501,7 @@ test("delegation rules: other users, cycles, depth, mutual waits, quotas and cas
   const finished = await api("GET", `/agent/tasks/${da.json.id}?wait=5`, { token: tD });
   assert.deepEqual([finished.json.status, finished.json.result, finished.json.agent.name], ["completed", "甲完成了", "甲"]);
   done(runD.run_id, "completed", "丁完成了");
-  await eventually(async () => (await api("GET", `/bots/${D}`, { token: state.alice })).json.latest_run.status === "completed");
+  await eventually(async () => (await workerDb.tx(tx => tx.get("bot_runs", runD.run_id))).status === "completed");
   mac.close();
   await eventually(async () => !(await api("GET", "/me", { token: state.alice })).json.mac.online);
 });

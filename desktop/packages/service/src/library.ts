@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Type } from 'typebox';
+import { withLibraryMutation } from './mutation-lock.js';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 
 export const SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/;
@@ -142,7 +143,7 @@ export interface ToolHooks {
   requestOutside(path: string, reason: string, signal?: AbortSignal): Promise<boolean>;
 }
 export function libraryTools(sandbox: Sandbox, hooks: ToolHooks): ToolDefinition[] {
-  return [
+  const tools: ToolDefinition[] = [
     {
       name: 'list_files', label: '查看目录', description: '列出目录内容。路径默认是资料库根目录；资料库以外的路径需要先获批准。',
       parameters: Type.Object({ path: Type.Optional(Type.String()) }),
@@ -240,4 +241,8 @@ export function libraryTools(sandbox: Sandbox, hooks: ToolHooks): ToolDefinition
       },
     },
   ] as ToolDefinition[];
+  return tools.map(tool => ['write_file', 'edit_file', 'run_command'].includes(tool.name) ? {
+    ...tool,
+    execute: (id, args, signal, update, ctx) => withLibraryMutation(sandbox.root, signal, () => tool.execute(id, args, signal, update, ctx)),
+  } : tool);
 }

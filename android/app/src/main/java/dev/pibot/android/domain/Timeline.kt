@@ -34,8 +34,8 @@ data class Timeline(val messages: List<Message> = emptyList(), val hasMore: Bool
 fun epochMillis(iso: String?): Long? = iso?.let { runCatching { Instant.parse(it).toEpochMilli() }.getOrNull() }
 
 fun Bot.mood(now: Long = System.currentTimeMillis(), tool: String? = null): String = moodFor(
-    status = latestRun?.status,
-    tool = tool,
+    status = activity?.status ?: latestRun?.status,
+    tool = activity?.tool ?: tool,
     finishedAt = epochMillis(latestRun?.finishedAt),
     lastActiveAt = epochMillis(lastActiveAt),
     now = now,
@@ -43,6 +43,7 @@ fun Bot.mood(now: Long = System.currentTimeMillis(), tool: String? = null): Stri
 
 /** One-line status under a bot's name in lists. */
 fun Bot.statusLine(now: Long = System.currentTimeMillis()): String {
+    activity?.summary?.let { return it }
     if (pendingApprovals.isNotEmpty()) return "等你批准…"
     when (latestRun?.status) {
         "queued" -> return "排队中…"

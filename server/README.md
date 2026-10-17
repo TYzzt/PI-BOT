@@ -57,3 +57,5 @@ PI_BOT_TEST_DATABASE_URL=postgresql://pibot:pibot@127.0.0.1:5432/pibot npm test
 集成测试会清空测试库，请用专门的数据库。接口契约导出在 `openapi.json`，修改路由后运行 `npm run openapi --workspace=@pi-bot/server`。
 
 模型调用统一使用 Responses API：Mac 与 Runner 通过 `POST /llm/v1/responses`，连通性测试和记忆摘要直接调用服务商 `/responses`。Base URL 填到 `/v1`，不含 `/responses`；模型必须支持此协议。请求使用 `input`、`max_output_tokens`，工具使用 `function_call` / `function_call_output`，流式用量从终止事件的 `response.usage` 读取。历史由客户端发送，代理强制 `store: false`。升级时需同步更新 API、Worker、Runner 和 Mac 客户端。
+
+异步任务模式：对话持续接话，每个 Bot 最多并行执行两个后台任务，其余排队；用聊天查询进度、补充要求或取消，结果完成后另发。两端需与 API、Worker、Runner 同步升级，服务端自动应用 `0007-async-tasks`；升级前结束旧运行。详情见 [整体架构](ARCHITECTURE.md)。

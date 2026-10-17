@@ -45,3 +45,5 @@ PI_BOT_TEST_DATABASE_URL=postgresql://pibot:pibot@127.0.0.1:5432/pibot npm test 
 可以让 Bot 按当前需求生成可操作的表单、计算器和图表。Mac 和 Android 使用同一套 A2UI 目录，输入会保存，点击提交后 Bot 继续处理。普通问答和解释默认使用文字，不提供预置界面。
 
 升级时需同时更新 API、Worker、Runner、Mac 和 Android；Server 自动应用 `0006-message-ui` 迁移。实现和构建说明见 [packages/a2ui](packages/a2ui/README.md)。
+
+异步任务模式：对话持续接话，每个 Bot 最多并行执行两个后台任务，其余排队；用聊天查询进度、补充要求或取消，结果完成后另发。两端需与 API、Worker、Runner 同步升级，服务端自动应用 `0007-async-tasks`；升级前结束旧运行。详情见 [整体架构](server/ARCHITECTURE.md)。

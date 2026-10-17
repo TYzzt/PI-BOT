@@ -121,8 +121,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; backg
 .delegation { font-size: 12px; color: var(--muted); background: #f3f0eb; border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; cursor: pointer; }
 .delegation.running, .delegation.queued { color: #c4561a; border-color: #ffd5bb; background: var(--accent-soft); }
 .delegation.failed { color: var(--danger); }
-.progress { display: grid; gap: 6px; padding: 2px 16px 6px; color: var(--muted); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
-.progress p { margin: 0; white-space: pre-wrap; }
+.progress { display: grid; gap: 6px; min-width: 0; overflow-wrap: anywhere; }
 .typing { display: flex; gap: 4px; padding: 12px 16px; background: var(--panel); border-radius: 4px 18px 18px 18px; width: fit-content; }
 .typing i { width: 6px; height: 6px; border-radius: 50%; background: #c9c3ba; animation: pulse 1.2s infinite; }
 .typing i:nth-child(2) { animation-delay: 0.2s; }
@@ -137,11 +136,9 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; backg
 .input { display: flex; align-items: flex-end; gap: 8px; background: #fff; border-radius: 18px; padding: 8px 8px 8px 16px; box-shadow: 0 2px 10px rgba(60, 40, 20, 0.07); border: 1px solid var(--line); }
 .input:focus-within { border-color: #ffc29e; }
 .input textarea { border: 0; padding: 5px 0; box-shadow: none; max-height: 200px; background: transparent; }
-.send, .stop { width: 34px; height: 34px; border-radius: 50%; padding: 0; flex-shrink: 0; font-size: 16px; font-weight: 700; }
+.send { width: 34px; height: 34px; border-radius: 50%; padding: 0; flex-shrink: 0; font-size: 16px; font-weight: 700; }
 .send { background: var(--accent); color: #fff; }
 .send:hover:not(:disabled) { background: #f36a1b; }
-.stop { background: #2b2c31; color: #fff; font-size: 11px; }
-.stop:hover:not(:disabled) { background: #1a1b1f; }
 
 .empty { flex: 1; display: grid; place-content: center; justify-items: center; gap: 12px; text-align: center; padding: 40px; }
 .empty p { max-width: 380px; }
@@ -166,3 +163,5 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; backg
 .settings dt { color: var(--muted); }
 .settings dd { margin: 0; }
 .settings footer { justify-content: space-between; }
+
+.task-activity { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; padding: 8px 2px 14px; }

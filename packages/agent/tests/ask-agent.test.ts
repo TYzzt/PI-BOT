@@ -48,7 +48,7 @@ test("wait=true long-polls until the other bot finishes and returns its result",
   script = { runningPolls: 2, report: 200, hangPolls: false, createStatus: 200 };
   const r = await run({ agent: "写作助手", task: "写一份周报" });
   assert.equal(output(r), "「写作助手」的结果：\n周报写好了");
-  assert.deepEqual(calls[0], { method: "POST", path: "/agent/tasks", auth: "Bearer agent-token", body: { run_id: RUN, agent: "写作助手", task: "写一份周报", wait: true } });
+  assert.deepEqual(calls[0], { method: "POST", path: "/agent/tasks", auth: "Bearer agent-token", body: { run_id: RUN, agent: "写作助手", task: "写一份周报", wait: true, request_id: "call" } });
   assert.deepEqual(calls.slice(1).map((c) => c.path), ["/agent/tasks/t1?wait=1", "/agent/tasks/t1?wait=1", "/agent/tasks/t1?wait=1"]);
 });
 
@@ -76,7 +76,7 @@ test("when a report is not allowed (nested delegation) the tool keeps waiting", 
   assert.deepEqual(calls.map((c) => c.path), ["/agent/tasks", "/agent/tasks/t1/report", "/agent/tasks/t1?wait=1", "/agent/tasks/t1?wait=1"]);
 });
 
-test("aborting the delegating run cancels the task", async () => {
+test("aborting a tool does not cancel independent work; explicit cancellation cascades on the server", async () => {
   calls.length = 0;
   script = { runningPolls: 0, report: 200, hangPolls: true, createStatus: 200 };
   const controller = new AbortController();
@@ -84,7 +84,7 @@ test("aborting the delegating run cancels the task", async () => {
   while (!calls.some((c) => c.method === "GET")) await new Promise((r) => setTimeout(r, 10));
   controller.abort();
   await assert.rejects(pending);
-  assert.equal(calls.at(-1)!.path, "/agent/tasks/t1/cancel");
+  assert.ok(!calls.some(c => c.path.endsWith("/cancel")));
 });
 
 test("API refusals reach the model as readable errors", async () => {

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { UI_INSTRUCTIONS, INITIAL_PROGRESS, isInternalTool, type SkillSummary } from "@pi-bot/agent";
+import { UI_INSTRUCTIONS, isInternalTool, TASK_TOOL_NAMES, type SkillSummary } from "@pi-bot/agent";
 import { skillCatalog } from "./skills.js";
 import { z } from "zod";
 import { SHAPES, COLORS, SCHEMES, DEFAULT_AVATAR, avatarFor } from "@pi-bot/bot-face";
@@ -54,6 +54,8 @@ export const runOut = (r: Row | undefined) =>
         bot_id: r.bot_id,
         status: r.status,
         executor: r.executor,
+        lane: r.lane,
+        task_id: r.task_id,
         error: r.error,
         user_message_id: r.user_message_id,
         assistant_message_id: r.assistant_message_id,
@@ -67,18 +69,23 @@ export const taskOut = (t: Row) => ({
   bot_name: t.bot_name ?? "",
   status: t.status,
   mode: t.mode,
+  kind: t.kind,
+  title: t.title,
+  updated_at: t.updated_at,
+  activity: t.activity ?? null,
 });
 /** `m` may carry `from_bot_name`, `from_bot_avatar` and `run_origin` from `MESSAGE_SELECT`. */
 export const messageOut = (m: Row, tasks: Row[] = []) => ({
   id: m.message_id,
   bot_id: m.bot_id,
   run_id: m.run_id,
+  task_id: m.run_task_id ?? null,
   seq: m.seq,
   role: m.role,
   content: m.content,
   status: m.status,
   executor: m.executor,
-  tools: (m.tools ?? []).filter((tool: ToolEvent) => !isInternalTool(tool.name)),
+  tools: (m.tools ?? []).filter((tool: ToolEvent) => !isInternalTool(tool.name) && !TASK_TOOL_NAMES.has(tool.name)),
   progress: m.progress ?? [],
   ui: m.ui ?? null,
   from_bot: m.from_bot_id
@@ -93,7 +100,7 @@ export const messageOut = (m: Row, tasks: Row[] = []) => ({
   created_at: m.created_at,
   updated_at: m.updated_at,
 });
-export const MESSAGE_SELECT = `SELECT m.*, f.name AS from_bot_name, f.avatar AS from_bot_avatar, r.origin AS run_origin
+export const MESSAGE_SELECT = `SELECT m.*, f.name AS from_bot_name, f.avatar AS from_bot_avatar, r.origin AS run_origin, r.task_id AS run_task_id
   FROM bot_messages m LEFT JOIN bots f ON f.bot_id=m.from_bot_id LEFT JOIN bot_runs r ON r.run_id=m.run_id`;
 export async function messageTasks(tx: Tx, messages: Row[]) {
   const runs = [...new Set(messages.filter((m) => m.role === "assistant" && m.run_id).map((m) => m.run_id))];
@@ -119,20 +126,33 @@ export const approvalOut = (a: Row) => ({
   created_at: a.created_at,
 });
 export async function botOut(tx: Tx, b: Row) {
-  const [run, last, approvals] = await Promise.all([
+  const [run, last, approvals, tasks] = await Promise.all([
     tx.one(
-      "SELECT * FROM bot_runs WHERE bot_id=$1 ORDER BY created_at DESC LIMIT 1",
+      "SELECT * FROM bot_runs WHERE bot_id=$1 AND lane='conversation' ORDER BY (status IN ('running','waiting_approval')) DESC, created_at DESC LIMIT 1",
       [b.bot_id],
     ),
     tx.one(
-      "SELECT role,content,status,created_at FROM bot_messages WHERE bot_id=$1 ORDER BY seq DESC LIMIT 1",
+      "SELECT role,content,status,created_at FROM bot_messages WHERE bot_id=$1 AND visibility='public' ORDER BY seq DESC LIMIT 1",
       [b.bot_id],
     ),
     tx.rows(
       "SELECT * FROM approvals WHERE bot_id=$1 AND status='pending' AND expires_at>now() ORDER BY created_at",
       [b.bot_id],
     ),
+    tx.rows(`SELECT t.*, b.name AS bot_name, m.progress, m.tools, r.status AS run_status
+      FROM agent_tasks t JOIN bots b ON b.bot_id=t.target_bot_id
+      LEFT JOIN bot_runs r ON r.run_id=t.child_run_id
+      LEFT JOIN bot_messages m ON m.message_id=r.assistant_message_id
+      WHERE (t.parent_bot_id=$1 OR t.target_bot_id=$1) AND t.status IN ('queued','running','waiting_approval')
+      ORDER BY t.created_at`, [b.bot_id]),
   ]);
+  const running = tasks.filter(t => t.status !== "queued");
+  const activeTool = running.flatMap(t => t.tools ?? []).findLast(t => t.state === "running");
+  const status = approvals.length ? "waiting_approval" : running.length ? "running" : tasks.length ? "queued" : run?.status ?? null;
+  const labels: Record<string, string> = { run_command: "正在运行命令", web_search: "正在查找资料", read_file: "正在阅读文件", write_file: "正在整理文件", edit_file: "正在修改文件", ask_agent: "正在等待协作结果" };
+  const activity = { status, tool: activeTool?.name ?? null, running_count: running.length,
+    queued_count: tasks.length - running.length,
+    summary: approvals.length ? "等你批准访问请求" : running.length > 1 ? `正在处理 ${running.length} 个任务` : running.length ? labels[activeTool?.name] ?? "正在处理任务" : tasks.length ? `有 ${tasks.length} 个任务排队中` : run && ACTIVE.includes(run.status) ? "正在思考" : null };
   return {
     id: b.bot_id,
     name: b.name,
@@ -145,6 +165,8 @@ export async function botOut(tx: Tx, b: Row) {
     updated_at: b.updated_at,
     last_active_at: b.last_active_at,
     latest_run: runOut(run),
+    active_tasks: tasks.map(taskOut),
+    activity,
     last_message: last
       ? {
           role: last.role,
@@ -158,7 +180,7 @@ export async function botOut(tx: Tx, b: Row) {
 }
 export async function ownBot(tx: Tx, userId: string, botId: string, lock = false) {
   const b = await tx.one(
-    `SELECT * FROM bots WHERE bot_id=$1 AND user_id=$2 AND archived_at IS NULL${lock ? " FOR UPDATE" : ""}`,
+    `SELECT * FROM bots WHERE bot_id=$1 AND user_id=$2 AND archived_at IS NULL${lock ? " FOR NO KEY UPDATE" : ""}`,
     [botId, userId],
   );
   if (!b) fail(404, "Bot 不存在");
@@ -247,13 +269,6 @@ export async function postMessage(
     [botId, requestId],
   );
   if (existing) return { run: existing, bot, created: false };
-  if (
-    await tx.one(
-      `SELECT 1 FROM bot_runs WHERE bot_id=$1 AND status = ANY($2)`,
-      [botId, ACTIVE],
-    )
-  )
-    fail(409, "Bot 正在处理上一条消息，请稍候或先停止");
   if (!(await resolveModel(tx, bot))) fail(503, "管理员尚未配置可用模型");
   const run = await insertRun(tx, { userId, botId, requestId, text, mac });
   return { run, bot, created: true };
@@ -267,6 +282,7 @@ export interface NewRun {
   mac: { deviceId: string } | null;
   origin?: "user" | "agent" | "report";
   taskId?: string;
+  lane?: "conversation" | "task";
   /** Set when the incoming message was written by another bot rather than the user. */
   fromBotId?: string;
 }
@@ -289,6 +305,7 @@ export async function insertRun(tx: Tx, o: NewRun) {
     assistant_message_id: assistantMessageId,
     origin: o.origin ?? "user",
     task_id: o.taskId ?? null,
+    lane: o.lane ?? "conversation",
   });
   await tx.insert("bot_messages", {
     message_id: userMessageId,
@@ -299,6 +316,7 @@ export async function insertRun(tx: Tx, o: NewRun) {
     content: o.text,
     status: "completed",
     from_bot_id: o.fromBotId ?? null,
+    visibility: o.lane === "task" ? "task" : o.origin === "report" ? "internal" : "public",
   });
   await tx.insert("bot_messages", {
     message_id: assistantMessageId,
@@ -307,9 +325,10 @@ export async function insertRun(tx: Tx, o: NewRun) {
     seq: seq + 1,
     role: "assistant",
     content: "",
-    progress: [INITIAL_PROGRESS],
+    progress: [],
     status: "running",
     executor,
+    visibility: o.lane === "task" ? "task" : "public",
   });
   await tx.notify({ user_id: o.userId, bot_id: o.botId });
   return run;
@@ -323,6 +342,8 @@ export interface RunContext {
   system: string;
   history: { role: "user" | "assistant"; content: string }[];
   text: string;
+  lane: "conversation" | "task";
+  instructions?: { id: string; text: string }[];
   search_enabled: boolean;
   /** Whether the run may hand work to other bots through `ask_agent`. */
   agents_enabled: boolean;
@@ -343,7 +364,7 @@ export async function delegationChain(tx: Tx, run: Row) {
   let current = run;
   while (current.origin === "agent" && current.task_id && bots.length <= MAX_DELEGATION_DEPTH + 1) {
     const task = await tx.get("agent_tasks", current.task_id);
-    if (!task) break;
+    if (!task || task.kind === "background") break;
     current = await tx.get("bot_runs", task.parent_run_id);
     if (!current) break;
     bots.push(current.bot_id);
@@ -375,7 +396,7 @@ export function systemPrompt(
   bot: Row,
   memory: string,
   executor: "mac" | "cloud",
-  options: { search?: boolean; now?: Date; agents?: Collaborator[]; depth?: number } = {},
+  options: { search?: boolean; now?: Date; agents?: Collaborator[]; depth?: number; lane?: "conversation" | "task" } = {},
 ) {
   const date = (options.now ?? new Date()).toISOString().slice(0, 10);
   const parts = [
@@ -396,12 +417,22 @@ export function systemPrompt(
           `你只能对话${options.search ? "和联网搜索" : ""}。任务需要读写文件或运行命令时，说明需要等 Mac 上线后再继续，不要假装已经完成。`,
         ].join("\n"),
   );
+  if (options.lane === "conversation") parts.push([
+    "你现在处于对话调度通道：持续接话、理解意图、安排工作、查询任务和整理回报。",
+    "闲聊和已有依据的简单问题直接回答。凡需要搜索、读写文件、执行命令或较长推理的工作，立即用 start_task 创建后台任务，成功后用一句具体的话说明正在做什么，然后结束当前回合。你自己不能执行这些工作，也不要等待后台完成。",
+    "start_task 的 task 必须自包含：用户目标、相关上下文、已有条件、文件位置和期望输出。避免重复创建已有任务。",
+    "查询任务用 task_status，结果仅代表记录的活动和更新时间；查询外部训练、部署的最新状态时，另建一个简短的核查任务，不要把缓存当作刚查到的外部进度。",
+    "用户补充或改变已有任务要求时，用 task_message 发给准确的任务。工具会说明是已传达、排队或已结束；已结束则结合原结果用 start_task 创建后续任务。",
+    "用户要求停止时用 cancel_task。仅一个活动任务可直接定位；多个任务且指代不明时澄清。明确停止全部时传 all=true。",
+    "用户新消息优先。任务回报按最新要求整理后告诉用户，不要重新执行同一任务。其他智能体的委托只能用 ask_agent(wait=false)，不得同步等待。",
+  ].join("\n"));
   parts.push("默认用中文回答；用户使用其他语言时跟随用户。");
   parts.push(UI_INSTRUCTIONS);
   if (options.search) parts.push("联网检索请优先使用 web_search，支持中文查询和 site: 域名限定；它返回标题、链接和摘要。重要结论要核对原始来源，不要把搜索摘要当作已读过网页全文。搜索失败时及时说明，不要反复重试同一查询。");
   if (options.agents?.length) parts.push(collaborationPrompt(options.agents, options.depth ?? 0));
   parts.push([
-    "任务进度：需要使用工具或进行较长任务时，先用一句简短、自然的话回应用户并说明准备做什么，然后立即开始行动。简单问题直接回答。",
+    "任务进度：需要使用工具或进行较长任务时，先结合用户当前的问题和对话上下文，用一句简短、自然的话回应具体诉求，再说明接下来要做什么，然后立即开始行动。能判断的问题先给出有依据的简短回应，不要在核实前编造结论或声称已经完成。",
+    "开场回应也是正式回复，语气和最终回答保持一致；不要使用‘收到’、‘我来看看’、‘稍后给你结果’这类适用于任何问题的套话。问候、闲聊和简单问题直接回答，不要为了开场而多加一条回复。",
     "只在发现重要信息、改变方案或进入关键阶段时再补一句有用的进度，不要每次调用工具都说话，也不要逐条播报命令、文件或重复计划。",
     "一个复杂任务的进度说明总共两三句、最多三句，每次只说一句；不要使用标题、列表或技术执行日志。最终回答另行给出结果，无需重复前面的进度说明。",
     "调研任务优先核对直接相关的官方或一手来源，找到足以回答的依据后及时给出结论和链接；遇到来源不可访问时说明限制，不要无休止换检索方式或编写与问题无关的脚本。",
@@ -427,9 +458,9 @@ export async function buildContext(
   const rows = await tx.rows(
     `SELECT m.role, m.content, m.ui_action, f.name AS from_name FROM bot_messages m
      LEFT JOIN bots f ON f.bot_id=m.from_bot_id
-     WHERE m.bot_id=$1 AND m.seq>$2 AND m.seq<$3 AND m.content<>'' AND m.status IN ('completed','cancelled')
+     WHERE m.bot_id=$1 AND m.seq>$2 AND (m.seq<$3 OR m.role='assistant') AND m.visibility='public' AND m.content<>'' AND m.status IN ('completed','cancelled')
      ORDER BY m.seq DESC LIMIT $4`,
-    [bot.bot_id, memory?.through_seq ?? 0, question.seq, s.historyLimit],
+    [bot.bot_id, memory?.through_seq ?? 0, run.origin === "report" ? Number.MAX_SAFE_INTEGER : question.seq, s.historyLimit],
   );
   const budget = model.context_window * 2;
   let used = 0;
@@ -444,10 +475,10 @@ export async function buildContext(
   const agents = depth < MAX_DELEGATION_DEPTH ? await collaborators(tx, bot) : [];
   const from = question.from_bot_id ? await tx.get("bots", question.from_bot_id) : undefined;
   let text = modelMessageContent(question);
-  if (run.origin === "agent" && from)
+  if (run.origin === "agent" && from && from.bot_id !== bot.bot_id)
     text = `你收到来自智能体「${from.name}」的委托，它正在为用户处理一项任务：\n\n${text}\n\n请直接完成并给出自包含的结果，「${from.name}」会把它转述给用户。缺少必要信息时直接说明缺什么，不要向用户提问。`;
-  else if (run.origin === "report" && from)
-    text = `这是你之前委托给「${from.name}」的任务的回报。请据此把结果整理后告诉用户，不要再次委托同一任务：\n\n${text}`;
+  else if (run.origin === "report")
+    text = `这是你之前委托给「${from?.name ?? bot.name}」的任务的回报。请据此把结果整理后告诉用户，不要再次委托同一任务：\n\n${text}`;
   return {
     run_id: run.run_id,
     executor: run.executor,
@@ -458,10 +489,12 @@ export async function buildContext(
       context_window: model.context_window,
       max_tokens: model.max_tokens,
     },
-    system: systemPrompt(bot, memory?.summary ?? "", run.executor, { search, agents, depth }),
+    instructions: run.task_id && run.lane === "task" ? (await tx.rows("SELECT instruction_id AS id, text FROM agent_task_instructions WHERE task_id=$1 AND delivered_at IS NULL ORDER BY created_at, instruction_id", [run.task_id])) as { id: string; text: string }[] : [],
+    lane: run.lane ?? "conversation",
+    system: systemPrompt(bot, memory?.summary ?? "", run.executor, { search, agents, depth, lane: run.lane }),
     history,
     text,
-    search_enabled: search,
+    search_enabled: run.lane === "task" && search,
     agents_enabled: agents.length > 0,
     skills: await skillCatalog(tx, bot.bot_id),
   };
@@ -486,7 +519,7 @@ export async function setProgress(tx: Tx, run: Row, lines: string[]) {
   );
 }
 export async function recordTool(tx: Tx, run: Row, tool: ToolEvent) {
-  if (isInternalTool(tool.name)) return;
+  if (isInternalTool(tool.name) || TASK_TOOL_NAMES.has(tool.name)) return;
   const m = await tx.get("bot_messages", run.assistant_message_id);
   if (!m) return;
   const tools: ToolEvent[] = Array.isArray(m.tools) ? m.tools : [];
@@ -522,7 +555,7 @@ export async function finishRun(
     [runId],
   );
   if (!run || !ACTIVE.includes(run.status)) return null;
-  const final = run.cancel_requested && state !== "completed" ? "cancelled" : state;
+  const final = run.cancel_requested ? "cancelled" : state;
   await tx.rows(
     "UPDATE bot_runs SET status=$2, error=$3, finished_at=now(), lease_until=NULL WHERE run_id=$1",
     [runId, final, final === "failed" ? error : null],
@@ -539,12 +572,12 @@ export async function finishRun(
   if (run.origin === "agent" && run.task_id) {
     const reply = await tx.one("SELECT content FROM bot_messages WHERE message_id=$1", [run.assistant_message_id]);
     const task = await tx.one(
-      "UPDATE agent_tasks SET status=$2, result=$3, error=$4, finished_at=now() WHERE task_id=$1 AND status IN ('queued','running') RETURNING parent_bot_id",
+      "UPDATE agent_tasks SET status=$2, result=$3, error=$4, finished_at=now(), updated_at=now() WHERE task_id=$1 AND status IN ('queued','running','waiting_approval') RETURNING parent_bot_id",
       [run.task_id, final, final === "completed" ? reply?.content ?? "" : null, final === "failed" ? error ?? "运行失败" : null],
     );
     if (task) await tx.notify({ user_id: run.user_id, bot_id: task.parent_bot_id });
   }
-  if (final !== "completed") await cancelDelegations(tx, runId);
+  if (final === "cancelled" && run.lane === "task") await cancelDelegations(tx, runId);
   await tx.notify({ user_id: run.user_id, bot_id: run.bot_id });
   return { ...run, status: final };
 }
@@ -554,10 +587,12 @@ export async function finishRun(
  */
 export async function cancelDelegations(tx: Tx, runId: string) {
   const tasks = await tx.rows(
-    "SELECT * FROM agent_tasks WHERE parent_run_id=$1 AND (status IN ('queued','running') OR (mode='report' AND delivered_at IS NULL)) FOR UPDATE",
+    "SELECT * FROM agent_tasks WHERE parent_run_id=$1 AND (status IN ('queued','running','waiting_approval') OR (mode='report' AND delivered_at IS NULL)) ORDER BY created_at, task_id",
     [runId],
   );
-  for (const t of tasks) {
+  for (const snapshot of tasks) {
+    if (snapshot.child_run_id) await tx.one("SELECT run_id FROM bot_runs WHERE run_id=$1 FOR UPDATE", [snapshot.child_run_id]);
+    const t = (await tx.one("SELECT * FROM agent_tasks WHERE task_id=$1 FOR UPDATE", [snapshot.task_id]))!;
     await tx.rows(
       `UPDATE agent_tasks SET delivered_at=coalesce(delivered_at, now()),
          status=CASE WHEN status='queued' THEN 'cancelled' ELSE status END,
@@ -565,12 +600,12 @@ export async function cancelDelegations(tx: Tx, runId: string) {
        WHERE task_id=$1`,
       [t.task_id],
     );
-    if (t.status !== "running" || !t.child_run_id) continue;
+    if (!["queued", "running", "waiting_approval"].includes(t.status) || !t.child_run_id) continue;
     const child = await tx.one(
       "UPDATE bot_runs SET cancel_requested=true WHERE run_id=$1 AND status = ANY($2) RETURNING *",
       [t.child_run_id, ACTIVE],
     );
-    if (child?.executor === "cloud" && child.status === "queued") await finishRun(tx, child.run_id, "cancelled", null);
+    if (child?.status === "queued") await finishRun(tx, child.run_id, "cancelled", null);
     else if (child) await tx.notify({ user_id: child.user_id, bot_id: child.bot_id });
   }
 }
@@ -581,7 +616,7 @@ export async function messagesPage(
   limit: number,
 ) {
   const rows = await tx.rows(
-    `${MESSAGE_SELECT} WHERE m.bot_id=$1 ${before ? "AND m.seq<$3" : ""} ORDER BY m.seq DESC LIMIT $2`,
+    `${MESSAGE_SELECT} WHERE m.bot_id=$1 AND m.visibility='public' ${before ? "AND m.seq<$3" : ""} ORDER BY m.seq DESC LIMIT $2`,
     before ? [botId, limit + 1, before] : [botId, limit + 1],
   );
   const page = rows.slice(0, limit).reverse();

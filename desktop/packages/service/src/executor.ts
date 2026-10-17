@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import { a2uiTools, askAgentTool, CANCELLED, createBotAgent, webSearchTool, type AgentFactory, type AgentHandle, type ToolActivity, type SkillSummary } from '@pi-bot/agent';
+import { a2uiTools, askAgentTool, taskTools, CANCELLED, createBotAgent, webSearchTool, type AgentFactory, type AgentHandle, type ToolActivity, type SkillSummary } from '@pi-bot/agent';
 import type { Mood } from '@pi-bot/bot-face';
 import { libraryDir, libraryTools, Sandbox } from './library.js';
 
@@ -8,6 +8,8 @@ import { libraryDir, libraryTools, Sandbox } from './library.js';
 export interface RunContext {
   run_id: string;
   executor: 'mac' | 'cloud';
+  lane?: 'conversation' | 'task';
+  instructions?: { id: string; text: string }[];
   bot: { id: string; name: string; slug: string };
   model: { id: string; name: string; context_window: number; max_tokens: number };
   system: string;
@@ -32,6 +34,9 @@ interface Active {
   run: RunContext;
   agent?: AgentHandle;
   cancelled: boolean;
+  prompted: boolean;
+  received: Set<string>;
+  pending: { id: string; text: string }[];
   /** request_id → resolver */
   waiting: Map<string, (approved: boolean) => void>;
   /** approval_id → request_id */
@@ -48,17 +53,19 @@ export class Executor {
 
   async start(run: RunContext) {
     if (this.active.has(run.run_id)) return;
-    const state: Active = { run, cancelled: false, waiting: new Map(), approvals: new Map(), early: new Map() };
+    const state: Active = { run, cancelled: false, prompted: false, received: new Set((run.instructions ?? []).map(i => i.id)), pending: [...run.instructions ?? []], waiting: new Map(), approvals: new Map(), early: new Map() };
     this.active.set(run.run_id, state);
     const event = (e: Record<string, unknown>) => this.deps.send({ type: 'run_event', run_id: run.run_id, event: e });
     event({ kind: 'started' });
     this.deps.activity(run, null, 'thinking');
+    let timedOut = false;
+    const deadline = run.lane === 'conversation' ? setTimeout(() => { timedOut = true; void state.agent?.abort(); }, 60000) : undefined;
     let latest = '', lastSent = 0, pendingText: NodeJS.Timeout | undefined, refresh: NodeJS.Timeout | undefined;
     const flush = () => { clearTimeout(pendingText); pendingText = undefined; lastSent = Date.now(); event({ kind: 'text', text: latest }); };
     try {
       const sandbox = new Sandbox(await libraryDir(this.deps.libraryRoot, run.bot.slug));
       let token = await this.deps.llmToken(run.bot.id);
-      const tools = libraryTools(sandbox, {
+      const tools = run.lane === "conversation" ? [] : libraryTools(sandbox, {
         requestOutside: (path, reason, signal) => new Promise<boolean>(resolve => {
           const requestId = randomUUID();
           const timer = setTimeout(() => settle(false), this.deps.approvalTimeoutMs ?? 15 * 60 * 1000);
@@ -75,8 +82,9 @@ export class Executor {
         }),
       });
       const api = this.deps.proxyUrl.replace(/\/llm\/v1\/?$/, '');
-      if (run.search_enabled) tools.push(webSearchTool(api, () => token));
-      if (run.agents_enabled) tools.push(askAgentTool(api, () => token, run.run_id));
+      if (run.lane === "conversation") tools.push(...taskTools(api, () => token, run.run_id));
+      if (run.lane !== "conversation" && run.search_enabled) tools.push(webSearchTool(api, () => token));
+      if (run.agents_enabled) tools.push(askAgentTool(api, () => token, run.run_id, { conversation: run.lane === "conversation" }));
       tools.push(...a2uiTools(messages => { event({ kind: 'ui', messages }); }));
       const onTool = (t: ToolActivity) => {
         event({ kind: 'tool', ...t });
@@ -99,9 +107,14 @@ export class Executor {
           event({ kind: 'progress', lines });
         },
       });
+      if (timedOut) throw new Error('对话响应超时，请重新发送');
       if (state.cancelled) throw new Error(CANCELLED);
       refresh = setInterval(() => { void this.deps.llmToken(run.bot.id).then(t => { token = t; return state.agent?.setApiKey(t); }).catch(() => {}); }, TOKEN_REFRESH_MS);
-      const final = await state.agent.prompt(run.text, text => {
+      const initial = state.pending.splice(0);
+      for (const i of initial) event({ kind: 'instruction_ack', id: i.id });
+      state.prompted = true;
+      const input = run.text + initial.map(i => `\n\n用户追加要求：\n${i.text}`).join('');
+      const final = await state.agent.prompt(input, text => {
         latest = text;
         if (Date.now() - lastSent > 150) flush();
         else pendingText ??= setTimeout(flush, 150);
@@ -111,16 +124,31 @@ export class Executor {
       this.deps.activity(run, null, 'celebrate');
     } catch (error) {
       clearTimeout(pendingText);
-      const cancelled = state.cancelled || (error instanceof Error && error.message === CANCELLED);
-      const message = error instanceof Error && !cancelled ? error.message.slice(0, 300) : null;
+      const cancelled = !timedOut && (state.cancelled || (error instanceof Error && error.message === CANCELLED));
+      const message = timedOut ? '对话响应超时，请重新发送' : error instanceof Error && !cancelled ? error.message.slice(0, 300) : null;
       event({ kind: 'done', state: cancelled ? 'cancelled' : 'failed', error: message ?? '运行失败', text: latest || undefined });
       this.deps.activity(run, null, cancelled ? null : 'error');
     } finally {
+      clearTimeout(deadline);
       clearInterval(refresh);
       for (const settle of state.waiting.values()) settle(false);
       state.agent?.dispose();
       this.active.delete(run.run_id);
     }
+  }
+  async message(runId: string, id: string, text: string) {
+    const state = this.active.get(runId);
+    if (!state || state.cancelled) return false;
+    if (state.received.has(id)) return true;
+    state.received.add(id);
+    try {
+      if (!state.prompted) state.pending.push({ id, text });
+      else {
+        if (!state.agent?.steer) throw new Error('执行器不支持追加要求');
+        await state.agent.steer(text);
+      }
+      return true;
+    } catch (e) { state.received.delete(id); throw e; }
   }
   cancel(runId: string) {
     const state = this.active.get(runId);

@@ -12,6 +12,7 @@ import {
   InMemoryCredentialStore,
   InMemoryModelsStore,
 } from "@earendil-works/pi-ai";
+import { TASK_TOOL_NAMES } from "./tasks.js";
 import { isInternalTool, SKILL_TOOLS, skillsExtension, type SkillOptions } from "./skills.js";
 
 /**
@@ -59,6 +60,7 @@ export interface AgentHandle {
   tools: string[];
   prompt(text: string, onText: (text: string) => void): Promise<string>;
   setApiKey(key: string): Promise<void>;
+  steer?(text: string): Promise<void>;
   abort(): Promise<void>;
   dispose(): void;
 }
@@ -66,11 +68,11 @@ export type AgentFactory = (options: BotAgentOptions) => Promise<AgentHandle>;
 
 export { a2uiTools, UI_INSTRUCTIONS } from "./a2ui.js";
 export { webSearchTool } from "./web-search.js";
+export { taskTools, TASK_TOOL_NAMES } from "./tasks.js";
 export { askAgentTool, type AskAgentOptions } from "./ask-agent.js";
 export { isInternalTool, type SkillSummary } from "./skills.js";
 
 export const CANCELLED = "CANCELLED";
-export const INITIAL_PROGRESS = "好，我来看看，稍后把结果给你。";
 
 export function redactor(secrets: string[]) {
   const list = secrets.filter((s) => s.length >= 6);
@@ -115,8 +117,7 @@ export class PiAgent implements AgentHandle {
       aborted = false,
       settled = false,
       renderedUi = false;
-    const progress: string[] = [INITIAL_PROGRESS];
-    let hasOpening = false;
+    const progress: string[] = [];
     let idleTimer: NodeJS.Timeout | undefined, timedOut = false;
     const runningTools = new Set<string>();
     const armIdleTimer = () => {
@@ -133,14 +134,14 @@ export class PiAgent implements AgentHandle {
       if (event.type === "message_start" && event.message.role === "assistant") {
         content = "";
       }
-      if (e.type === "tool_execution_start" && !isInternalTool(e.toolName))
+      if (e.type === "tool_execution_start" && !isInternalTool(e.toolName) && !TASK_TOOL_NAMES.has(e.toolName))
         this.onTool?.({
           id: String(e.toolCallId ?? e.toolName),
           name: e.toolName,
           state: "running",
           summary: this.redact(summarize(e.args)),
         });
-      if (e.type === "tool_execution_end" && !isInternalTool(e.toolName))
+      if (e.type === "tool_execution_end" && !isInternalTool(e.toolName) && !TASK_TOOL_NAMES.has(e.toolName))
         this.onTool?.({
           id: String(e.toolCallId ?? e.toolName),
           name: e.toolName,
@@ -168,9 +169,8 @@ export class PiAgent implements AgentHandle {
         aborted = msg.stopReason === "aborted";
         if (!failed && !aborted && msg.content.some((c) => c.type === "toolCall")) {
           const line = this.redact(content).trim().split(/\n|(?<=[。！？])|(?<=[.!?])\s+/u)[0]?.trim().slice(0, 200);
-          if (!internal && line && !progress.includes(line) && (!hasOpening || progress.length < 3)) {
-            if (!hasOpening) { progress[0] = line; hasOpening = true; }
-            else progress.push(line);
+          if (!internal && line && !progress.includes(line) && progress.length < 3) {
+            progress.push(line);
             this.onProgress?.([...progress]);
           }
           // The next model message is a fresh answer, not a continuation of this remark.
@@ -192,6 +192,9 @@ export class PiAgent implements AgentHandle {
       clearTimeout(idleTimer);
       unsubscribe();
     }
+  }
+  async steer(text: string) {
+    await this.session.steer(text);
   }
   abort() {
     return this.session.abort();

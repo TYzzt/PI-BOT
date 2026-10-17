@@ -183,7 +183,11 @@ export async function complete(
   const data = (await response.json()) as Row;
   if (data.status === "failed" || data.error)
     throw new Error("模型生成失败");
-  if (data.status === "incomplete") throw new Error("模型输出不完整");
+  if (data.status === "incomplete") {
+    if (data.incomplete_details?.reason === "max_output_tokens")
+      throw new Error("模型输出不完整：已达到输出 token 上限（思考内容也计入额度）");
+    throw new Error("模型输出不完整");
+  }
   return {
     text: (data.output ?? [])
       .filter((item: Row) => item.type === "message")

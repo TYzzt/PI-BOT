@@ -15,6 +15,7 @@ const RESULT_LIMIT = 20000;
 export interface AskAgentOptions {
   /** How long `wait=true` blocks before the task is turned into a later report. */
   waitLimitMs?: number;
+  conversation?: boolean;
   /** Long-poll window per request, in seconds. */
   pollSeconds?: number;
 }
@@ -51,30 +52,25 @@ export function askAgentTool(baseUrl: string, token: () => string, runId: string
       wait: Type.Optional(Type.Boolean({ description: "是否等待结果，默认 true" })),
     }),
     execute: async (_id, args: any, signal) => {
-      const wait = args.wait !== false;
-      let task = await call("POST", "/agent/tasks", { run_id: runId, agent: args.agent, task: args.task, wait }, signal);
+      const wait = options.conversation ? false : args.wait !== false;
+      let task = await call("POST", "/agent/tasks", { run_id: runId, agent: args.agent, task: args.task, wait, request_id: _id }, signal);
       const name = task.agent.name || String(args.agent);
       if (!wait) return text(`已转交给「${name}」。对方完成后你会收到回报，现在可以先告诉用户任务已经交出去了。`);
       const deadline = Date.now() + waitLimit;
       let mustWait = false;
-      try {
-        while (!TERMINAL.has(task.status)) {
-          if (!mustWait && Date.now() >= deadline) {
-            try {
-              task = await call("POST", `/agent/tasks/${task.id}/report`, undefined, signal);
-              if (task.mode === "report" && !TERMINAL.has(task.status))
-                return text(`「${name}」还在进行，已改为完成后回报。先告诉用户任务仍在处理，结果回来后你会收到回报。`);
-            } catch (error) {
-              if (signal?.aborted) throw error;
-              mustWait = true;
-            }
-            continue;
+      while (!TERMINAL.has(task.status)) {
+        if (!mustWait && Date.now() >= deadline) {
+          try {
+            task = await call("POST", `/agent/tasks/${task.id}/report`, undefined, signal);
+            if (task.mode === "report" && !TERMINAL.has(task.status))
+              return text(`「${name}」还在进行，已改为完成后回报。先告诉用户任务仍在处理，结果回来后你会收到回报。`);
+          } catch (error) {
+            if (signal?.aborted) throw error;
+            mustWait = true;
           }
-          task = await call("GET", `/agent/tasks/${task.id}?wait=${poll}`, undefined, signal, (poll + 15) * 1000);
+          continue;
         }
-      } catch (error) {
-        if (signal?.aborted) await call("POST", `/agent/tasks/${task.id}/cancel`).catch(() => {});
-        throw error;
+        task = await call("GET", `/agent/tasks/${task.id}?wait=${poll}`, undefined, signal, (poll + 15) * 1000);
       }
       if (task.status === "failed") throw new Error(`「${name}」没能完成：${task.error ?? "运行失败"}`);
       if (task.status === "cancelled") throw new Error(`「${name}」的任务已被取消`);

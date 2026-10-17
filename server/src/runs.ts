@@ -14,6 +14,7 @@ import {
   setProgress,
 } from "./bots.js";
 
+import { claimExecution } from "./scheduling.js";
 import {recordUi} from "./ui.js";
 
 export const MAC_OFFLINE = "Mac 已离线，可重新发送（将在云端运行）";
@@ -36,7 +37,10 @@ export async function dispatchMac(db: Database, s: Settings, hub: Hub, runId: st
       await tx.notify({ user_id: run.user_id, bot_id: run.bot_id });
       return null;
     }
-    return { conn, context: await buildContext(tx, s, run) };
+    const claimed = await claimExecution(tx, runId, s);
+    if (!claimed) return null;
+    await tx.notify({ user_id: run.user_id, bot_id: run.bot_id });
+    return { conn, context: await buildContext(tx, s, claimed) };
   });
   job?.conn.send({ type: "run", run: job.context });
 }
@@ -44,6 +48,7 @@ export async function dispatchMac(db: Database, s: Settings, hub: Hub, runId: st
 const live = new Map<string, { content: string; written: number }>();
 const runEvent = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("started") }),
+  z.object({ kind: z.literal("instruction_ack"), id: z.string().uuid() }),
   z.object({ kind: z.literal("ui"), messages: z.array(z.record(z.string(),z.unknown())).min(1).max(20) }),
   z.object({ kind: z.literal("text"), text: z.string().max(400000) }),
   z.object({ kind: z.literal("progress"), lines: z.array(z.string().max(200)).max(3) }),
@@ -97,13 +102,21 @@ export async function handleRunEvent(
       }
       return r;
     });
-    if (run)
+    if (!run) live.delete(runId);
+    if (run && run.lane !== "task")
       hub.publish(run.user_id, {
         type: "delta",
         bot_id: run.bot_id,
         message_id: run.assistant_message_id,
         content: e.text,
       });
+    return;
+  }
+  if (e.kind === "instruction_ack") {
+    await db.tx(async tx => {
+      const r = await own(tx);
+      if (r?.task_id) await tx.rows("UPDATE agent_task_instructions SET delivered_at=now() WHERE task_id=$1 AND instruction_id=$2", [r.task_id, e.id]);
+    });
     return;
   }
   if (e.kind === "done") {
@@ -149,6 +162,7 @@ export async function handleRunEvent(
       "UPDATE bot_runs SET status='waiting_approval' WHERE run_id=$1 AND status='running'",
       [runId],
     );
+    if (run.task_id) await tx.rows("UPDATE agent_tasks SET status='waiting_approval', updated_at=now() WHERE task_id=$1", [run.task_id]);
     await tx.notify({ user_id: run.user_id, bot_id: run.bot_id });
     return {
       type: "approval_created",
@@ -167,7 +181,11 @@ export async function failDeviceRuns(db: Database, deviceId: string, reason = MA
       "SELECT run_id FROM bot_runs WHERE executor='mac' AND device_id=$1 AND status = ANY($2)",
       [deviceId, ACTIVE],
     );
+    await tx.rows("UPDATE bot_runs SET executor='cloud', device_id=NULL WHERE executor='mac' AND device_id=$1 AND status='queued' AND lane='conversation'", [deviceId]);
+    await tx.rows("UPDATE bot_messages m SET executor='cloud' FROM bot_runs r WHERE m.message_id=r.assistant_message_id AND r.executor='cloud' AND r.status='queued' AND m.executor='mac'");
     for (const r of runs) {
+      const current = await tx.get("bot_runs", r.run_id);
+      if (current?.executor !== "mac") continue;
       live.delete(r.run_id);
       await finishRun(tx, r.run_id, "failed", reason);
     }
@@ -180,7 +198,12 @@ export async function failOrphanedMacRuns(db: Database) {
       "SELECT run_id FROM bot_runs WHERE executor='mac' AND status = ANY($1)",
       [ACTIVE],
     );
-    for (const r of runs) await finishRun(tx, r.run_id, "failed", MAC_OFFLINE);
+    await tx.rows("UPDATE bot_runs SET executor='cloud', device_id=NULL WHERE executor='mac' AND status='queued' AND lane='conversation'");
+    await tx.rows("UPDATE bot_messages m SET executor='cloud' FROM bot_runs r WHERE m.message_id=r.assistant_message_id AND r.executor='cloud' AND r.status='queued' AND m.executor='mac'");
+    for (const r of runs) {
+      const current = await tx.get("bot_runs", r.run_id);
+      if (current?.executor === "mac") await finishRun(tx, r.run_id, "failed", MAC_OFFLINE);
+    }
   });
 }
 
@@ -192,6 +215,10 @@ export async function cancelRun(tx: Tx, hub: Hub, userId: string, runId: string)
   if (!run) fail(404, "运行不存在");
   if (!ACTIVE.includes(run!.status)) return { run: run!, notify: null };
   await tx.rows("UPDATE bot_runs SET cancel_requested=true WHERE run_id=$1", [runId]);
+  if (run!.status === "queued") {
+    await finishRun(tx, runId, "cancelled", null);
+    return { run: { ...run!, status: "cancelled" }, notify: null };
+  }
   const conn = run!.executor === "mac" ? hub.device(userId) : undefined;
   if (run!.executor === "mac" && conn?.deviceId === run!.device_id)
     return { run: run!, notify: conn };
@@ -224,7 +251,10 @@ export async function decideApproval(
     "SELECT 1 FROM approvals WHERE run_id=$1 AND status='pending'",
     [a!.run_id],
   );
-  if (!pending) await markRunning(tx, a!.run_id);
+  if (!pending) {
+    await markRunning(tx, a!.run_id);
+    await tx.rows("UPDATE agent_tasks SET status='running', updated_at=now() WHERE child_run_id=$1 AND status='waiting_approval'", [a!.run_id]);
+  }
   await tx.notify({ user_id: userId, bot_id: a!.bot_id });
   const run = await tx.get("bot_runs", a!.run_id);
   const conn = hub.device(userId);

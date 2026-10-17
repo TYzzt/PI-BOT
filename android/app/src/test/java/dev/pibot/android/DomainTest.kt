@@ -3,6 +3,8 @@ package dev.pibot.android
 import dev.pibot.android.data.AgentTaskRef
 import dev.pibot.android.data.Approval
 import dev.pibot.android.data.Bot
+import dev.pibot.android.data.BotActivity
+import dev.pibot.android.domain.mood
 import dev.pibot.android.data.FromBot
 import dev.pibot.android.data.LastMessage
 import dev.pibot.android.data.Message
@@ -63,6 +65,16 @@ class DomainTest {
         assertEquals("run_command", t.runningTool)
         assertEquals("执行命令", toolLabel("run_command"))
         assertEquals("custom", toolLabel("custom"))
+    }
+
+    @Test
+    fun backgroundActivitySurvivesACompletedConversation() {
+        val bot = Bot(id = "b", name = "Pi Bot", slug = "pi", lastActiveAt = "2026-10-17T00:00:00Z",
+            activity = BotActivity(status = "running", tool = "run_command", summary = "正在处理 2 个任务", runningCount = 2))
+        assertEquals("正在处理 2 个任务", bot.statusLine())
+        assertEquals("working", bot.mood())
+        val waiting = bot.copy(activity = BotActivity(status = "waiting_approval", summary = "等你批准访问请求"))
+        assertEquals("waiting", waiting.mood())
     }
 
     @Test

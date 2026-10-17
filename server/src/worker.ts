@@ -6,6 +6,7 @@ import { migrate } from "./migrate.js";
 import { modelMessageContent, buildContext, finishRun, markRunning, recordTool, resolveModel, setContent, setProgress, type RunContext } from "./bots.js";
 import { complete, recordUsage } from "./llm.js";
 
+import { claimExecution } from "./scheduling.js";
 import {recordUi} from "./ui.js";
 
 const RUN_LIMIT_MS = 30 * 60 * 1000;
@@ -19,6 +20,7 @@ export class Worker {
   private stopped = false;
   private controllers = new Set<AbortController>();
   private running = new Set<Promise<void>>();
+  private compacting?: Promise<unknown>;
   constructor(
     readonly db: Database,
     readonly s: Settings,
@@ -35,20 +37,13 @@ export class Worker {
         "SELECT run_id FROM bot_runs WHERE executor='cloud' AND status='running' AND lease_until < now() FOR UPDATE SKIP LOCKED",
       );
       for (const r of stale) await finishRun(tx, r.run_id, "failed", "云端执行中断，请重新发送");
-      const run = await tx.one(
-        "SELECT * FROM bot_runs WHERE executor='cloud' AND status='queued' ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED",
-      );
-      if (!run) return;
-      if (run.cancel_requested) {
-        await finishRun(tx, run.run_id, "cancelled", null);
-        return;
+      const candidates = await tx.rows("SELECT run_id FROM bot_runs WHERE executor='cloud' AND status='queued' AND NOT cancel_requested ORDER BY (lane='task'), (origin='report'), created_at LIMIT 100");
+      let run: Row | null = null;
+      for (const candidate of candidates) {
+        run = await claimExecution(tx, candidate.run_id, this.s, this.id);
+        if (run) break;
       }
-      await tx.rows("UPDATE bot_runs SET worker_id=$2, lease_until=$3 WHERE run_id=$1", [
-        run.run_id,
-        this.id,
-        new Date(Date.now() + this.s.leaseSeconds * 1000),
-      ]);
-      await markRunning(tx, run.run_id);
+      if (!run) return;
       await tx.notify({ user_id: run.user_id, bot_id: run.bot_id });
       try {
         return await buildContext(tx, this.s, run);
@@ -103,10 +98,10 @@ export class Worker {
     };
     const timer = setInterval(() => void beat(), Math.max(1000, Math.min(15000, this.s.leaseSeconds * 250)));
     const deadline = setTimeout(() => {
-      error = "运行超过 30 分钟，已停止";
+      error = job.lane === "conversation" ? "对话响应超时，请重新发送" : "运行超过 30 分钟，已停止";
       void cancelRunner();
       controller.abort();
-    }, RUN_LIMIT_MS);
+    }, job.lane === "conversation" ? 60000 : RUN_LIMIT_MS);
     let sawDone = false;
     try {
       const token = await issueLlmToken({ sub: owner.user_id, src: "cloud", bot: job.bot.id }, this.s, Math.ceil(RUN_LIMIT_MS / 1000) + 300);
@@ -133,9 +128,11 @@ export class Worker {
                 const r = await tx.get("bot_runs", job.run_id);
                 if (!ours(r)) return void (lost = true);
                 await setContent(tx, r, content);
-                await tx.notify({ user_id: r.user_id, bot_id: r.bot_id, message_id: r.assistant_message_id, content });
+                await tx.notify(r.lane === "task" ? { user_id: r.user_id, bot_id: r.bot_id } : { user_id: r.user_id, bot_id: r.bot_id, message_id: r.assistant_message_id, content });
               });
             }
+          } else if (e.type === "instruction_ack") {
+            await this.db.tx(tx => tx.rows("UPDATE agent_task_instructions SET delivered_at=now() WHERE task_id=$1 AND instruction_id=$2", [owner.task_id, e.id]));
           } else if (e.type === "ui") {
             await this.db.tx(async tx => { const r=await tx.get("bot_runs",job.run_id); if(ours(r)) await recordUi(tx,r,e.messages); });
           } else if (e.type === "progress") {
@@ -197,7 +194,7 @@ export class Worker {
       if (!b) return null;
       const until = b.next_seq - 1 - Math.min(20, Math.floor(this.s.memoryThreshold / 2));
       const messages = await tx.rows(
-        "SELECT seq, role, content, ui_action FROM bot_messages WHERE bot_id=$1 AND seq>$2 AND seq<=$3 AND content<>'' ORDER BY seq",
+        "SELECT seq, role, content, ui_action FROM bot_messages WHERE bot_id=$1 AND seq>$2 AND seq<=$3 AND visibility='public' AND content<>'' AND status IN ('completed','cancelled') ORDER BY seq",
         [b.bot_id, b.through_seq, until],
       );
       const model = await resolveModel(tx, b);
@@ -244,7 +241,7 @@ export class Worker {
   async runForever() {
     while (!this.stopped) {
       try {
-        if (this.running.size < this.s.workerConcurrency) {
+        {
           const job = await this.claim();
           if (job) {
             const p: Promise<void> = this.execute(job)
@@ -254,13 +251,14 @@ export class Worker {
             continue;
           }
         }
-        if (await this.compactOnce()) continue;
+        if (!this.compacting) this.compacting = this.compactOnce()
+          .catch(() => {}).finally(() => { this.compacting = undefined; });
       } catch {
         console.error("cloud worker cycle failed");
       }
       await new Promise((resolve) => setTimeout(resolve, this.s.pollSeconds * 1000));
     }
-    await Promise.all(this.running);
+    await Promise.all([...this.running, this.compacting]);
   }
 }
 

@@ -81,6 +81,24 @@
                     "minLength": 1,
                     "maxLength": 100
                   },
+                  "kind": {
+                    "default": "delegation",
+                    "type": "string",
+                    "enum": [
+                      "background",
+                      "delegation"
+                    ]
+                  },
+                  "title": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80
+                  },
+                  "request_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
                   "task": {
                     "type": "string",
                     "minLength": 1,
@@ -93,7 +111,6 @@
                 },
                 "required": [
                   "run_id",
-                  "agent",
                   "task"
                 ]
               }
@@ -140,6 +157,16 @@
               "type": "integer",
               "minimum": 0,
               "maximum": 30
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
             }
           }
         ],

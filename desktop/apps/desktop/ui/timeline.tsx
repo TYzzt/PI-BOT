@@ -20,17 +20,20 @@ const Markdown = memo(function Markdown({ text }: { text: string }) {
 });
 
 function Progress({ lines }: { lines: string[] }) {
-  if (!lines.length) return null;
+  // Older servers and saved history may still include the retired placeholder.
+  const remarks = lines.filter(line => line.replace(/\s/gu, '') !== '好，我来看看，稍后把结果给你。');
+  if (!remarks.length) return null;
   return (
     <div className="progress" aria-label="任务进度">
-      {lines.slice(0, 3).map((line, i) => <p key={i}>{line}</p>)}
+      {remarks.slice(0, 3).map((line, i) => <div className="bubble markdown" key={i}><Markdown text={line} /></div>)}
     </div>
   );
 }
 
-const TASK_STATE: Record<AgentTaskRef['status'], string> = { queued: '排队中', running: '进行中', completed: '已完成', failed: '未完成', cancelled: '已取消' };
+const TASK_STATE: Record<AgentTaskRef['status'], string> = { queued: '排队中', running: '进行中', waiting_approval: '等你批准', completed: '已完成', failed: '未完成', cancelled: '已取消' };
 
 function Delegations({ tasks, onOpenBot }: { tasks: AgentTaskRef[]; onOpenBot(id: string): void }) {
+  tasks = tasks.filter(t => t.kind !== 'background');
   if (!tasks.length) return null;
   return (
     <div className="delegations">
@@ -83,8 +86,12 @@ export function Timeline({ bot, messages, hasMore, mood, online, onLoadMore, onS
   const stick = useRef(true);
   const [text, setText] = useState('');
   const [error, setError] = useState('');
+  const [sending, setSending] = useState(false);
+  const submitting = useRef(false);
+  const retry = useRef<{ text: string; bot: string; id: string } | null>(null);
+  const activeBot = useRef(bot.id);
+  activeBot.current = bot.id;
   const run = bot.latest_run;
-  const busy = !!run && ['queued', 'running', 'waiting_approval'].includes(run.status);
   useLayoutEffect(() => {
     const el = scroller.current;
     if (el && stick.current) el.scrollTop = el.scrollHeight;
@@ -92,14 +99,21 @@ export function Timeline({ bot, messages, hasMore, mood, online, onLoadMore, onS
   useEffect(() => { stick.current = true; setError(''); }, [bot.id]);
   const send = async () => {
     const value = text.trim();
-    if (!value || busy) return;
+    if (!value || !online || submitting.current) return;
+    const draft = text;
+    const botId = bot.id;
+    if (retry.current?.text !== value || retry.current.bot !== botId) retry.current = { text: value, bot: botId, id: crypto.randomUUID() };
+    submitting.current = true;
+    setSending(true);
     setError('');
     stick.current = true;
     try {
-      const result = await call<{ messages: Message[] }>('send', { botId: bot.id, text: value });
+      const result = await call<{ messages: Message[] }>('send', { botId, text: value, request_id: retry.current.id });
       onSent({ messages: result.messages, has_more: hasMore });
-      setText('');
-    } catch (e) { setError(errorText(e)); }
+      if (activeBot.current === botId) setText(current => current === draft ? '' : current);
+      retry.current = null;
+    } catch (e) { if (activeBot.current === botId) setError(errorText(e)); }
+    finally { submitting.current = false; setSending(false); }
   };
   const key = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void send(); }
@@ -130,7 +144,7 @@ export function Timeline({ bot, messages, hasMore, mood, online, onLoadMore, onS
                 <Progress lines={m.progress ?? []} />
                 <Delegations tasks={m.agent_tasks ?? []} onOpenBot={onOpenBot} />
                 {m.content ? <div className="bubble markdown"><Markdown text={m.content} /></div> : m.status === 'running' ? <div className="typing"><i /><i /><i /></div> : null}
-                {m.ui && <UiView key={m.id} document={m.ui} disabled={busy || !online || m.status !== 'completed'}
+                {m.ui && <UiView key={m.id} document={m.ui} disabled={!online || m.status !== 'completed'}
                   save={async (states, revision) => { const saved = await call<Message>('uiState', { botId: bot.id, messageId: m.id, states, revision }); return saved.ui!; }}
                   action={async input => { const result=await call<{messages:Message[]}>('uiAction',{botId:bot.id,messageId:m.id,...input}); onSent({messages:result.messages,has_more:hasMore}); }} />}
                 <span className="meta">
@@ -143,16 +157,15 @@ export function Timeline({ bot, messages, hasMore, mood, online, onLoadMore, onS
             </div>
           )];
         })}
+        {bot.activity?.summary && <div className="task-activity" role="status" aria-live="polite"><PiBot avatar={bot.avatar} mood={mood} size={26} /><span>{bot.activity.summary}</span></div>}
         {bot.pending_approvals.map(a => <ApprovalCard key={a.id} approval={a} />)}
       </div>
       <div className="composer">
         {error && <p className="error small">{error}</p>}
         {!online && <p className="muted small">Mac 未连接服务器，暂时无法发送。</p>}
         <div className="input">
-          <textarea value={text} onChange={e => setText(e.target.value)} onKeyDown={key} rows={Math.min(8, Math.max(1, text.split('\n').length))} placeholder={busy ? `${bot.name} 正在忙…` : `给 ${bot.name} 发消息`} disabled={!online} />
-          {busy
-            ? <button className="stop" onClick={() => run && call('cancel', { runId: run.id }).catch(e => setError(errorText(e)))} title="停止">■</button>
-            : <button className="send" disabled={!text.trim() || !online} onClick={send} title="发送（Enter）">↑</button>}
+          <textarea value={text} onChange={e => setText(e.target.value)} onKeyDown={key} rows={Math.min(8, Math.max(1, text.split('\n').length))} placeholder={`给 ${bot.name} 发消息`} disabled={!online} />
+          <button className="send" disabled={!text.trim() || !online || sending} onClick={send} title="发送（Enter）">↑</button>
         </div>
       </div>
     </>

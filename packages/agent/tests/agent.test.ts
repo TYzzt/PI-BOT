@@ -26,7 +26,9 @@ before(async () => {
     const user = text(json.input.filter((m: any) => m.role === "user").at(-1)?.content);
     const rounds = json.input.filter((m: any) => m.type === "function_call_output").length;
     const stream = new ResponseStream(res, json.model);
-    if (user === "直接回答") {
+    if (user === "补充为蓝色") {
+      stream.text("已按补充改为蓝色。");
+    } else if (user === "直接回答") {
       stream.text("你好，我在。");
     } else if (user === "挂起") {
       res.flushHeaders();
@@ -66,6 +68,25 @@ test("tool-round remarks survive separately, stay brief and do not pollute final
     assert.ok(seen.includes("结果是"), "final reply starts a fresh stream rather than appending to the previous remark");
     assert.ok(seen.every(t => !t.includes(SECRET)));
   } finally { agent.dispose(); }
+});
+
+test("steering waits for the current tool and changes the next model turn", async () => {
+  let release!: () => void, started!: () => void;
+  const running = new Promise<void>(r => { started = r; });
+  const finish = new Promise<void>(r => { release = r; });
+  const agent = await createBotAgent({
+    model: { id: "steer", name: "测试", baseUrl: url, modelId: "test", contextWindow: 32000, maxTokens: 1000 },
+    apiKey: SECRET, cwd: dir, agentDir: join(dir, "steer"), systemPrompt: "测试", history: [],
+    tools: [{ name: "lookup", label: "查询", description: "查询", parameters: Type.Object({ query: Type.String() }),
+      execute: async () => { started(); await finish; return { content: [{ type: "text", text: "原任务结果" }], details: {} }; } } as ToolDefinition],
+  });
+  try {
+    const result = agent.prompt("执行任务", () => {});
+    await running;
+    await agent.steer!("补充为蓝色");
+    release();
+    assert.equal(await result, "已按补充改为蓝色。");
+  } finally { release(); agent.dispose(); }
 });
 
 test("direct answers do not create progress remarks", async () => {
@@ -119,6 +140,7 @@ test("createBotAgent runs only the given tools through the proxy and redacts the
     execute: async (_id, args: any) => ({ content: [{ type: "text", text: `${args.query}晴` }], details: {} }),
   } as ToolDefinition;
   const tools: ToolActivity[] = [];
+  const progress: string[][] = [];
   const agent = await createBotAgent({
     model: { id: "m1", name: "测试", baseUrl: url, modelId: "pi-bot-model-uuid", contextWindow: 32000, maxTokens: 1000 },
     apiKey: SECRET,
@@ -131,6 +153,7 @@ test("createBotAgent runs only the given tools through the proxy and redacts the
     ],
     tools: [lookup],
     onTool: (t) => tools.push(t),
+    onProgress: (lines) => progress.push(lines),
   });
   assert.deepEqual(agent.tools, ["lookup"]);
   const seen: string[] = [];
@@ -139,6 +162,7 @@ test("createBotAgent runs only the given tools through the proxy and redacts the
 
   assert.equal(reply, "结果是天气晴，令牌 [已隐藏凭据]");
   assert.ok(seen.every((t) => !t.includes(SECRET)), "streamed text is redacted too");
+  assert.deepEqual(progress, [], "tool calls without model remarks do not invent an opening reply");
   assert.deepEqual(tools.map((t) => [t.name, t.state, t.summary]), [
     ["lookup", "running", "天气"],
     ["lookup", "completed", undefined],

@@ -33,7 +33,7 @@ async function ownMessage(
 ) {
   await ownBot(tx, userId, botId, true);
   const row = await tx.one(
-    "SELECT * FROM bot_messages WHERE message_id=$1 AND bot_id=$2 AND role='assistant' FOR UPDATE",
+    "SELECT * FROM bot_messages WHERE message_id=$1 AND bot_id=$2 AND role='assistant' AND visibility='public' FOR UPDATE",
     [messageId, botId],
   );
   if (!row?.ui) fail(404, "交互界面不存在");

@@ -47,7 +47,9 @@ test("one-shot Responses requests parse all output messages and reject failed or
     result = { status: "failed", error: { message: "provider secret" } };
     await assert.rejects(complete(model, "sk-test", input, 16), /^Error: 模型生成失败$/);
     result = { status: "incomplete", output: [], incomplete_details: { reason: "max_output_tokens" } };
-    await assert.rejects(complete(model, "sk-test", input, 16), /模型输出不完整/);
+    await assert.rejects(complete(model, "sk-test", input, 16), /已达到输出 token 上限（思考内容也计入额度）/);
+    result = { status: "incomplete", output: [], incomplete_details: { reason: "content_filter" } };
+    await assert.rejects(complete(model, "sk-test", input, 16), /^Error: 模型输出不完整$/);
   } finally {
     server.closeAllConnections();
     await new Promise<void>(resolve => server.close(() => resolve()));

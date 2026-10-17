@@ -42,3 +42,5 @@ Mac 与云端共用 `createBotAgent`，统一使用 Pi 的 `openai-responses` �
 - `packages/agent/tests/skills.test.ts`：真实 Pi Extension、按需读取、令牌刷新、无文件发现、内部事件/临时文字过滤、工具覆盖拒绝。
 - `server/tests/skills.test.ts`：Bot/用户/执行端/设备/运行隔离、版本并发冲突、参考资料、停用/删除/恢复、公开接口过滤，真实云端 Runner 创建和复用。
 - `desktop/tests/harness-e2e.test.ts`：真实 Mac harness 管理和复用、资料库不出现 skill、云端上下文可发现 Mac 创建的 skill。
+
+异步任务模式：对话持续接话，每个 Bot 最多并行执行两个后台任务，其余排队；用聊天查询进度、补充要求或取消，结果完成后另发。两端需与 API、Worker、Runner 同步升级，服务端自动应用 `0007-async-tasks`；升级前结束旧运行。详情见 [整体架构](../../server/ARCHITECTURE.md)。

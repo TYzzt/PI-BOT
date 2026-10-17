@@ -62,7 +62,7 @@ export async function mockProvider() {
       if (last.includes("新增对话")) return "用户喜欢蓝鲸。";
       if (skill && toolDone) return "已按方法完成任务。";
       if (last.includes("你收到来自智能体")) return "委托结果：周报写好了";
-      if (last.includes("这是你之前委托给")) return `回报已收到：${last.includes("周报写好了") ? "周报写好了" : "没有结果"}`;
+      if (last.includes("这是你之前委托给")) return last.includes("周报写好了") ? "回报已收到：周报写好了" : last.split("结果：\n").at(-1)!;
       if (delegation && toolDone) return `综合：${text(json.input.at(-1).output)}`;
       if (last.includes("记住")) return "好的，我记住了蓝鲸。";
       if (last.includes("之前")) return all.includes("蓝鲸") ? "你之前说的是蓝鲸。" : "没有记录。";
@@ -81,6 +81,11 @@ export async function mockProvider() {
     if (skill && !toolDone) {
       stream.text("内部：正在管理 skill。");
       stream.tool(skill.name, skill.args, "skill_1");
+      return void stream.end();
+    }
+    if (last === "联网搜索链路测试" && json.tools.some((t: any) => t.name === "start_task")) {
+      if (!toolDone) stream.tool("start_task", { title: "联网核查", task: last }, "start_search");
+      else stream.text("已开始核查，完成后告诉你。");
       return void stream.end();
     }
     if (last === "联网搜索链路测试" && json.input.at(-1)?.type !== "function_call_output") {

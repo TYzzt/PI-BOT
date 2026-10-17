@@ -149,8 +149,8 @@ class PiBotRepository(
         _timelines.update { all -> all + (botId to (all[botId] ?: Timeline()).merge(page.messages, page.hasMore)) }
     }
 
-    suspend fun send(botId: String, text: String): Run {
-        val result = authed { u, t -> api.send(u, t, botId, text, UUID.randomUUID().toString()) }
+    suspend fun send(botId: String, text: String, requestId: String = UUID.randomUUID().toString()): Run {
+        val result = authed { u, t -> api.send(u, t, botId, text, requestId) }
         _timelines.update { all -> all + (botId to (all[botId] ?: Timeline()).merge(result.messages)) }
         _bots.update { list -> list?.map { if (it.id == botId) it.copy(latestRun = result.run) else it } }
         return result.run

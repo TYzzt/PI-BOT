@@ -16,7 +16,7 @@ export const schemas = {
   botUpdate: z.object({ id, name: z.string().trim().min(1).max(40).optional(), persona: z.string().max(8000).optional(), model_id: id.nullable().optional(), avatar: avatarSchema.optional() }),
   botDelete: z.object({ id }),
   messages: z.object({ botId: id, before: z.number().int().positive().optional() }),
-  send: z.object({ botId: id, text: z.string().trim().min(1).max(100000) }),
+  send: z.object({ botId: id, text: z.string().trim().min(1).max(100000), request_id: id.optional() }),
   uiState: z.object({ botId: id, messageId: id, revision: z.number().int().positive(), states: z.unknown() }),
   uiAction: z.object({ botId: id, messageId: id, revision: z.number().int().positive(), states: z.unknown(), action: z.unknown(), request_id: id }),
   cancel: z.object({ runId: id }),
@@ -32,14 +32,14 @@ export function parseInput(method: Method, input: unknown) {
 }
 
 export type RunStatus = 'queued' | 'running' | 'waiting_approval' | 'completed' | 'failed' | 'cancelled';
-export interface Run { id: string; bot_id: string; status: RunStatus; executor: 'mac' | 'cloud'; error: string | null; created_at: string; finished_at: string | null; assistant_message_id: string }
+export interface Run { lane?: 'conversation' | 'task'; task_id?: string | null; id: string; bot_id: string; status: RunStatus; executor: 'mac' | 'cloud'; error: string | null; created_at: string; finished_at: string | null; assistant_message_id: string }
 export interface ToolEntry { id: string; name: string; state: 'running' | 'completed' | 'failed'; summary?: string }
 /** Another bot that wrote a `user` message: a delegated task, or the report of one this bot handed off. */
 export interface FromBot { id: string; name: string; avatar: Avatar | null; kind: 'task' | 'report' }
-export interface AgentTaskRef { id: string; bot_id: string; bot_name: string; status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'; mode: 'wait' | 'report' }
-export interface Message { id: string; bot_id: string; run_id: string | null; seq: number; role: 'user' | 'assistant'; content: string; status: 'completed' | 'running' | 'failed' | 'cancelled'; executor: 'mac' | 'cloud' | null; tools: ToolEntry[]; progress?: string[]; ui?: UiDocument | null; from_bot?: FromBot | null; agent_tasks?: AgentTaskRef[]; created_at: string; updated_at: string }
+export interface AgentTaskRef { id: string; bot_id: string; bot_name: string; status: 'queued' | 'running' | 'waiting_approval' | 'completed' | 'failed' | 'cancelled'; mode: 'wait' | 'report'; kind?: 'background' | 'delegation'; title?: string; updated_at?: string; activity?: string | null }
+export interface Message { task_id?: string | null; id: string; bot_id: string; run_id: string | null; seq: number; role: 'user' | 'assistant'; content: string; status: 'completed' | 'running' | 'failed' | 'cancelled'; executor: 'mac' | 'cloud' | null; tools: ToolEntry[]; progress?: string[]; ui?: UiDocument | null; from_bot?: FromBot | null; agent_tasks?: AgentTaskRef[]; created_at: string; updated_at: string }
 export interface Approval { id: string; run_id: string; bot_id: string; kind: 'outside_access'; path: string; reason: string; status: string; expires_at: string }
-export interface Bot { id: string; name: string; slug: string; persona: string; model_id: string | null; avatar: Avatar; is_main?: boolean; created_at: string; last_active_at: string; latest_run: Run | null; last_message: { role: string; preview: string; status: string; created_at: string } | null; pending_approvals: Approval[] }
+export interface Bot { active_tasks?: AgentTaskRef[]; activity?: { status: RunStatus | null; tool: string | null; summary: string | null; running_count: number; queued_count: number }; id: string; name: string; slug: string; persona: string; model_id: string | null; avatar: Avatar; is_main?: boolean; created_at: string; last_active_at: string; latest_run: Run | null; last_message: { role: string; preview: string; status: string; created_at: string } | null; pending_approvals: Approval[] }
 export interface ModelOption { id: string; name: string; is_default: boolean }
 export interface MessagePage { messages: Message[]; has_more: boolean }
 

@@ -86,7 +86,18 @@ data class Bot(
     @SerialName("last_active_at") val lastActiveAt: String,
     @SerialName("latest_run") val latestRun: Run? = null,
     @SerialName("last_message") val lastMessage: LastMessage? = null,
+    @SerialName("active_tasks") val activeTasks: List<AgentTaskRef> = emptyList(),
+    val activity: BotActivity? = null,
     @SerialName("pending_approvals") val pendingApprovals: List<Approval> = emptyList(),
+)
+
+@Serializable
+data class BotActivity(
+    val status: String? = null,
+    val tool: String? = null,
+    val summary: String? = null,
+    @SerialName("running_count") val runningCount: Int = 0,
+    @SerialName("queued_count") val queuedCount: Int = 0,
 )
 
 @Serializable
@@ -100,6 +111,7 @@ data class Message(
     val id: String,
     @SerialName("bot_id") val botId: String,
     @SerialName("run_id") val runId: String? = null,
+    @SerialName("task_id") val taskId: String? = null,
     val seq: Int,
     val role: String,
     val content: String,
@@ -124,6 +136,9 @@ data class AgentTaskRef(
     @SerialName("bot_name") val botName: String = "",
     val status: String,
     val mode: String = "wait",
+    val kind: String = "delegation",
+    val title: String = "",
+    @SerialName("updated_at") val updatedAt: String? = null,
 )
 
 @Serializable

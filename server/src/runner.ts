@@ -6,6 +6,7 @@ import { timingSafeEqual } from "node:crypto";
 import {
   a2uiTools,
   askAgentTool,
+  taskTools,
   CANCELLED,
   createBotAgent,
   webSearchTool,
@@ -16,6 +17,8 @@ import {
 const requestSchema = z.object({
   run: z.object({
     run_id: z.string().uuid(),
+    lane: z.enum(["conversation", "task"]).default("task"),
+    instructions: z.array(z.object({ id: z.string().uuid(), text: z.string().max(8000) })).default([]),
     bot: z.object({ id: z.string().uuid(), name: z.string(), slug: z.string() }),
     model: z.object({
       id: z.string().uuid(),
@@ -43,7 +46,9 @@ export async function createRunner(options: { token: string; dir: string; factor
   if (options.token.length < 32) throw new Error("Runner token 至少 32 字符");
   const app = Fastify({ bodyLimit: 16 * 1024 * 1024, logger: false });
   const factory = options.factory ?? createBotAgent;
-  const active = new Map<string, { agent?: AgentHandle; cancelled: boolean }>();
+  interface Running { agent?: AgentHandle; cancelled: boolean; prompted: boolean; received: Set<string>; pending: { id: string; text: string }[] }
+  const active = new Map<string, Running>();
+  const cancelledBeforeStart = new Map<string, number>();
   app.addHook("onRequest", async (req, reply) => {
     if (req.url === "/health") return;
     const value = Buffer.from(req.headers.authorization ?? ""),
@@ -54,9 +59,33 @@ export async function createRunner(options: { token: string; dir: string; factor
   app.get("/health", () => ({ ok: true, active: active.size }));
   app.post("/runs/:id/cancel", async (req) => {
     const state = active.get((req.params as any).id);
+    if (!state) {
+      for (const [id, until] of cancelledBeforeStart) if (until < Date.now()) cancelledBeforeStart.delete(id);
+      cancelledBeforeStart.set((req.params as any).id, Date.now() + 60000);
+    }
     if (state) {
       state.cancelled = true;
       await state.agent?.abort();
+    }
+    return { ok: true };
+  });
+  app.post("/runs/:id/messages", async (req, reply) => {
+    const body = z.object({ id: z.string().uuid(), text: z.string().min(1).max(8000) }).safeParse(req.body);
+    if (!body.success) return reply.code(422).send({ error: "追加要求无效" });
+    const state = active.get((req.params as any).id);
+    if (!state || state.cancelled) return reply.code(409).send({ error: "任务尚未启动或已结束" });
+    const i = body.data;
+    if (state.received.has(i.id)) return { ok: true };
+    state.received.add(i.id);
+    try {
+      if (!state.prompted) state.pending.push(i);
+      else {
+        if (!state.agent?.steer) throw new Error("执行器不支持追加要求");
+        await state.agent.steer(i.text);
+      }
+    } catch {
+      state.received.delete(i.id);
+      return reply.code(503).send({ error: "追加要求暂未送达" });
     }
     return { ok: true };
   });
@@ -65,7 +94,9 @@ export async function createRunner(options: { token: string; dir: string; factor
     if (!parsed.success) return reply.code(422).send({ error: "运行参数无效" });
     const p = parsed.data;
     if (active.has(p.run.run_id)) return reply.code(409).send({ error: "运行已存在" });
-    const state: { agent?: AgentHandle; cancelled: boolean } = { cancelled: false };
+    const state: Running = { cancelled: (cancelledBeforeStart.get(p.run.run_id) ?? 0) > Date.now(), prompted: false,
+      received: new Set(p.run.instructions.map(i => i.id)), pending: [...p.run.instructions] };
+    cancelledBeforeStart.delete(p.run.run_id);
     active.set(p.run.run_id, state);
     reply.hijack();
     reply.raw.writeHead(200, { "Content-Type": "application/x-ndjson", "Cache-Control": "no-store" });
@@ -81,8 +112,9 @@ export async function createRunner(options: { token: string; dir: string; factor
       await mkdir(cwd, { recursive: true, mode: 0o700 });
       const api = p.base_url.replace(/\/llm\/v1\/?$/, "");
       const tools = [
-        ...(p.run.search_enabled ? [webSearchTool(api, () => p.token)] : []),
-        ...(p.run.agents_enabled ? [askAgentTool(api, () => p.token, p.run.run_id)] : []),
+        ...(p.run.lane === "conversation" ? taskTools(api, () => p.token, p.run.run_id) : []),
+        ...(p.run.lane !== "conversation" && p.run.search_enabled ? [webSearchTool(api, () => p.token)] : []),
+        ...(p.run.agents_enabled ? [askAgentTool(api, () => p.token, p.run.run_id, { conversation: p.run.lane === "conversation" })] : []),
       ];
       tools.push(...a2uiTools(messages => { emit({ type: "ui", messages }); }));
       state.agent = await factory({
@@ -105,7 +137,11 @@ export async function createRunner(options: { token: string; dir: string; factor
         onProgress: (lines) => emit({ type: "progress", lines }),
       });
       if (state.cancelled) throw new Error(CANCELLED);
-      const text = await state.agent.prompt(p.run.text, (t) => emit({ type: "text", text: t }));
+      const initial = state.pending.splice(0);
+      for (const i of initial) emit({ type: "instruction_ack", id: i.id });
+      state.prompted = true;
+      const input = p.run.text + initial.map(i => `\n\n用户追加要求：\n${i.text}`).join("");
+      const text = await state.agent.prompt(input, (t) => emit({ type: "text", text: t }));
       emit({ type: "done", state: "completed", text });
     } catch (e) {
       const cancelled = state.cancelled || (e instanceof Error && e.message === CANCELLED);

@@ -74,7 +74,7 @@ fun TimelineScreen(repository: PiBotRepository, botId: String, onBack: () -> Uni
     val timeline by repository.timeline(botId).collectAsStateWithLifecycle(Timeline())
     val mac by repository.mac.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
-    var error by remember { mutableStateOf<String?>(null) }
+    var error by remember(botId) { mutableStateOf<String?>(null) }
     var loadingMore by remember { mutableStateOf(false) }
     val now = rememberNow()
 
@@ -86,8 +86,6 @@ fun TimelineScreen(repository: PiBotRepository, botId: String, onBack: () -> Uni
         Box(Modifier.fillMaxSize().background(Paper))
         return
     }
-    val run = current.latestRun
-    val active = run?.active == true
     val mood = current.mood(now, timeline.runningTool)
 
     Scaffold(
@@ -139,7 +137,16 @@ fun TimelineScreen(repository: PiBotRepository, botId: String, onBack: () -> Uni
                         scope.launch { runCatching { repository.decide(approval, approve) }.onFailure { error = errorText(it) } }
                     }
                 }
-                items(reversed, key = { it.id }) { message -> MessageItem(message, onOpenBot, repository, active) }
+                current.activity?.summary?.let { summary ->
+                    item(key = "task-activity") {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 6.dp)) {
+                            PiBotFace(current.avatar, mood, 26.dp, seed = seedOf(current.id))
+                            Spacer(Modifier.size(8.dp))
+                            Text(summary, color = Muted, fontSize = 13.sp)
+                        }
+                    }
+                }
+                items(reversed, key = { it.id }) { message -> MessageItem(message, onOpenBot, repository) }
                 if (timeline.loaded && timeline.messages.isEmpty()) {
                     item { Intro(current) }
                 }
@@ -147,15 +154,11 @@ fun TimelineScreen(repository: PiBotRepository, botId: String, onBack: () -> Uni
             error?.let {
                 Text(it, color = Danger, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
             }
-            Composer(
-                botName = current.name,
-                active = active,
-                onSend = { text ->
-                    error = null
-                    scope.launch { runCatching { repository.send(botId, text) }.onFailure { error = errorText(it) } }
-                },
-                onStop = { run?.let { r -> scope.launch { runCatching { repository.cancel(botId, r.id) }.onFailure { error = errorText(it) } } } },
-            )
+            Composer(botId, current.name) { text, requestId ->
+                error = null
+                try { repository.send(botId, text, requestId); true }
+                catch (e: Exception) { error = errorText(e); false }
+            }
         }
     }
 }
@@ -192,20 +195,26 @@ private fun RelayItem(message: Message, from: FromBot, onOpenBot: (String) -> Un
 }
 
 @Composable
-private fun MessageItem(message: Message, onOpenBot: (String) -> Unit, repository: PiBotRepository, active: Boolean) {
+private fun MessageItem(message: Message, onOpenBot: (String) -> Unit, repository: PiBotRepository) {
     val from = message.fromBot
     if (message.role == "user" && from != null) return RelayItem(message, from, onOpenBot)
     val user = message.role == "user"
+    // Older servers and saved history may still include the retired placeholder.
+    val remarks = message.progress.filter { it.filterNot(Char::isWhitespace) != "好，我来看看，稍后把结果给你。" }
     Column(Modifier.fillMaxWidth(), horizontalAlignment = if (user) Alignment.End else Alignment.Start) {
-        if (!user && message.progress.isNotEmpty()) {
-            Column(Modifier.widthIn(max = 320.dp).padding(horizontal = 14.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                for (line in message.progress.take(3)) Text(line, color = Muted, fontSize = 13.sp, lineHeight = 20.sp)
+        val bubble = Modifier
+            .widthIn(max = 320.dp)
+            .background(if (user) Ink else Card, RoundedCornerShape(18.dp))
+            .padding(horizontal = 14.dp, vertical = 10.dp)
+        if (!user && remarks.isNotEmpty()) {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                for (line in remarks.take(3)) Box(bubble) { MarkdownText(line) }
             }
             Spacer(Modifier.height(6.dp))
         }
-        if (!user && message.agentTasks.isNotEmpty()) {
+        if (!user && message.agentTasks.any { it.kind != "background" }) {
             Column(Modifier.padding(horizontal = 14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                for (task in message.agentTasks) {
+                for (task in message.agentTasks.filter { it.kind != "background" }) {
                     val live = task.status == "queued" || task.status == "running"
                     Text(
                         delegationLabel(task) + " ›",
@@ -220,10 +229,6 @@ private fun MessageItem(message: Message, onOpenBot: (String) -> Unit, repositor
             }
             Spacer(Modifier.height(6.dp))
         }
-        val bubble = Modifier
-            .widthIn(max = 320.dp)
-            .background(if (user) Ink else Card, RoundedCornerShape(18.dp))
-            .padding(horizontal = 14.dp, vertical = 10.dp)
         Box(bubble) {
             when {
                 user -> Text(message.content, color = Color.White, lineHeight = 21.sp)
@@ -234,7 +239,7 @@ private fun MessageItem(message: Message, onOpenBot: (String) -> Unit, repositor
         }
         if (!user && message.ui != null) {
             Spacer(Modifier.height(8.dp))
-            A2uiContent(message, repository, active || message.status != "completed")
+            A2uiContent(message, repository, message.status != "completed")
         }
         Spacer(Modifier.height(3.dp))
         val note = when (message.status) {
@@ -269,8 +274,12 @@ private fun ApprovalCard(approval: Approval, onDecide: (Boolean) -> Unit) {
 }
 
 @Composable
-private fun Composer(botName: String, active: Boolean, onSend: (String) -> Unit, onStop: () -> Unit) {
-    var text by remember { mutableStateOf("") }
+private fun Composer(botId: String, botName: String, onSend: suspend (String, String) -> Boolean) {
+    var text by remember(botId) { mutableStateOf("") }
+    var sending by remember(botId) { mutableStateOf(false) }
+    var retryText by remember(botId) { mutableStateOf("") }
+    var requestId by remember(botId) { mutableStateOf(java.util.UUID.randomUUID().toString()) }
+    val scope = rememberCoroutineScope()
     Row(
         Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 12.dp, vertical = 8.dp)
             .background(Card, RoundedCornerShape(26.dp)).padding(start = 4.dp, end = 6.dp),
@@ -278,7 +287,7 @@ private fun Composer(botName: String, active: Boolean, onSend: (String) -> Unit,
     ) {
         TextField(
             text, { text = it },
-            placeholder = { Text(if (active) "$botName 正在忙…" else "给 $botName 发消息") },
+            placeholder = { Text("给 $botName 发消息") },
             maxLines = 5,
             modifier = Modifier.weight(1f),
             colors = TextFieldDefaults.colors(
@@ -289,18 +298,26 @@ private fun Composer(botName: String, active: Boolean, onSend: (String) -> Unit,
                 unfocusedIndicatorColor = Color.Transparent,
                 disabledIndicatorColor = Color.Transparent,
             ),
-            enabled = !active,
         )
-        if (active) {
-            IconButton(onClick = onStop, colors = IconButtonDefaults.iconButtonColors(containerColor = Ink, contentColor = Color.White)) {
-                Box(Modifier.size(12.dp).background(Color.White, RoundedCornerShape(2.dp)))
-            }
-        } else {
-            IconButton(
-                onClick = { val t = text.trim(); if (t.isNotEmpty()) { onSend(t); text = "" } },
-                enabled = text.isNotBlank(),
-                colors = IconButtonDefaults.iconButtonColors(containerColor = Accent, contentColor = Color.White, disabledContainerColor = Line, disabledContentColor = Muted),
-            ) { Icon(Icons.AutoMirrored.Filled.Send, "发送", Modifier.size(20.dp)) }
-        }
+        IconButton(
+            onClick = {
+                val draft = text
+                val value = draft.trim()
+                if (value.isNotEmpty() && !sending) {
+                    if (retryText != value) { retryText = value; requestId = java.util.UUID.randomUUID().toString() }
+                    sending = true
+                    scope.launch {
+                        try {
+                            if (onSend(value, requestId)) {
+                                if (text == draft) text = ""
+                                retryText = ""
+                            }
+                        } finally { sending = false }
+                    }
+                }
+            },
+            enabled = text.isNotBlank() && !sending,
+            colors = IconButtonDefaults.iconButtonColors(containerColor = Accent, contentColor = Color.White, disabledContainerColor = Line, disabledContentColor = Muted),
+        ) { Icon(Icons.AutoMirrored.Filled.Send, "发送", Modifier.size(20.dp)) }
     }
 }

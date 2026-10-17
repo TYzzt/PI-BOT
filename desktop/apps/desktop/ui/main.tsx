@@ -46,11 +46,13 @@ function Login({ state }: { state: AccountState }) {
 }
 
 function botMood(bot: Bot, activity: LocalActivity | undefined, now: number): Mood {
+  if (bot.activity?.status && ['running', 'waiting_approval', 'queued'].includes(bot.activity.status)) return moodFor({ status: bot.activity.status, tool: bot.activity.tool });
   if (activity) return activity.mood;
   const run = bot.latest_run;
   return moodFor({ status: run?.status ?? null, finishedAt: run?.finished_at ? Date.parse(run.finished_at) : null, lastActiveAt: Date.parse(bot.last_active_at), now });
 }
 function statusLine(bot: Bot, mood: Mood, now: number) {
+  if (bot.activity?.summary) return bot.activity.summary;
   if (bot.pending_approvals.length) return '等你批准…';
   if (mood === 'thinking') return '思考中…';
   if (mood === 'working') return '工作中…';
@@ -137,7 +139,7 @@ function App() {
       else if (event.type === 'delta') setPages(p => {
         const page = p[event.bot_id];
         if (!page) return p;
-        return { ...p, [event.bot_id]: { ...page, messages: page.messages.map(m => (m.id === event.message_id ? { ...m, content: event.content } : m)) } };
+        return { ...p, [event.bot_id]: { ...page, messages: page.messages.map(m => (m.id === event.message_id && m.status === 'running' ? { ...m, content: event.content } : m)) } };
       });
       else if (event.type === 'activity') setActivities(a => { const next = { ...a }; if (event.activity) next[event.botId] = event.activity; else delete next[event.botId]; return next; });
     });

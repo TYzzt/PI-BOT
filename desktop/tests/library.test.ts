@@ -1,3 +1,4 @@
+import { withLibraryMutation } from "../packages/service/src/mutation-lock.js";
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, symlinkSync, writeFileSync, mkdirSync, existsSync, readFileSync, realpathSync } from 'node:fs';
@@ -115,4 +116,25 @@ test('phone previews list and read only inside the library', async () => {
     await assert.rejects(previewList(dir.path, 'bot', '..'), OutsideError);
     await assert.rejects(previewRead(dir.path, 'bot', '/etc/hosts'), OutsideError);
   } finally { dir.cleanup(); }
+});
+
+test('library mutations serialize across runs, abort queued waiters and release after failures', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const order: string[] = [];
+  let started!: () => void;
+  const running = new Promise<void>(resolve => { started = resolve; });
+  const first = withLibraryMutation('shared-test-library', undefined, async () => { order.push('first'); started(); await gate; order.push('first done'); });
+  const abort = new AbortController();
+  const cancelled = withLibraryMutation('shared-test-library', abort.signal, async () => { throw new Error('cancelled work ran'); });
+  const cancelledCheck = assert.rejects(cancelled, /CANCELLED/);
+  abort.abort();
+  const last = withLibraryMutation('shared-test-library', undefined, async () => { order.push('last'); });
+  await running;
+  assert.deepEqual(order, ['first']);
+  release();
+  await Promise.all([first, cancelledCheck, last]);
+  assert.deepEqual(order, ['first', 'first done', 'last']);
+  await assert.rejects(withLibraryMutation('shared-test-library', undefined, async () => { throw new Error('failed write'); }), /failed write/);
+  assert.equal(await withLibraryMutation('shared-test-library', undefined, async () => 'still works'), 'still works');
 });

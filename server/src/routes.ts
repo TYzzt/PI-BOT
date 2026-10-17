@@ -27,7 +27,7 @@ import {
   updateBot,
 } from "./bots.js";
 import { cancelRun, decideApproval, dispatchMac } from "./runs.js";
-import { cancelTask, createTask, readTask, reportLater, TERMINAL } from "./agents.js";
+import { cancelTask, createTask, readTask, reportLater, TERMINAL, listTasks, messageTask, callerRun } from "./agents.js";
 import { complete, findModel, proxyResponses, recordUsage } from "./llm.js";
 import type { WebSearch } from "./search.js";
 import { manageSkill, skillRequest } from "./skills.js";
@@ -171,7 +171,10 @@ export const routes: Route[] = [
     method: "POST", path: "/agent/tasks", auth: "llm", tag: "agents", summary: "智能体把任务委托给同一用户的另一个 Bot（短期智能体令牌）",
     body: z.object({
       run_id: uuid,
-      agent: z.string().trim().min(1).max(100),
+      agent: z.string().trim().min(1).max(100).optional(),
+      kind: z.enum(["background", "delegation"]).default("delegation"),
+      title: z.string().trim().min(1).max(80).optional(),
+      request_id: z.string().min(1).max(200).optional(),
       task: z.string().trim().min(1).max(8000),
       wait: z.boolean().default(true),
     }),
@@ -182,17 +185,46 @@ export const routes: Route[] = [
     },
   },
   {
+    method: "GET", path: "/agent/tasks", auth: "llm", tag: "agents", summary: "列出当前 Bot 的任务", internal: true,
+    query: z.object({ run_id: uuid }),
+    handler: async ({ tx, user, llm, query }) => listTasks(tx, user.user_id, llm!, query.run_id),
+  },
+  {
+    method: "POST", path: "/agent/tasks/:id/messages", auth: "llm", tag: "agents", summary: "向后台任务追加要求", internal: true,
+    body: z.object({ run_id: uuid, text: z.string().trim().min(1).max(8000), request_id: z.string().min(1).max(200) }),
+    handler: async ({ tx, user, llm, params, body }) => messageTask(tx, user.user_id, llm!, params.id, body),
+  },
+  {
+    method: "POST", path: "/agent/tasks/cancel", auth: "llm", tag: "agents", summary: "明确取消指定任务或全部任务", internal: true,
+    body: z.object({ run_id: uuid, task_id: uuid.optional(), all: z.boolean().default(false) }),
+    handler: async ({ tx, hub, user, llm, body, after }) => {
+      await callerRun(tx, user.user_id, llm!, body.run_id);
+      if (!body.task_id && !body.all) fail(422, "请指定 task_id 或明确 all=true");
+      const tasks = body.all ? await tx.rows("SELECT task_id FROM agent_tasks WHERE user_id=$1 AND (parent_bot_id=$2 OR target_bot_id=$2) AND status IN ('queued','running','waiting_approval') ORDER BY created_at", [user.user_id, llm!.bot]) : [{ task_id: body.task_id }];
+      const results = [];
+      for (const t of tasks) {
+        const { task, notify } = await cancelTask(tx, hub, user.user_id, llm!, t.task_id);
+        if (notify) after(() => notify.send({ type: "cancel", run_id: notify.runId }));
+        results.push(task);
+      }
+      return { tasks: results };
+    },
+  },
+  {
     method: "GET", path: "/agent/tasks/:id", auth: "llm", tag: "agents", summary: "查询委托；wait>0 时长轮询直到完成或超时（秒）",
-    query: z.object({ wait: z.coerce.number().int().min(0).max(30).default(0) }),
+    query: z.object({ wait: z.coerce.number().int().min(0).max(30).default(0), run_id: uuid.optional() }),
     tx: false,
-    handler: async ({ db, user, llm, params, query, reply }) => {
+    handler: async ({ db, s, user, llm, params, query, reply }) => {
       const deadline = Date.now() + query.wait * 1000;
       let closed = false;
       const onClose = () => void (closed = true);
       reply.raw.once("close", onClose);
       try {
         for (;;) {
-          const task = await db.tx((tx) => readTask(tx, user.user_id, llm!, params.id));
+          const task = await db.tx(async tx => {
+            if (query.run_id) await callerRun(tx, user.user_id, llm!, query.run_id);
+            return readTask(tx, user.user_id, llm!, params.id, s, query.wait > 0);
+          });
           if (TERMINAL.includes(task.status) || Date.now() >= deadline || closed) return task;
           await new Promise((r) => setTimeout(r, 500));
         }
@@ -211,7 +243,7 @@ export const routes: Route[] = [
   },
   {
     method: "POST", path: "/agent/tasks/:id/report", auth: "llm", tag: "agents", summary: "同步等待超时后改为完成后回报",
-    handler: async ({ tx, user, llm, params }) => reportLater(tx, user.user_id, llm!, params.id),
+    handler: async ({ tx, s, user, llm, params }) => reportLater(tx, user.user_id, llm!, params.id, s),
   },
   {
     method: "GET", path: "/health", auth: "none", tag: "system", summary: "健康检查",
@@ -509,7 +541,9 @@ export const routes: Route[] = [
       const m = await db.tx((tx) => tx.get("models", params.id, true));
       const started = Date.now();
       try {
-        const r = await complete(m, new Vault(s.vaultFile).open(m.secret, m.model_id), [{ role: "user", content: "Reply with OK." }], 16, 30000);
+        // Reasoning models spend the output budget on thinking before replying.
+        // Test with the configured budget, rather than truncating them at 16 tokens.
+        const r = await complete(m, new Vault(s.vaultFile).open(m.secret, m.model_id), [{ role: "user", content: "Reply with OK." }], m.max_tokens, 30000);
         await recordUsage(db, { sub: user.user_id, src: "test" }, m.model_id, r.usage);
         return { ok: true, latency_ms: Date.now() - started, reply: r.text.slice(0, 200) };
       } catch (e) {

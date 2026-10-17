@@ -22,10 +22,16 @@ export function signer(deviceId: string, privateKey: string): Signer {
 
 export function checkServerUrl(serverUrl: string) {
   const url = new URL(serverUrl);
-  const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
-  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && local)) throw new CloudNetworkError('服务器地址必须使用 HTTPS');
   if (url.username || url.password || url.search || url.hash) throw new CloudNetworkError('服务器地址格式不正确');
-  return url.href.replace(/\/+$/, '');
+  const normalized = url.href.replace(/\/+$/, '');
+  const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+  let configuredHttp = false;
+  if (process.env.PI_BOT_HTTP_SERVER_URL) {
+    try { configuredHttp = new URL(process.env.PI_BOT_HTTP_SERVER_URL).href.replace(/\/+$/, '') === normalized; }
+    catch { /* An invalid exception must not allow arbitrary HTTP servers. */ }
+  }
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && (local || configuredHttp))) throw new CloudNetworkError('服务器地址必须使用 HTTPS，HTTP 地址需在启动配置中明确指定');
+  return normalized;
 }
 
 // Only the server's short `detail` string is surfaced; bodies, headers and credentials never reach errors or logs.

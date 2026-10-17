@@ -31,8 +31,8 @@ Pi Bot 是多用户的个人 Bot 平台。每个用户有若干个 Bot，每个 
 | Bot | 属于一个用户：名字、人设、模型（为空则跟随默认模型）、形象（造型/颜色/深浅色）、资料库 `slug`。改名不改 `slug`；归档不删 Mac 上的文件 |
 | 主智能体 | 每个用户自动拥有一个 Pi Bot，使用默认橙色小人头像和默认模型，带星标置顶，不能归档；普通 Bot 和已有历史继续保留 |
 | 时间线 | 每个 Bot 一条，消息按 `seq` 递增。没有「会话」或「项目」 |
-| 运行（run） | 一条用户消息触发一次运行，执行者是 `mac` 或 `cloud`。同一个 Bot 同时只能有一个运行 |
-| 协作 | 一个 Bot 在运行中用 `ask_agent` 把任务委托给同一用户的另一个 Bot（`agent_tasks`）；委托作为一次普通运行出现在对方时间线上，可同步等结果或完成后回报 |
+| 运行（run） | 一条用户消息触发一次运行，执行者是 `mac` 或 `cloud`。每个 Bot 一个对话调度通道、最多两个同时执行的后台任务；超出的任务排队 |
+| 协作 | 一个 Bot 在运行中用 `ask_agent` 把任务委托给同一用户的另一个 Bot（`agent_tasks`）；委托作为目标 Bot 的私有后台运行执行，对话通道异步转交，后台任务可以同步等结果 |
 | 长期记忆 | 时间线超过阈值后，Worker 把较早的消息压缩成摘要（`bot_memories`），运行时作为系统提示的一部分 |
 | 审批 | Mac 上的 Bot 想访问资料库以外的路径时创建，用户在 Mac 或手机上批准/拒绝，默认 15 分钟过期 |
 | 模型 | 管理员配置的 Responses API 兼容模型（地址、服务商模型名、API Key、上下文长度），其中一个是默认模型 |
@@ -54,7 +54,7 @@ Pi Bot 是多用户的个人 Bot 平台。每个用户有若干个 Bot，每个 
 ### 进程
 
 - **API**（`server/src/main.ts`）：REST、WebSocket、模型代理、管理后台静态文件。**必须单副本**：Mac 的 `/ws/device` 连接、在线状态和文件 RPC 都在进程内存里（`hub.ts`）。数据库变更通过 `NOTIFY pibot_changes` 广播，API 收到后推送给该用户的订阅者。
-- **Worker**（`server/src/worker.ts`）：认领 `executor='cloud'` 的运行，签发代理令牌后交给 Runner 执行；每个 Worker 同时执行最多 `PI_BOT_WORKER_CONCURRENCY`（默认 4）个运行，同步委托的父运行和子运行可以同时进行；带租约，Worker 崩溃后超时的运行标为失败。同时负责长期记忆压缩。
+- **Worker**（`server/src/worker.ts`）：认领 `executor='cloud'` 的运行，签发代理令牌后交给 Runner 执行；每个 Worker 提供 `PI_BOT_WORKER_CONCURRENCY`（默认 4）个后台名额和独立的 `PI_BOT_CONVERSATION_CONCURRENCY`（默认 4）个对话名额；同步等待的父运行释放后台名额，取得名额后才恢复；带租约，Worker 崩溃后超时的运行标为失败。同时负责长期记忆压缩。
 - **Runner**（`server/src/runner.ts`）：无数据库、无 vault，只接受带 `PI_BOT_RUNNER_TOKEN` 的请求，用 `createBotAgent` 跑一次运行；工具只有 `web_search`（API 配置了 SearXNG 或 Tavily 时）和 `ask_agent`（可以委托时），都通过短期智能体令牌调用 API（`/web/search`、`/agent/tasks`），不接触搜索来源密钥。容器只读根文件系统、去掉全部 capabilities。
 
 ### 数据
@@ -80,41 +80,48 @@ Pi Bot 是多用户的个人 Bot 平台。每个用户有若干个 Bot，每个 
 ### 实时事件
 
 - `/ws/events?token=`：连接后先收到 `{type:'hello', mac_online}`，之后是 `{type:'event', event}`，`event.type` 为 `delta`（流式文本）、`bot`（某个 Bot 变了，重新拉详情）、`bots`（列表变了）、`presence`（Mac 上下线）。
-- `/ws/device`：握手带设备签名。云端下发 `run`、`cancel`、`approval`、`approval_created`、`rpc`，以及与手机相同的变更事件；Mac 回传 `run_event` 和 `rpc_result`。同一用户的新连接会以 4409 关闭旧连接。
+- `/ws/device`：握手带设备签名。云端下发 `run`、`cancel`、`task_message`、`approval`、`approval_created`、`rpc`，以及与手机相同的变更事件；Mac 回传 `run_event` 和 `rpc_result`。同一用户的新连接会以 4409 关闭旧连接。
 
 ## 运行路由
 
 用户发消息（`POST /bots/:id/messages`，带 `request_id` 幂等）时，API 在同一事务里写入用户消息、空的助手消息和运行：
 
-- **Mac 在线**：`executor='mac'`，事务提交后经 `/ws/device` 下发 `run`，内容包括 Bot 信息、模型、系统提示（人设 + 长期记忆 + 资料库位置）、最近的历史和本条消息。如果下发时 Mac 刚好掉线，运行改为云端执行。
+- **Mac 在线**：`executor='mac'`，事务提交后经 `/ws/device` 下发 `run`，内容包括 Bot 信息、模型、系统提示（人设 + 长期记忆 + 资料库位置）、最近的历史和本条消息。如果下发时 Mac 刚好掉线，尚未开始的对话改为云端执行。
 - **Mac 离线**：`executor='cloud'`，Worker 认领后交给 Runner。系统提示会告诉模型 Mac 离线、看不到资料库。
 
-Mac 回传的 `run_event`：`started`、`text`（完整文本，API 每秒最多落库一次并推送 `delta`）、`progress`（最多三句简短进度）、`tool`（工具名、状态、一行摘要）、`approval`、`done`。
+Mac 回传的 `run_event`：`started`、`instruction_ack`、`text`（完整文本，API 每秒最多落库一次并推送 `delta`）、`progress`（最多三句简短进度）、`tool`（工具名、状态、一行摘要）、`approval`、`done`。
 
 `0002-message-progress.sql` 为消息增加 `progress` 数组。发送消息时先保存一句简短回应，随发送结果立即返回；Agent 生成具体开场后替换这句回应，将工具调用前的自然语言说明与最终回答分开；Mac 和云端都保存进度并通知客户端刷新。聊天页隐藏工具执行标签，在回答上方保留开头及关键转折的两三句进度，工具记录继续用于运行状态和角色表情。
 
-- **停止**：`POST /runs/:id/cancel`。Mac 运行转发 `cancel` 给 Mac；排队中的云端运行直接取消，执行中的由 Worker 检测后中止 Runner。
-- **Mac 中途掉线**：它的运行全部标为失败，保留已生成的文本，提示「Mac 已离线，可重新发送（将在云端运行）」。API 重启后，残留的 Mac 运行同样标为失败。
+- **取消**：通过聊天中的 `cancel_task` 精确取消任务或全部任务；两端输入框始终保留发送按钮。底层仍保留 `POST /runs/:id/cancel`。Mac 运行转发 `cancel` 给 Mac；排队中的云端运行直接取消，执行中的由 Worker 检测后中止 Runner。
+- **Mac 中途掉线**：已开始的本机运行标为失败，排队对话转到云端，保留已生成的文本，提示「Mac 已离线，可重新发送（将在云端运行）」。API 重启后，残留的 Mac 运行同样标为失败。
 - **审批**：Mac 发 `approval` → API 创建审批、运行变为 `waiting_approval`、回 `approval_created` → 用户 `POST /approvals/:id` → API 把决定下发给 Mac → 运行继续。过期或重复决定返回 409。
 - **资料库浏览**：`GET /bots/:id/files?path=`、`/files/content?path=` 经 `rpc` 转给 Mac，Mac 离线返回 503，超时返回 504。
 
-## 智能体协作
+## 异步对话与后台任务
 
-运行上下文带 `agents_enabled`；可以委托时，系统提示列出同一用户的其他 Bot（名字和人设前 160 字，最多 20 个），并说明何时委托、任务要自包含。工具 `ask_agent({ agent, task, wait })`（`packages/agent/src/ask-agent.ts`）在 Mac 和云端都可用，用运行自己的短期智能体令牌调用 API：
+每个 Bot 有一个对话调度通道和独立的后台执行器，全部使用同一套 Pi SDK。对话只回答、安排任务和整理结果；搜索、文件操作、命令与复杂工作在独立任务会话里完成。用户消息持久化后立即接受，运行期间继续发送不返回忙碌 409。用户回合优先于内部回报；对话回合最长 60 秒，模型异常不会无限占住入口。
 
-| 接口 | 作用 |
+`0007-async-tasks.sql` 为 `bot_runs` 增加 `lane`（`conversation` / `task`）和 `waiting_on_task_id`，用仅约束正在执行的对话的唯一索引替换旧的单运行索引。数据库在 Bot 锁内统一认领，Mac 与多副本 Worker 共用每 Bot 两个后台名额。`agent_tasks.kind` 区分 `background`（自己的任务，深度 0）与 `delegation`；任务不依附于一次短对话的存活时间。
+
+对话工具均即时返回，不等待工作完成：
+
+| 工具 | 行为 |
 |---|---|
-| `POST /agent/tasks` | 校验令牌的 Bot、执行端、设备与运行一致且运行进行中，按名字或 ID 找到目标，写入 `agent_tasks`；目标空闲就立即在目标时间线写入 `from_bot_id=发起方` 的消息并创建 `origin='agent'` 的运行（执行端照常选 Mac 或云端），否则排队 |
-| `GET /agent/tasks/:id?wait=` | 长轮询，任务结束或超时返回 `{status, result, error}` |
-| `POST /agent/tasks/:id/report` | 同步等待超过 10 分钟后改为完成后回报 |
-| `POST /agent/tasks/:id/cancel` | 发起方的工具被中止时取消任务 |
+| `start_task({title, task})` | 自包含描述和相关上下文；返回任务 ID；同一工具调用幂等 |
+| `task_status({task_id?})` | 查询本 Bot 发起或执行的任务；返回状态、最近活动、更新时间和已完成结果；不代表外部服务的实时进度 |
+| `task_message({task_id, text})` | 持久化补充指令；排队时进入初始提示，运行中经 Mac `task_message` 或 Runner `/runs/:id/messages` 送入 Pi `steer`，当前工具完成后生效；终态返回 `finished`，由对话建立后续任务 |
+| `cancel_task({task_id?, all?})` | 用户明确要求时取消指定任务或全部任务；指代不清且有多个任务时先澄清 |
 
-- **同步（`wait=true`）**：工具长轮询到对方运行结束，把结果（最多 20KB）交回模型，发起方在同一次运行里继续回答。
-- **回报（`wait=false`）**：工具立即返回，发起方本次运行正常结束；对方完成后，API 进程里的 `AgentDispatcher` 等发起方空闲，在它的时间线写入 `from_bot_id=对方` 的回报消息并创建 `origin='report'` 的运行，让发起方把结果转告用户。
-- **规则**：委托链最多 2 层（用户 → A → B → C，C 不再有 `ask_agent`）；不能委托给自己或链上的祖先；不能同步等待一个正在（间接）等自己的 Bot；被委托的运行只能同步委托；每次运行最多 5 个委托。违反时返回中文说明，模型可据此改为自己完成。
-- **排队与级联**：目标 Bot 忙时任务停在 `queued`，`AgentDispatcher`（收到 `pibot_changes` 时和每 5 秒）在目标空闲后启动。子运行结束时把结果写回任务；发起方运行取消或失败时，未完成的委托逐层取消（Mac 上的子运行由 `AgentDispatcher` 转发 `cancel`）。
-- **展示**：消息带 `from_bot`（`{id, name, avatar, kind: task | report}`），回复带 `agent_tasks`（交给了谁、状态、模式）；客户端据此显示「来自 X 的委托」「X 的回报」和「交给了 X」标签，点击打开对方时间线。`ask_agent` 运行时角色表情为等待。
-- 每个 Bot 仍只读写自己的资料库，委托只传文本；对方在结果里给出文件路径。
+以上工具扩展内部 `/agent/tasks` 系列接口。创建和补充使用调用 ID 去重；Mac 确认 `instruction_ack` 后标为已送达，Runner 用指令 ID 去重并确认；失败的传输由 dispatcher 重试。令牌校验用户、Bot、执行端与设备，只有相关 Bot 能读取和操作任务。
+
+后台的消息范围为 `task`，回报输入为 `internal`，普通聊天和最终回报为 `public`。消息分页、列表预览、模型公开对话历史、记忆压缩只选公开消息；内部记录不广播 `delta`。任务结束后持久化 `report_run_id` 与幂等 `report:<task_id>` 运行，在时间线末尾新增整理后的结果；内部回报不伪装成用户消息，最终 A2UI 随公开结果发布。恢复 dispatcher 不会重复创建回报。
+
+跨 Bot 的 `ask_agent` 保留：对话通道强制异步；后台可同步委托。委托链最多两层、禁止循环和互相等待，每次运行最多五个任务；自己的后台任务不增加委托深度。等待父运行释放名额，依赖完成后重新取得 Bot 和 Worker 名额才返回工具结果。只有明确取消任务才级联取消其子任务；对话失败不会取消已交出的工作。
+
+同一资料库的 `write_file`、`edit_file`、`run_command` 共用可取消的 FIFO 锁；审批不持锁。运行仍各自持有沙箱和批准范围。Mac 已开始的工作中断后标为失败并回报，不自动重放可能有副作用的操作；云端仍不具备本机文件和命令能力。
+
+两端使用 `active_tasks` 和 `activity` 聚合活动，而非仅看 `latest_run`。界面保留自然语言开场、另发的结果和小人旁一句状态，多任务显示数量，不增加任务面板；其他任务运行不禁用已完成消息的 A2UI。用户随时可以聊天查询、补充或取消。
 
 ## 私有 skills
 
@@ -195,3 +202,7 @@ Agent 可以通过 `get_ui_catalog` 查询组件 / 函数，并用 `show_ui` 在
 `POST /bots/:id/messages/:messageId/ui-state` 按 revision 保存输入；冲突返回 409。`POST /bots/:id/messages/:messageId/ui-actions` 验证已发布按钮与表单校验，从当前数据重新解析操作参数，再通过原有消息 / 任务路径交给 Bot，request_id 保证重试幂等。跨端更新沿用已有 bot 事件，客户端重新加载消息。
 
 可读的操作描述展示在聊天中；完整操作保存在 `ui_action`，只注入 Agent 上下文。动作不会绕过文件 / 命令审批。表单、计算、图表、表格和布局由目录里的可信组件 / 函数组合，Agent 不生成可执行页面代码。
+
+## 异步模式升级
+
+先结束旧运行，停止旧 API/Worker/Runner，再更新 API、Worker、Runner、Mac 与 Android；启动时自动应用 `0007-async-tasks`。不要让旧执行器连接新调度器。部署过程与回滚前先确认无活动任务；旧版本的单运行索引不兼容并行数据。数据库是队列、状态、补充指令和回报的持久来源，原有历史保持公开。

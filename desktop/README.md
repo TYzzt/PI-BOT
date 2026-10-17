@@ -18,7 +18,13 @@ npm run desktop:dev
 
 `npm run dev` 先构建 Swift Keychain helper、本地服务和 UI，再启动独立服务进程和 Electron。修改源码后重新执行。
 
-开发启动时登录页默认服务器为 `http://localhost:8000`，可用 `PI_BOT_SERVER_URL` 覆盖；打包应用默认使用 `https://aicloud-app.lenovo.com.cn/pibot`（只有 localhost 允许 HTTP）。
+开发启动时登录页默认服务器为 `http://localhost:8000`，可用 `PI_BOT_SERVER_URL` 覆盖；打包应用默认使用 `https://aicloud-app.lenovo.com.cn/pibot`。公网地址默认要求 HTTPS；首次部署使用 IP + HTTP 验证时，可在启动进程中用 `PI_BOT_HTTP_SERVER_URL` 明确允许一个完整后端地址，其他公网 HTTP 地址仍会被拒绝。每次启动都需要该配置。
+
+```sh
+PI_BOT_SERVER_URL=http://服务器IP:8000 \
+PI_BOT_HTTP_SERVER_URL=http://服务器IP:8000 \
+npm run desktop:dev
+```
 
 ## 使用
 
@@ -65,3 +71,5 @@ npm run pack:mac --workspace=pi-bot-desktop  # 生成 Pi Bot.app / dmg
 应用图标由 `scripts/build-icon.ts` 从共享 Bot 绘制代码生成，Dock、安装包和主智能体均使用默认橙色小人。登录后，Pi Bot 主智能体自动固定在列表顶部，其他 Bot 按最近活动排序。
 
 A2UI 交互工具直接显示在时间线里，支持表单、实时计算、联动图表和表格。输入会保存，提交后 Bot 继续工作；组件和协议由 `packages/a2ui` 与 Android 共用。
+
+异步任务模式：对话持续接话，每个 Bot 最多并行执行两个后台任务，其余排队；用聊天查询进度、补充要求或取消，结果完成后另发。两端需与 API、Worker、Runner 同步升级，服务端自动应用 `0007-async-tasks`；升级前结束旧运行。详情见 [整体架构](ARCHITECTURE.md)。
