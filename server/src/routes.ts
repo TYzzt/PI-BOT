@@ -33,6 +33,7 @@ import type { WebSearch } from "./search.js";
 import { manageSkill, skillRequest } from "./skills.js";
 
 import {saveUiState,submitUiAction} from "./ui.js";
+import { manageMemory, memoryRequest, searchHistory, directory, checkpoint, checkpointSchema, resumeTask } from "./memory.js";
 
 export type Auth = "none" | "user" | "admin" | "device" | "actor" | "llm";
 export interface Context {
@@ -149,6 +150,19 @@ async function deviceFiles(ctx: Context, method: "list" | "read") {
 }
 
 export const routes: Route[] = [
+  {method:"POST",path:"/agent/memory",auth:"llm",tag:"memory",summary:"当前 Bot 的私有记忆",internal:true,body:memoryRequest,
+    handler:async({tx,user,llm,body})=>manageMemory(tx,user.user_id,llm!,body)},
+  {method:"POST",path:"/agent/history/search",auth:"llm",tag:"memory",summary:"检索当前 Bot 历史",internal:true,
+    body:z.object({run_id:uuid,query:z.string().max(200)}).strict(),handler:async({tx,user,llm,body})=>searchHistory(tx,user.user_id,llm!,body.run_id,body.query)},
+  {method:"POST",path:"/agent/directory",auth:"llm",tag:"agents",summary:"搜索协作者知识目录",internal:true,
+    body:z.object({run_id:uuid,query:z.string().max(200).default("")}).strict(),handler:async({tx,user,llm,body})=>{
+      const run=await callerRun(tx,user.user_id,llm!,body.run_id);return {agents:await directory(tx,user.user_id,run.bot_id,body.query)};}},
+  {method:"POST",path:"/agent/checkpoint",auth:"llm",tag:"agents",summary:"保存当前任务检查点",internal:true,
+    body:z.object({run_id:uuid,checkpoint:checkpointSchema,expected_version:z.number().int().min(0)}).strict(),
+    handler:async({tx,user,llm,body})=>checkpoint(tx,user.user_id,llm!,body.run_id,body.checkpoint,body.expected_version)},
+  {method:"POST",path:"/agent/tasks/resume",auth:"llm",tag:"agents",summary:"用户要求后续接已结束任务",internal:true,
+    body:z.object({run_id:uuid,task_id:uuid,request_id:z.string().min(1).max(200),text:z.string().max(8000).optional()}).strict(),
+    handler:async({tx,db,s,hub,user,llm,body,after})=>{const r=await resumeTask(tx,hub,user.user_id,llm!,body);if(r.run?.executor==="mac") after(()=>dispatchMac(db,s,hub,r.run!.run_id));return r.task;}},
   {
     method: "POST", path: "/agent/skills", auth: "llm", tag: "skills", summary: "智能体私有能力管理",
     internal: true,
@@ -421,12 +435,20 @@ export const routes: Route[] = [
       stream: z.boolean().optional(),
     }).passthrough(),
     tx: false,
-    handler: async ({ db, s, llm, body, reply }) => {
+    handler: async ({ db, s, llm, body, reply,req }) => {
       const model = await db.tx((tx) => findModel(tx, body.model));
+      let correlation: {run:Row;generationId?:string;parentTool?:string}|undefined;
+      if(req.headers['x-pibot-run-id']){
+        const fields=z.object({runId:uuid,generationId:uuid,parentTool:z.string().max(200).optional()}).safeParse({runId:req.headers['x-pibot-run-id'],generationId:req.headers['x-pibot-generation-id'],parentTool:req.headers['x-pibot-parent-tool-id']});
+        if(!fields.success)fail(422,'运行关联头无效');
+        const {runId,generationId,parentTool}=fields.data!;
+        const run=await db.tx(tx=>callerRun(tx,llm!.sub,llm!,runId));
+        correlation={run,generationId,parentTool};
+      }
       const abort = new AbortController();
       const onClose = () => abort.abort();
       reply.raw.once("close", onClose);
-      try { await proxyResponses(db, s, llm!, model, body, reply, abort.signal); }
+      try { await proxyResponses(db, s, llm!, model, body, reply, abort.signal,correlation); }
       finally { reply.raw.off("close", onClose); }
       return reply;
     },

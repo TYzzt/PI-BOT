@@ -54,6 +54,10 @@ class DeploymentComposeTest(unittest.TestCase):
                 "-f", str(SCRIPT.with_name("compose.yml")), "config", "--format", "json",
             ], check=True, capture_output=True)
             services = json.loads(result.stdout)["services"]
+            for key in ["LANGFUSE_BASE_URL", "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY"]:
+                self.assertIn(key, services["worker"]["environment"])
+                for service in ["api", "runner"]:
+                    self.assertNotIn(key, services[service]["environment"])
             self.assertEqual(services["runner"]["tmpfs"], ["/tmp:rw,nosuid,nodev"])
             self.assertTrue(services["runner"]["read_only"])
             self.assertEqual(services["api"]["ports"][0]["published"], "8000")

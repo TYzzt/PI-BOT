@@ -27,6 +27,11 @@ if not env.exists():
         "PI_BOT_VAULT_KEY_ID": str(uuid.uuid4()),
         "PI_BOT_VAULT_KEY": base64.b64encode(secrets.token_bytes(32)).decode(),
         "PI_BOT_WORKER_CONCURRENCY": "2",
+        "LANGFUSE_TRACING_ENABLED": "false",
+        "LANGFUSE_BASE_URL": "",
+        "LANGFUSE_PUBLIC_KEY": "",
+        "LANGFUSE_SECRET_KEY": "",
+        "LANGFUSE_TRACING_ENVIRONMENT": "production",
     }
     fd = os.open(env, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w") as out:
@@ -37,6 +42,15 @@ else:
         raise SystemExit(".env must be a regular file")
     values = dict(line.split("=", 1) for line in env.read_text().splitlines() if line and not line.startswith("#"))
     env.chmod(0o600)
+
+# Add new optional settings without replacing existing deployment credentials.
+defaults = {"LANGFUSE_TRACING_ENABLED": "false", "LANGFUSE_BASE_URL": "", "LANGFUSE_PUBLIC_KEY": "", "LANGFUSE_SECRET_KEY": "", "LANGFUSE_TRACING_ENVIRONMENT": "production"}
+missing = {key: value for key, value in defaults.items() if key not in values}
+if missing:
+    with env.open("a") as out:
+        out.write("\n# Cloud Worker observability\n")
+        out.writelines(f"{key}={value}\n" for key, value in missing.items())
+    values.update(missing)
 
 key_id = str(uuid.UUID(values["PI_BOT_VAULT_KEY_ID"]))
 if len(base64.b64decode(values["PI_BOT_VAULT_KEY"], validate=True)) != 32:

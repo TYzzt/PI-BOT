@@ -14,6 +14,9 @@ import {
 } from "@earendil-works/pi-ai";
 import { TASK_TOOL_NAMES } from "./tasks.js";
 import { isInternalTool, SKILL_TOOLS, skillsExtension, type SkillOptions } from "./skills.js";
+import { memoryExtension, MEMORY_TOOLS, type MemoryOptions } from "./hermes-memory/extension.js";
+import { observationExtension, type Observation } from "./observations.js";
+export type { Observation } from "./observations.js";
 
 /**
  * A model reachable through the Pi Bot model proxy. `modelId` is the Pi Bot
@@ -46,6 +49,9 @@ export interface BotAgentOptions {
   agentDir: string;
   systemPrompt: string;
   history: HistoryMessage[];
+  memory?: MemoryOptions;
+  runId?:string;
+  onObservation?:(event:Observation)=>void;
   tools: ToolDefinition[];
   /** Private skills are scoped by the authenticated run, never by model input. */
   skills?: SkillOptions;
@@ -261,11 +267,11 @@ export const createBotAgent: AgentFactory = async (o) => {
     cwd: o.cwd, agentDir: o.agentDir, settingsManager, systemPrompt: o.systemPrompt,
     noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
     appendSystemPromptOverride: () => [],
-    extensionFactories: o.skills ? [{ name: "bot-skills", factory: skillsExtension(o.skills) }] : [],
+    extensionFactories: [...(o.skills ? [{ name: "bot-skills", factory: skillsExtension(o.skills) }] : []),...(o.memory?[{name:"bot-memory",factory:memoryExtension(o.memory)}]:[]),...(o.runId?[{name:"bot-observation",factory:observationExtension(o.runId,o.onObservation)}]:[])],
   });
   await resourceLoader.reload();
   if (resourceLoader.getExtensions().errors.length) throw new Error("内部能力插件加载失败");
-  const allowed = new Set([...o.tools.map(t => t.name), ...(o.skills ? SKILL_TOOLS : [])]);
+  const allowed = new Set([...o.tools.map(t => t.name), ...(o.skills ? SKILL_TOOLS : []),...(o.memory?MEMORY_TOOLS.filter(n=>n!== (o.memory!.lane==="task"?"resume_task":"task_checkpoint")):[])]);
   const { session } = await createAgentSession({
     cwd: o.cwd,
     agentDir: o.agentDir,

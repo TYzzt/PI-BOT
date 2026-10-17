@@ -7,6 +7,9 @@ import { modelMessageContent, buildContext, finishRun, markRunning, recordTool, 
 import { complete, recordUsage } from "./llm.js";
 
 import { claimExecution } from "./scheduling.js";
+import { maintainMemory } from "./memory-maintenance.js";
+import { ObservationExporter } from "./langfuse-exporter.js";
+import { recordObservation } from "./observations.js";
 import {recordUi} from "./ui.js";
 
 const RUN_LIMIT_MS = 30 * 60 * 1000;
@@ -18,13 +21,16 @@ const RUN_LIMIT_MS = 30 * 60 * 1000;
 export class Worker {
   readonly id = randomUUID();
   private stopped = false;
+  private exporter:ObservationExporter;
   private controllers = new Set<AbortController>();
   private running = new Set<Promise<void>>();
   private compacting?: Promise<unknown>;
+  private lastExport=0;
   constructor(
     readonly db: Database,
     readonly s: Settings,
   ) {
+    this.exporter=new ObservationExporter(db,s);
     if (!s.runnerToken || s.runnerToken.length < 32) throw new Error("需要配置 PI_BOT_RUNNER_TOKEN（至少 32 字符）");
   }
   stop() {
@@ -131,6 +137,9 @@ export class Worker {
                 await tx.notify(r.lane === "task" ? { user_id: r.user_id, bot_id: r.bot_id } : { user_id: r.user_id, bot_id: r.bot_id, message_id: r.assistant_message_id, content });
               });
             }
+          } else if(e.type === "observation") {
+            const {type,...observation}=e;
+            await this.db.tx(async tx=>{const r=await tx.get("bot_runs",job.run_id);if(ours(r))await recordObservation(tx,r,observation,this.s.tracingEnabled);}).catch(()=>{});
           } else if (e.type === "instruction_ack") {
             await this.db.tx(tx => tx.rows("UPDATE agent_task_instructions SET delivered_at=now() WHERE task_id=$1 AND instruction_id=$2", [owner.task_id, e.id]));
           } else if (e.type === "ui") {
@@ -180,67 +189,14 @@ export class Worker {
       });
   }
 
-  /** Folds old messages into the bot's long-term summary once the tail grows past the threshold. */
   async compactOnce(): Promise<boolean> {
-    const job = await this.db.tx(async (tx) => {
-      const b = await tx.one(
-        `SELECT b.*, coalesce(m.through_seq,0) AS through_seq, coalesce(m.summary,'') AS summary FROM bots b
-         LEFT JOIN bot_memories m USING(bot_id)
-         WHERE b.archived_at IS NULL AND b.next_seq - 1 - coalesce(m.through_seq,0) > $1
-           AND NOT EXISTS (SELECT 1 FROM bot_runs r WHERE r.bot_id=b.bot_id AND r.status IN ('queued','running','waiting_approval'))
-         ORDER BY b.last_active_at DESC LIMIT 1 FOR UPDATE OF b SKIP LOCKED`,
-        [this.s.memoryThreshold],
-      );
-      if (!b) return null;
-      const until = b.next_seq - 1 - Math.min(20, Math.floor(this.s.memoryThreshold / 2));
-      const messages = await tx.rows(
-        "SELECT seq, role, content, ui_action FROM bot_messages WHERE bot_id=$1 AND seq>$2 AND seq<=$3 AND visibility='public' AND content<>'' AND status IN ('completed','cancelled') ORDER BY seq",
-        [b.bot_id, b.through_seq, until],
-      );
-      const model = await resolveModel(tx, b);
-      if (!model) return null;
-      // Mark progress first so a failing provider cannot make this bot block the queue.
-      await tx.rows(
-        `INSERT INTO bot_memories(bot_id, summary, through_seq, updated_at) VALUES($1,$2,$3,now())
-         ON CONFLICT (bot_id) DO UPDATE SET through_seq=EXCLUDED.through_seq, updated_at=now()`,
-        [b.bot_id, b.summary, until],
-      );
-      return { bot: b, messages, model, until };
-    });
-    if (!job) return false;
-    const transcript = job.messages
-      .map((m) => `${m.role === "user" ? "用户" : job.bot.name}：${modelMessageContent(m).slice(0, 4000)}`)
-      .join("\n\n")
-      .slice(-job.model.context_window * 2);
-    try {
-      const key = new Vault(this.s.vaultFile).open(job.model.secret, job.model.model_id);
-      const r = await complete(
-        job.model,
-        key,
-        [
-          {
-            role: "system",
-            content: "你负责维护一个智能体的长期记忆。把旧记忆和新增对话合并成简洁的中文要点：用户偏好、身份与背景、进行中的事项、已完成的结论、资料库中重要文件。删除寒暄和过时信息，不超过 1500 字。只输出记忆正文。",
-          },
-          { role: "user", content: `旧记忆：\n${job.bot.summary || "（无）"}\n\n新增对话：\n${transcript}` },
-        ],
-        2000,
-        120000,
-      );
-      await recordUsage(this.db, { sub: job.bot.user_id, src: "memory", bot: job.bot.bot_id }, job.model.model_id, r.usage);
-      if (r.text.trim())
-        await this.db.tx((tx) =>
-          tx.rows("UPDATE bot_memories SET summary=$2, updated_at=now() WHERE bot_id=$1 AND through_seq=$3", [job.bot.bot_id, r.text.trim().slice(0, 8000), job.until]),
-        );
-    } catch {
-      console.error("memory compaction failed");
-    }
-    return true;
+    return maintainMemory(this.db,this.s,this.id);
   }
 
   async runForever() {
     while (!this.stopped) {
       try {
+        if(Date.now()-this.lastExport>=1000){this.lastExport=Date.now();void this.exporter.flush();}
         {
           const job = await this.claim();
           if (job) {
@@ -251,7 +207,7 @@ export class Worker {
             continue;
           }
         }
-        if (!this.compacting) this.compacting = this.compactOnce()
+        if (!this.compacting) this.compacting = this.compactOnce().then(did=>did||maintainMemory(this.db,this.s,this.id,true))
           .catch(() => {}).finally(() => { this.compacting = undefined; });
       } catch {
         console.error("cloud worker cycle failed");
@@ -259,6 +215,7 @@ export class Worker {
       await new Promise((resolve) => setTimeout(resolve, this.s.pollSeconds * 1000));
     }
     await Promise.all([...this.running, this.compacting]);
+    await this.exporter.shutdown();
   }
 }
 

@@ -59,6 +59,10 @@ export async function mockProvider() {
     const skill = SKILLS[last];
     const answer = (() => {
       if (last === "纯交互界面链路测试" && toolDone) return "";
+      if(text(input[0]?.content).includes('维护私有记忆')) {
+        const source=last.match(/\[([0-9a-f-]{36})\]/)?.[1];
+        return JSON.stringify({memories:source?[{content:'用户喜欢蓝鲸。',kind:'fact',source_message_id:source}]:[],topics:['海洋知识']});
+      }
       if (last.includes("新增对话")) return "用户喜欢蓝鲸。";
       if (skill && toolDone) return "已按方法完成任务。";
       if (last.includes("你收到来自智能体")) return "委托结果：周报写好了";

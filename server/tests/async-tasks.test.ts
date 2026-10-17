@@ -206,6 +206,9 @@ test("task endpoints validate run identity, user and bot ownership, and durable 
   await eventually(() => jobs.has("D"));
   jobs.get("D")!.finish("D completed after control failed");
   await eventually(async () => (await db.tx(tx => tx.get("agent_tasks", created.data.id))).status === "completed");
+  // Drain the asynchronous report before the next test attaches a manual Mac executor.
+  const report = await eventually(async () => (await db.tx(tx => tx.get("agent_tasks", created.data.id))).report_run_id);
+  await settled(report);
 });
 
 test("Mac task events remain private, queued dialogue survives disconnect, and interrupted work is reported without re-executing", { skip }, async () => {

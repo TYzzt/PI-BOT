@@ -9,7 +9,7 @@ export async function claimExecution(tx: Tx, id: string, s: Settings, workerId?:
   if (!candidate || candidate.status !== "queued") return null;
   const bot = await tx.one("SELECT * FROM bots WHERE bot_id=$1 FOR NO KEY UPDATE SKIP LOCKED", [candidate.bot_id]);
   if (!bot || bot.archived_at) return null;
-  const run = await tx.one("SELECT * FROM bot_runs WHERE run_id=$1 AND status='queued' FOR UPDATE SKIP LOCKED", [id]);
+  const run = await tx.one("SELECT * FROM bot_runs WHERE run_id=$1 AND status='queued' FOR NO KEY UPDATE SKIP LOCKED", [id]);
   if (!run || run.cancel_requested || (workerId ? run.executor !== "cloud" : run.executor !== "mac")) return null;
   const { n } = (await tx.one(`SELECT count(*) AS n FROM bot_runs
     WHERE bot_id=$1 AND lane=$2 AND status IN ('running','waiting_approval') AND waiting_on_task_id IS NULL`, [run.bot_id, run.lane]))!;

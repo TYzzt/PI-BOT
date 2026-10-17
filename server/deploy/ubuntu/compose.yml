@@ -8,6 +8,7 @@ x-app: &app
     options: {max-size: "10m", max-file: "3"}
 
 x-env: &env
+  LANGFUSE_TRACING_ENABLED: ${LANGFUSE_TRACING_ENABLED:-false}
   NODE_ENV: production
   NODE_OPTIONS: --max-old-space-size=192
   PI_BOT_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
@@ -54,6 +55,10 @@ services:
     command: [node, server/dist/worker.mjs]
     environment:
       <<: *env
+      LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_TRACING_ENVIRONMENT: ${LANGFUSE_TRACING_ENVIRONMENT:-production}
       PI_BOT_INTERNAL_URL: http://api:8000
       PI_BOT_RUNNER_URL: http://runner:8001
       PI_BOT_RUNNER_TOKEN: ${PI_BOT_RUNNER_TOKEN}

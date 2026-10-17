@@ -13,6 +13,7 @@ const integer = (
     .parse(value ?? fallback);
 export function settings(env = process.env) {
   return {
+    tracingEnabled: /^(true|1|yes)$/i.test(env.LANGFUSE_TRACING_ENABLED ?? "false"),
     databaseUrl: z.string().min(1).parse(env.PI_BOT_DATABASE_URL),
     adminUsername: z
       .string()

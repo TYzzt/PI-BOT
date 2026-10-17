@@ -18,6 +18,7 @@ export interface RunContext {
   search_enabled?: boolean;
   agents_enabled?: boolean;
   skills?: SkillSummary[];
+  memory_context?:string;task_id?:string;checkpoint_version?:number;observation_enabled?:boolean;
 }
 export interface ExecutorDeps {
   libraryRoot: string;
@@ -100,6 +101,9 @@ export class Executor {
         history: run.history,
         tools,
         skills: { baseUrl: api, token: () => token, runId: run.run_id, catalog: run.skills ?? [] },
+        runId:run.run_id,
+        memory:{baseUrl:api,token:()=>token,runId:run.run_id,lane:run.lane??'task',context:run.memory_context??'',taskId:run.task_id,checkpointVersion:run.checkpoint_version},
+        onObservation:run.observation_enabled?e=>event({kind:'observation',...e}):undefined,
         onTool,
         onProgress: lines => {
           clearTimeout(pendingText); pendingText = undefined;

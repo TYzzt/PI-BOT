@@ -19,6 +19,7 @@ services:
       context: ..
       dockerfile: server/Dockerfile
     environment: &server-env
+      LANGFUSE_TRACING_ENABLED: ${LANGFUSE_TRACING_ENABLED:-false}
       PI_BOT_DATABASE_URL: postgresql://pibot:pibot@postgres:5432/pibot
       PI_BOT_ADMIN_USERNAME: ${PI_BOT_ADMIN_USERNAME:-admin}
       PI_BOT_ADMIN_PASSWORD: ${PI_BOT_ADMIN_PASSWORD:?set PI_BOT_ADMIN_PASSWORD}
@@ -45,6 +46,10 @@ services:
     command: ["node", "server/dist/worker.mjs"]
     environment:
       <<: *server-env
+      LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_TRACING_ENVIRONMENT: ${LANGFUSE_TRACING_ENVIRONMENT:-production}
       PI_BOT_INTERNAL_URL: http://api:8000
       PI_BOT_RUNNER_URL: http://runner:8001
       PI_BOT_RUNNER_TOKEN: ${PI_BOT_RUNNER_TOKEN:?set a random runner token of at least 32 characters}

@@ -21,6 +21,9 @@ export const agentTaskOut = (t: Row) => ({
   updated_at: t.activity_at ?? t.updated_at,
   agent: { id: t.target_bot_id, name: t.bot_name ?? "" },
   result: t.result,
+  checkpoint: t.checkpoint,
+  checkpoint_version: t.checkpoint_version,
+  resumed_from: t.resumed_from,
   error: t.error,
   created_at: t.created_at,
   finished_at: t.finished_at,
@@ -29,7 +32,7 @@ export const agentTaskOut = (t: Row) => ({
 /** The active run a bot-scoped proxy token is acting for. */
 export async function callerRun(tx: Tx, userId: string, claims: LlmClaims, runId: string) {
   if (!claims.bot) fail(403, "令牌未绑定智能体");
-  const run = await tx.one("SELECT * FROM bot_runs WHERE run_id=$1 FOR UPDATE", [runId]);
+  const run = await tx.one("SELECT * FROM bot_runs WHERE run_id=$1 FOR NO KEY UPDATE", [runId]);
   if (
     !run ||
     run.user_id !== userId ||
@@ -48,7 +51,7 @@ async function ownTask(tx: Tx, userId: string, claims: LlmClaims, taskId: string
      FROM agent_tasks t JOIN bots b ON b.bot_id=t.target_bot_id
      LEFT JOIN bot_runs r ON r.run_id=t.child_run_id
      LEFT JOIN bot_messages m ON m.message_id=r.assistant_message_id
-     WHERE t.task_id=$1 AND t.user_id=$2 AND (t.parent_bot_id=$3 OR t.target_bot_id=$3)${lock ? " FOR UPDATE OF t" : ""}`,
+     WHERE t.task_id=$1 AND t.user_id=$2 AND (t.parent_bot_id=$3 OR t.target_bot_id=$3)${lock ? " FOR NO KEY UPDATE OF t" : ""}`,
     [taskId, userId, claims.bot],
   );
   if (!t) fail(404, "委托不存在");
@@ -89,7 +92,7 @@ export async function createTask(
   hub: Hub,
   userId: string,
   claims: LlmClaims,
-  body: { run_id: string; agent?: string; task: string; wait: boolean; kind?: "background" | "delegation"; title?: string; request_id?: string },
+  body: { run_id: string; agent?: string; task: string; wait: boolean; kind?: "background" | "delegation"; title?: string; request_id?: string;resumed_from?:string },
 ) {
   const parent = await callerRun(tx, userId, claims, body.run_id);
   const kind = body.kind ?? "delegation";
@@ -121,6 +124,7 @@ export async function createTask(
     depth: kind === "background" ? 0 : depth + 1,
     task: body.task,
     status: "queued",
+    resumed_from:body.resumed_from??null,
   });
   if (body.wait) await tx.rows("UPDATE bot_runs SET waiting_on_task_id=$2 WHERE run_id=$1", [parent.run_id, task.task_id]);
   const run = await startTask(tx, hub, task);
@@ -199,7 +203,7 @@ export async function messageTask(tx: Tx, userId: string, claims: LlmClaims, tas
 export async function cancelTask(tx: Tx, hub: Hub, userId: string, claims: LlmClaims, taskId: string) {
   const snapshot = await ownTask(tx, userId, claims, taskId);
   // Match finishRun's lock order: run first, then its task row.
-  if (snapshot.child_run_id) await tx.one("SELECT run_id FROM bot_runs WHERE run_id=$1 FOR UPDATE", [snapshot.child_run_id]);
+  if (snapshot.child_run_id) await tx.one("SELECT run_id FROM bot_runs WHERE run_id=$1 FOR NO KEY UPDATE", [snapshot.child_run_id]);
   const t = await ownTask(tx, userId, claims, taskId, true);
   if (t.child_run_id !== snapshot.child_run_id) fail(409, "任务刚刚启动，请重新取消");
   let notify: { runId: string; send(m: Row): void } | null = null;
@@ -301,7 +305,7 @@ export class AgentDispatcher {
       if (this.stopped) return;
       try {
         const run = await this.db.tx(async (tx) => {
-          const t = await tx.one("SELECT * FROM agent_tasks WHERE task_id=$1 AND status='queued' FOR UPDATE SKIP LOCKED", [task_id]);
+          const t = await tx.one("SELECT * FROM agent_tasks WHERE task_id=$1 AND status='queued' FOR NO KEY UPDATE SKIP LOCKED", [task_id]);
           return t ? startTask(tx, this.hub, t) : null;
         });
         if (run?.executor === "mac") await dispatchMac(this.db, this.s, this.hub, run.run_id);
@@ -326,7 +330,7 @@ export class AgentDispatcher {
         const run = await this.db.tx(async (tx) => {
           const t = await tx.one(
             `SELECT t.*, b.name AS bot_name FROM agent_tasks t JOIN bots b ON b.bot_id=t.target_bot_id
-             WHERE t.task_id=$1 AND t.delivered_at IS NULL FOR UPDATE OF t SKIP LOCKED`,
+             WHERE t.task_id=$1 AND t.delivered_at IS NULL FOR NO KEY UPDATE OF t SKIP LOCKED`,
             [task_id],
           );
           if (!t) return null;

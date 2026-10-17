@@ -2,10 +2,13 @@ import type { FastifyReply } from "fastify";
 import { fail, type Database, type Row, type Tx } from "./db.js";
 import type { Settings } from "./config.js";
 import { Vault, type LlmClaims } from "./security.js";
+import { recordGeneration, bounded } from "./observations.js";
+import { randomUUID } from "node:crypto";
 
 export interface Usage {
   input: number;
   output: number;
+  cached?:number;reasoning?:number;
 }
 export function usageFrom(value: unknown): Usage | null {
   const data = value as Row | null;
@@ -14,7 +17,7 @@ export function usageFrom(value: unknown): Usage | null {
   const input = Number(u.input_tokens ?? 0),
     output = Number(u.output_tokens ?? 0);
   return Number.isFinite(input) && Number.isFinite(output)
-    ? { input, output }
+    ? { input, output,...(u.input_tokens_details?.cached_tokens!==undefined?{cached:Number(u.input_tokens_details.cached_tokens)}:{}),...(u.output_tokens_details?.reasoning_tokens!==undefined?{reasoning:Number(u.output_tokens_details.reasoning_tokens)}:{}) }
     : null;
 }
 /** Picks the last usage block from an SSE body without buffering the whole stream. */
@@ -22,10 +25,22 @@ export class SseUsage {
   private buffer = "";
   private data: string[] = [];
   usage: Usage | null = null;
+  output:unknown='';
+  firstToken?:Date;
+  error?:string;
+  terminal=false;
   private line(line: string) {
     if (!line) {
       try {
-        this.usage = usageFrom(JSON.parse(this.data.join("\n"))) ?? this.usage;
+        const event=JSON.parse(this.data.join("\n"));
+        this.usage = usageFrom(event) ?? this.usage;
+        if(['response.completed','response.incomplete','response.failed'].includes(event.type))this.terminal=true;
+        if(/response\.(?:output_text|reasoning_text|reasoning_summary_text|function_call_arguments)\.delta/.test(String(event.type)))this.firstToken??=new Date();
+        if(event.type==='response.output_text.delta'){
+          this.firstToken??=new Date();if(typeof this.output==='string'&&this.output.length<65536)this.output=(this.output+String(event.delta??'')).slice(0,65536);
+        }
+        if(Array.isArray(event.response?.output))this.output=bounded(event.response.output);
+        if(event.type==='response.failed'||event.type==='response.incomplete'||event.type==='error')this.error='模型返回失败或未完成';
       } catch { /* comments, empty frames and non-JSON events */ }
       this.data = [];
     } else if (line.startsWith("data:")) {
@@ -89,6 +104,7 @@ export async function proxyResponses(
   body: Row,
   reply: FastifyReply,
   signal: AbortSignal,
+  correlation?:{run:Row;generationId?:string;parentTool?:string},
 ) {
   const key = new Vault(s.vaultFile).open(model.secret, model.model_id);
   const payload: Row = {
@@ -97,6 +113,9 @@ export async function proxyResponses(
     max_output_tokens: Math.min(body.max_output_tokens ?? model.max_tokens, model.max_tokens),
     store: false,
   };
+  const started=new Date(),generationId=correlation?.generationId??randomUUID();
+  let captured:unknown=null,observedUsage:Usage|null=null,firstToken:Date|undefined,traceError:string|undefined;
+  try {
   let upstream: Response;
   try {
     upstream = await fetch(endpoint(model), {
@@ -107,9 +126,11 @@ export async function proxyResponses(
       redirect: "error",
     });
   } catch {
+    traceError="无法连接模型服务";
     return openAiError(reply, 502, "无法连接模型服务");
   }
   if (!upstream.ok || !upstream.body) {
+    traceError=`模型服务 HTTP ${upstream.status}`;
     await upstream.body?.cancel().catch(() => {});
     await recordUsage(db, claims, model.model_id, null);
     // Provider bodies can echo request details; only the status is surfaced.
@@ -124,10 +145,12 @@ export async function proxyResponses(
     const text = await upstream.text();
     let usage: Usage | null = null;
     try {
-      usage = usageFrom(JSON.parse(text));
+      const parsed=JSON.parse(text);usage = usageFrom(parsed);captured=parsed.output??parsed;
+      if(['failed','incomplete'].includes(parsed.status))traceError='模型返回失败或未完成';
     } catch {
       /* non-JSON bodies are passed through unchanged */
     }
+    observedUsage=usage;
     await recordUsage(db, claims, model.model_id, usage);
     return reply.code(200).header("content-type", type).send(text);
   }
@@ -147,12 +170,18 @@ export async function proxyResponses(
         await new Promise((r) => reply.raw.once("drain", r));
     }
   } catch {
+    traceError="模型流中断";
     /* client or provider closed the stream */
   } finally {
     sse.push(decoder.decode());
     sse.end();
     reply.raw.end();
+    observedUsage=sse.usage;captured=sse.output;firstToken=sse.firstToken;traceError??=sse.error;
+    if(!sse.terminal)traceError??="模型流未完成";
     await recordUsage(db, claims, model.model_id, sse.usage);
+  }
+  } finally {
+    if(correlation) await recordGeneration(db,s,correlation.run,{id:generationId,parentTool:correlation.parentTool,started,firstToken,input:body.input,output:captured,usage:observedUsage,error:traceError,model,secrets:[key]}).catch(()=>{});
   }
 }
 

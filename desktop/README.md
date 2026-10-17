@@ -73,3 +73,5 @@ npm run pack:mac --workspace=pi-bot-desktop  # 生成 Pi Bot.app / dmg
 A2UI 交互工具直接显示在时间线里，支持表单、实时计算、联动图表和表格。输入会保存，提交后 Bot 继续工作；组件和协议由 `packages/a2ui` 与 Android 共用。
 
 异步任务模式：对话持续接话，每个 Bot 最多并行执行两个后台任务，其余排队；用聊天查询进度、补充要求或取消，结果完成后另发。两端需与 API、Worker、Runner 同步升级，服务端自动应用 `0007-async-tasks`；升级前结束旧运行。详情见 [整体架构](ARCHITECTURE.md)。
+
+记忆、协作目录、任务续接与云端 Langfuse 配置见[实现说明](../server/MEMORY-OBSERVABILITY.md)。

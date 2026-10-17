@@ -16,6 +16,7 @@ import {
 
 import { claimExecution } from "./scheduling.js";
 import {recordUi} from "./ui.js";
+import { observationSchema, recordObservation } from "./observations.js";
 
 export const MAC_OFFLINE = "Mac 已离线，可重新发送（将在云端运行）";
 
@@ -47,6 +48,7 @@ export async function dispatchMac(db: Database, s: Settings, hub: Hub, runId: st
 
 const live = new Map<string, { content: string; written: number }>();
 const runEvent = z.discriminatedUnion("kind", [
+  observationSchema.extend({kind:z.literal('observation')}),
   z.object({ kind: z.literal("started") }),
   z.object({ kind: z.literal("instruction_ack"), id: z.string().uuid() }),
   z.object({ kind: z.literal("ui"), messages: z.array(z.record(z.string(),z.unknown())).min(1).max(20) }),
@@ -118,6 +120,10 @@ export async function handleRunEvent(
       if (r?.task_id) await tx.rows("UPDATE agent_task_instructions SET delivered_at=now() WHERE task_id=$1 AND instruction_id=$2", [r.task_id, e.id]);
     });
     return;
+  }
+  if(e.kind==='observation'){
+    const {kind,...observation}=e;
+    await db.tx(async tx=>{const run=await own(tx);if(run)await recordObservation(tx,run,observation,s.tracingEnabled);}).catch(()=>{});return;
   }
   if (e.kind === "done") {
     const content = e.text ?? live.get(runId)?.content;

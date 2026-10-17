@@ -5,9 +5,9 @@ import { complete, SseUsage, usageFrom } from "../src/llm.js";
 
 test("Responses usage supports JSON and terminal events, including cached and reasoning tokens", () => {
   const usage = { input_tokens: 42, output_tokens: 12, input_tokens_details: { cached_tokens: 20 }, output_tokens_details: { reasoning_tokens: 8 } };
-  assert.deepEqual(usageFrom({ usage }), { input: 42, output: 12 });
+  assert.deepEqual(usageFrom({ usage }), { input: 42, output: 12, cached:20, reasoning:8 });
   for (const type of ["response.completed", "response.incomplete", "response.failed"])
-    assert.deepEqual(usageFrom({ type, response: { usage } }), { input: 42, output: 12 });
+    assert.deepEqual(usageFrom({ type, response: { usage } }), { input: 42, output: 12, cached:20, reasoning:8 });
   assert.equal(usageFrom({ usage: null }), null);
   assert.equal(usageFrom({ usage: { input_tokens: "bad" } }), null);
 });

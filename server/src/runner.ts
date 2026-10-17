@@ -17,6 +17,9 @@ import {
 const requestSchema = z.object({
   run: z.object({
     run_id: z.string().uuid(),
+    memory_context:z.string().max(50000).optional(),
+    task_id:z.string().uuid().optional(),checkpoint_version:z.number().int().min(0).optional(),
+    observation_enabled:z.boolean().default(false),
     lane: z.enum(["conversation", "task"]).default("task"),
     instructions: z.array(z.object({ id: z.string().uuid(), text: z.string().max(8000) })).default([]),
     bot: z.object({ id: z.string().uuid(), name: z.string(), slug: z.string() }),
@@ -133,6 +136,9 @@ export async function createRunner(options: { token: string; dir: string; factor
         history: p.run.history,
         tools,
         skills: { baseUrl: api, token: () => p.token, runId: p.run.run_id, catalog: p.run.skills },
+        runId:p.run.run_id,
+        memory:{baseUrl:api,token:()=>p.token,runId:p.run.run_id,lane:p.run.lane,context:p.run.memory_context??'',taskId:p.run.task_id,checkpointVersion:p.run.checkpoint_version},
+        onObservation:p.run.observation_enabled?e=>emit({type:'observation',...e}):undefined,
         onTool: (t) => emit({ type: "tool", ...t }),
         onProgress: (lines) => emit({ type: "progress", lines }),
       });

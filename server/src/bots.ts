@@ -6,6 +6,9 @@ import { SHAPES, COLORS, SCHEMES, DEFAULT_AVATAR, avatarFor } from "@pi-bot/bot-
 import { fail, type Row, type Tx } from "./db.js";
 import type { Settings } from "./config.js";
 import { searchAvailable } from "./search.js";
+import { directory, privateMemoryContext, forgottenContext, maskForgotten } from "./memory.js";
+import { estimateTokens } from "@earendil-works/pi-coding-agent";
+import { recordRun } from "./observations.js";
 
 export const ACTIVE = ["queued", "running", "waiting_approval"];
 export const avatarSchema = z.object({
@@ -293,6 +296,8 @@ export async function insertRun(tx: Tx, o: NewRun) {
     userMessageId = randomUUID(),
     assistantMessageId = randomUUID();
   const executor = o.mac ? "mac" : "cloud";
+  const task=o.taskId?await tx.get("agent_tasks",o.taskId):null;
+  const parent=task?await tx.get("bot_runs",task.parent_run_id):null;
   const run = await tx.insert("bot_runs", {
     run_id: runId,
     bot_id: o.botId,
@@ -306,6 +311,8 @@ export async function insertRun(tx: Tx, o: NewRun) {
     origin: o.origin ?? "user",
     task_id: o.taskId ?? null,
     lane: o.lane ?? "conversation",
+    trace_id:parent?.trace_id??runId,
+    parent_run_id:parent?.run_id??null,
   });
   await tx.insert("bot_messages", {
     message_id: userMessageId,
@@ -344,6 +351,10 @@ export interface RunContext {
   text: string;
   lane: "conversation" | "task";
   instructions?: { id: string; text: string }[];
+  memory_context?: string;
+  task_id?: string;
+  checkpoint_version?: number;
+  observation_enabled?: boolean;
   search_enabled: boolean;
   /** Whether the run may hand work to other bots through `ask_agent`. */
   agents_enabled: boolean;
@@ -352,6 +363,7 @@ export interface RunContext {
 /** Deepest delegation level that may still be created: user -> A -> B -> C. */
 export const MAX_DELEGATION_DEPTH = 2;
 export interface Collaborator {
+  id?:string;
   name: string;
   brief: string;
 }
@@ -372,19 +384,17 @@ export async function delegationChain(tx: Tx, run: Row) {
   return { bots, depth: bots.length - 1 };
 }
 export async function collaborators(tx: Tx, bot: Row): Promise<Collaborator[]> {
-  const rows = await tx.rows(
-    "SELECT name, persona FROM bots WHERE user_id=$1 AND bot_id<>$2 AND archived_at IS NULL ORDER BY is_main DESC, last_active_at DESC LIMIT 20",
-    [bot.user_id, bot.bot_id],
-  );
+  const rows = await directory(tx,bot.user_id,bot.bot_id);
   return rows.map((r) => {
-    const brief = String(r.persona).replace(/\s+/g, " ").trim();
-    return { name: r.name, brief: brief.length > 160 ? `${brief.slice(0, 159)}…` : brief };
+    const brief = [r.responsibility,...r.topics,...r.skills.map((x:Row)=>`${x.name}: ${x.description}`)].join("；").replace(/\s+/g," ");
+    return { id:r.id,name: r.name, brief: brief.slice(0,400) };
   });
 }
 function collaborationPrompt(agents: Collaborator[], depth: number) {
   return [
     "协作：你可以用 ask_agent 把任务交给同一用户的其他智能体：",
-    ...agents.map((a) => `- ${a.name}${a.brief ? `：${a.brief}` : ""}`),
+    ...agents.map((a) => `- ${a.name}${a.brief ? `：${a.brief}` : ""}${a.id?` (ID: ${a.id})`:''}`),
+    "目录仅列部分协作者；匹配不明确时用 agent_directory 搜索。优先使用稳定 ID 委托，对方的记忆正文不会共享。",
     "只有某个智能体的职责明显更适合，或用户明确要求时才委托；简单任务自己完成，不要为了委托而委托。",
     "对方看不到你和用户的对话，任务描述要自包含：目标、已知信息、期望的输出形式。对方使用自己的资料库，不能直接读写你的资料库文件。",
     depth === 0
@@ -450,31 +460,43 @@ export async function buildContext(
   options: { search?: boolean } = {},
 ): Promise<RunContext> {
   const search = options.search ?? searchAvailable(s);
+  await tx.rows("UPDATE bot_runs SET observation_enabled=$2 WHERE run_id=$1",[run.run_id,s.tracingEnabled]);
   const bot = await tx.get("bots", run.bot_id, true);
   const model = await resolveModel(tx, bot);
   if (!model) fail(503, "管理员尚未配置可用模型");
   const memory = await tx.get("bot_memories", bot.bot_id);
+  const forgotten=await forgottenContext(tx,bot.bot_id);
   const question = await tx.get("bot_messages", run.user_message_id, true);
   const rows = await tx.rows(
     `SELECT m.role, m.content, m.ui_action, f.name AS from_name FROM bot_messages m
      LEFT JOIN bots f ON f.bot_id=m.from_bot_id
      WHERE m.bot_id=$1 AND m.seq>$2 AND (m.seq<$3 OR m.role='assistant') AND m.visibility='public' AND m.content<>'' AND m.status IN ('completed','cancelled')
+     AND NOT EXISTS(SELECT 1 FROM memory_entries e WHERE e.bot_id=m.bot_id AND e.deleted AND e.source_message_id=m.message_id)
      ORDER BY m.seq DESC LIMIT $4`,
-    [bot.bot_id, memory?.through_seq ?? 0, run.origin === "report" ? Number.MAX_SAFE_INTEGER : question.seq, s.historyLimit],
+    [bot.bot_id, memory?.through_seq ?? 0, run.origin === "report" ? Number.MAX_SAFE_INTEGER : question.seq, Math.max(s.historyLimit, s.memoryThreshold+20)],
   );
-  const budget = model.context_window * 2;
+  const privateContext=await privateMemoryContext(tx,bot.bot_id);
+  const { depth } = await delegationChain(tx, run);
+  const agents = depth < MAX_DELEGATION_DEPTH ? await collaborators(tx, bot) : [];
+  const taskRecord=run.task_id?await tx.get("agent_tasks",run.task_id):null;
+  const checkpointText=taskRecord?JSON.stringify(taskRecord.checkpoint):'';
+  const memoryContext=(privateContext+(run.lane==="task"&&taskRecord?`\n当前任务 ID：${taskRecord.task_id}；检查点版本：${taskRecord.checkpoint_version}\n检查点：${checkpointText.slice(0,4000)}${checkpointText.length>4000?'\n[检查点已截断，需要时用 task_status 读取完整版本]':''}`:'')).slice(0,12500);
+  const system=systemPrompt(bot,maskForgotten(memory?.summary??'',forgotten),run.executor,{search,agents,depth,lane:run.lane});
+  const skills=await skillCatalog(tx,bot.bot_id);
+  const instructions=run.task_id && run.lane === "task" ? (await tx.rows("SELECT instruction_id AS id, text FROM agent_task_instructions WHERE task_id=$1 AND delivered_at IS NULL ORDER BY created_at, instruction_id", [run.task_id])) as { id: string; text: string }[] : [];
+  const tokens=(text:string)=>estimateTokens({role:"user",content:text,timestamp:0});
+  const budget = Math.max(0,model.context_window-model.max_tokens-tokens(system+memoryContext+modelMessageContent(question)+JSON.stringify(skills)+JSON.stringify(instructions))-4096);
   let used = 0;
   const history: RunContext["history"] = [];
   for (const r of rows) {
-    const content=modelMessageContent(r);
-    used += content.length;
+    const content=maskForgotten(modelMessageContent(r),forgotten);
+    used += tokens(content);
     if (used > budget) break;
     history.unshift({ role: r.role, content: r.from_name ? `（来自智能体「${r.from_name}」）${content}` : content });
   }
-  const { depth } = await delegationChain(tx, run);
-  const agents = depth < MAX_DELEGATION_DEPTH ? await collaborators(tx, bot) : [];
   const from = question.from_bot_id ? await tx.get("bots", question.from_bot_id) : undefined;
   let text = modelMessageContent(question);
+  if(history.length<rows.length) text+="\n（部分早期对话超出窗口，需要时用 history_search 检索，不代表没有历史。）";
   if (run.origin === "agent" && from && from.bot_id !== bot.bot_id)
     text = `你收到来自智能体「${from.name}」的委托，它正在为用户处理一项任务：\n\n${text}\n\n请直接完成并给出自包含的结果，「${from.name}」会把它转述给用户。缺少必要信息时直接说明缺什么，不要向用户提问。`;
   else if (run.origin === "report")
@@ -489,14 +511,18 @@ export async function buildContext(
       context_window: model.context_window,
       max_tokens: model.max_tokens,
     },
-    instructions: run.task_id && run.lane === "task" ? (await tx.rows("SELECT instruction_id AS id, text FROM agent_task_instructions WHERE task_id=$1 AND delivered_at IS NULL ORDER BY created_at, instruction_id", [run.task_id])) as { id: string; text: string }[] : [],
+    instructions,
+    memory_context:memoryContext,
+    task_id:run.task_id??undefined,
+    checkpoint_version:taskRecord?.checkpoint_version??0,
+    observation_enabled:s.tracingEnabled,
     lane: run.lane ?? "conversation",
-    system: systemPrompt(bot, memory?.summary ?? "", run.executor, { search, agents, depth, lane: run.lane }),
+    system,
     history,
     text,
     search_enabled: run.lane === "task" && search,
-    agents_enabled: agents.length > 0,
-    skills: await skillCatalog(tx, bot.bot_id),
+    agents_enabled: depth<MAX_DELEGATION_DEPTH,
+    skills,
   };
 }
 export async function setContent(tx: Tx, run: Row, content: string) {
@@ -551,7 +577,7 @@ export async function finishRun(
   content?: string,
 ) {
   const run = await tx.one(
-    "SELECT * FROM bot_runs WHERE run_id=$1 FOR UPDATE",
+    "SELECT * FROM bot_runs WHERE run_id=$1 FOR NO KEY UPDATE",
     [runId],
   );
   if (!run || !ACTIVE.includes(run.status)) return null;
@@ -568,9 +594,11 @@ export async function finishRun(
     "UPDATE approvals SET status='expired', decided_at=now() WHERE run_id=$1 AND status='pending'",
     [runId],
   );
-  await tx.rows("UPDATE bots SET last_active_at=now() WHERE bot_id=$1", [run.bot_id]);
+  await tx.rows("UPDATE bots SET last_active_at=now(),knowledge_dirty=knowledge_dirty OR $2,knowledge_revision=knowledge_revision+CASE WHEN $2 THEN 1 ELSE 0 END WHERE bot_id=$1", [run.bot_id,run.lane==='task'&&final==='completed']);
   if (run.origin === "agent" && run.task_id) {
     const reply = await tx.one("SELECT content FROM bot_messages WHERE message_id=$1", [run.assistant_message_id]);
+    await tx.rows(`UPDATE agent_tasks SET checkpoint=checkpoint || jsonb_build_object('final_status',$2::text,'result',$3::text,'saved_at',now()),
+      checkpoint_version=checkpoint_version+1 WHERE task_id=$1`,[run.task_id,final,final==="completed"?String(reply?.content??'').slice(0,12000):null]);
     const task = await tx.one(
       "UPDATE agent_tasks SET status=$2, result=$3, error=$4, finished_at=now(), updated_at=now() WHERE task_id=$1 AND status IN ('queued','running','waiting_approval') RETURNING parent_bot_id",
       [run.task_id, final, final === "completed" ? reply?.content ?? "" : null, final === "failed" ? error ?? "运行失败" : null],
@@ -579,6 +607,7 @@ export async function finishRun(
   }
   if (final === "cancelled" && run.lane === "task") await cancelDelegations(tx, runId);
   await tx.notify({ user_id: run.user_id, bot_id: run.bot_id });
+  await recordRun(tx,{...run,status:final,error:final==='failed'?error:null,finished_at:new Date()},run.observation_enabled);
   return { ...run, status: final };
 }
 /**
@@ -591,7 +620,7 @@ export async function cancelDelegations(tx: Tx, runId: string) {
     [runId],
   );
   for (const snapshot of tasks) {
-    if (snapshot.child_run_id) await tx.one("SELECT run_id FROM bot_runs WHERE run_id=$1 FOR UPDATE", [snapshot.child_run_id]);
+    if (snapshot.child_run_id) await tx.one("SELECT run_id FROM bot_runs WHERE run_id=$1 FOR NO KEY UPDATE", [snapshot.child_run_id]);
     const t = (await tx.one("SELECT * FROM agent_tasks WHERE task_id=$1 FOR UPDATE", [snapshot.task_id]))!;
     await tx.rows(
       `UPDATE agent_tasks SET delivered_at=coalesce(delivered_at, now()),

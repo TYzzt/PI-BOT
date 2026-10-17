@@ -45,9 +45,9 @@ export function askAgentTool(baseUrl: string, token: () => string, runId: string
     name: "ask_agent",
     label: "委托智能体",
     description:
-      "把任务交给同一用户的另一个智能体。agent 填对方名字；task 要自包含（目标、已知信息、期望输出），对方看不到你的对话。wait=true 等待对方完成并返回结果；wait=false 立即返回，对方完成后结果会作为回报消息发给你。",
+      "把问题或任务交给同一用户的另一个智能体。用 agent_directory 确认职责和知识主题，agent 优先填稳定 ID，也接受名字；task 要自包含（目标、已知信息、期望输出），对方看不到你的对话，会使用自己的记忆。wait=true 等结果；wait=false 完成后回报。要求对方给出来源、时间和不确定性，没有依据时说明不知道。",
     parameters: Type.Object({
-      agent: Type.String({ minLength: 1, maxLength: 100, description: "目标智能体的名字" }),
+      agent: Type.String({ minLength: 1, maxLength: 100, description: "目标智能体稳定 ID（优先）或名字，从 agent_directory 获取" }),
       task: Type.String({ minLength: 1, maxLength: 8000, description: "自包含的任务描述" }),
       wait: Type.Optional(Type.Boolean({ description: "是否等待结果，默认 true" })),
     }),
