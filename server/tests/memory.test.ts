@@ -332,6 +332,9 @@ test(
     stored = await db.tx((tx) => tx.get("bot_memories", bot));
     assert.ok(stored.through_seq > 0);
     assert.match(stored.summary, /蓝鲸/);
+    const requestCount = provider.requests.length;
+    assert.equal(await maintainMemory(db, s, randomUUID()), false, "retained messages alone must not immediately trigger another compaction");
+    assert.equal(provider.requests.length, requestCount);
     const id = await send(bot, "过去说过什么？");
     const ctx = await db.tx(async (tx) =>
       buildContext(tx, s, await tx.get("bot_runs", id)),
@@ -428,3 +431,39 @@ test(
     );
   },
 );
+
+
+test("maintenance rechecks a newly committed lease after reading a stale candidate", { skip }, async () => {
+  const bot = (await api("/bots", { name: "租约快照" })).data.id;
+  for (let i = 0; i < 8; i++) {
+    const id = await send(bot, `租约历史${i}`);
+    await db.tx(tx => finishRun(tx, id, "completed", null, "已记录"));
+  }
+  await db.tx(async tx => {
+    await tx.rows("UPDATE bots SET archived_at=now() WHERE bot_id<>$1", [bot]);
+    await tx.rows("INSERT INTO bot_memories(bot_id) VALUES($1)", [bot]);
+  });
+  const winner = randomUUID();
+  const contender = Object.create(db) as Database;
+  let intercepted = false;
+  contender.tx = callback => db.tx(async tx => {
+    const original = tx.one.bind(tx);
+    tx.one = async (sql, args) => {
+      const candidate = await original(sql, args);
+      if (!intercepted && sql.includes("AS cursor") && sql.includes("SKIP LOCKED") && candidate) {
+        intercepted = true;
+        // Commit what another claimant wrote after this SELECT's snapshot was taken.
+        await db.tx(other => other.rows("UPDATE bot_memories SET lease_owner=$2,lease_until=now()+interval '3 minutes' WHERE bot_id=$1", [bot, winner]));
+      }
+      return candidate;
+    };
+    return callback(tx);
+  });
+  const requestCount = provider.requests.length;
+  assert.equal(await maintainMemory(contender, s, randomUUID()), false);
+  assert.equal(intercepted, true);
+  assert.equal(provider.requests.length, requestCount, "a lost claim must not call the model");
+  const stored = await db.tx(tx => tx.get("bot_memories", bot));
+  assert.equal(stored.lease_owner, winner);
+  assert.equal(stored.through_seq, 0);
+});

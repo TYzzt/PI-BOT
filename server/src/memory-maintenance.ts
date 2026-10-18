@@ -24,15 +24,25 @@ export async function maintainMemory(
   const cursor = learn ? "learned_seq" : "through_seq",
     lease = learn ? "learn_lease_until" : "lease_until",
     leaseOwner = learn ? "learn_lease_owner" : "lease_owner",
-    retry = learn ? "learn_retry_after" : "retry_after";
+    retry = learn ? "learn_retry_after" : "retry_after",
+    threshold = learn ? 20 : Math.min(s.memoryThreshold, s.historyLimit);
+  const eligible = `(m.${lease} IS NULL OR m.${lease}<now()) AND (m.${retry} IS NULL OR m.${retry}<=now())
+    AND (${learn ? "b.knowledge_dirty OR " : ""}(SELECT count(*) FROM bot_messages x WHERE x.bot_id=b.bot_id AND x.seq>coalesce(m.${cursor},0) AND x.content<>''
+      AND x.status='completed' AND ${learn ? "(x.visibility='public' OR (x.visibility='task' AND x.role='assistant'))" : "x.visibility='public'"}) >= $1)`;
   const job = await db.tx(async (tx) => {
-    const b = await tx.one(
+    let b = await tx.one(
       `SELECT b.*,coalesce(m.${cursor},0) AS cursor,coalesce(m.summary,'') AS summary FROM bots b LEFT JOIN bot_memories m USING(bot_id)
-      WHERE b.archived_at IS NULL AND (m.${lease} IS NULL OR m.${lease}<now()) AND (m.${retry} IS NULL OR m.${retry}<=now())
-      AND (${learn ? "b.knowledge_dirty OR " : ""}(SELECT count(*) FROM bot_messages x WHERE x.bot_id=b.bot_id AND x.seq>coalesce(m.${cursor},0) AND x.content<>''
-        AND x.status='completed' AND ${learn ? "(x.visibility='public' OR (x.visibility='task' AND x.role='assistant'))" : "x.visibility='public'"}) >= $1)
+      WHERE b.archived_at IS NULL AND ${eligible}
       ORDER BY b.last_active_at DESC LIMIT 1 FOR NO KEY UPDATE OF b SKIP LOCKED`,
-      [learn ? 20 : Math.min(s.memoryThreshold, s.historyLimit)],
+      [threshold],
+    );
+    if (!b) return null;
+    // The joined memory row is not locked by the candidate SELECT. Its snapshot
+    // can predate a lease/cursor committed just before the Bot lock was acquired.
+    b = await tx.one(
+      `SELECT b.*,coalesce(m.${cursor},0) AS cursor,coalesce(m.summary,'') AS summary FROM bots b LEFT JOIN bot_memories m USING(bot_id)
+      WHERE b.bot_id=$2 AND b.archived_at IS NULL AND ${eligible}`,
+      [threshold, b.bot_id],
     );
     if (!b) return null;
     const model = await resolveModel(tx, b);
@@ -51,7 +61,9 @@ export async function maintainMemory(
         0,
         Math.max(
           1,
-          rows.length - Math.min(20, Math.floor(s.memoryThreshold / 2)),
+          // Retained history must stay below the trigger, or a fast second
+          // worker immediately compacts it again without any new messages.
+          rows.length - Math.min(20, Math.floor(s.memoryThreshold / 2), threshold - 1),
         ),
       );
     const forgotten = await forgottenContext(tx, b.bot_id);
@@ -84,11 +96,15 @@ export async function maintainMemory(
       );
       return null;
     }
-    await tx.rows(
+    const claimed = await tx.one(
       `INSERT INTO bot_memories(bot_id,${leaseOwner},${lease}) VALUES($1,$2,now()+interval '3 minutes')
-      ON CONFLICT(bot_id) DO UPDATE SET ${leaseOwner}=$2,${lease}=now()+interval '3 minutes'`,
-      [b.bot_id, owner],
+      ON CONFLICT(bot_id) DO UPDATE SET ${leaseOwner}=$2,${lease}=now()+interval '3 minutes'
+      WHERE (bot_memories.${lease} IS NULL OR bot_memories.${lease}<now())
+        AND bot_memories.${retry}<=now() AND bot_memories.${cursor}=$3
+      RETURNING bot_id`,
+      [b.bot_id, owner, b.cursor],
     );
+    if (!claimed) return null;
     return {
       b,
       model,
