@@ -29,7 +29,24 @@ async function scriptedProvider(outside: string) {
     const last = messages.at(-1);
     const results = messages.filter(m => m.type === 'function_call_output').map(m => text(m.output));
     let reply: { text?: string; tool?: { name: string; args: object } };
-    if (user.startsWith('这是你之前委托给')) reply = { text: user.split('结果：\n').at(-1)! };
+    if (user === '建立自动检查链路测试') reply = last.type === 'function_call_output'
+      ? { text: '已建立长期委托，重要结果会告诉你。' }
+      : { tool: { name: 'automation_manage', args: { action: 'create', title: '自动检查链路测试', goal: '把已授权的检查结论保存到自动记录文件，完成后告知', authorization: '用户授权在自己的资料库创建 automation/result.txt', schedule: { type: 'interval', minutes: 10 } } } };
+    else if (user.startsWith('自动工作：自主巡检')) {
+      for (const name of ['write_file', 'edit_file', 'run_command', 'request_outside_access', 'ask_agent', 'skill_manage'])
+        assert.ok(!json.tools.some((t: any) => t.name === name), `readonly patrol exposed ${name}`);
+      assert.ok(json.tools.some((t: any) => t.name === 'read_file'));
+      if (!results.length) reply = { tool: { name: 'memory_manage', args: { action: 'list' } } };
+      else if (results.length === 1) reply = { tool: { name: 'automation_finish', args: { state: 'wait', summary: '没有新的重要变化', notify: false, reason: '已检查自己的记忆' } } };
+      else reply = { text: 'PRIVATE 静默巡检输出' };
+    }
+    else if (user.startsWith('自动工作：自动检查链路测试')) {
+      if (!results.length) reply = { tool: { name: 'write_file', args: { path: 'automation/result.txt', content: '自动检查已完成' } } };
+      else if (results.length === 1) reply = { tool: { name: 'task_checkpoint', args: { goal: '保存检查结果', completed: ['已保存 automation/result.txt'], findings: [], artifacts: ['automation/result.txt'], blockers: [], next_steps: [] } } };
+      else if (results.length === 2) reply = { tool: { name: 'automation_finish', args: { state: 'complete', summary: '自动检查已完成，文件已保存。', notify: true, reason: '交付了约定成果', category: 'milestone', notification_key: 'automation-test:file-v1' } } };
+      else reply = { text: 'PRIVATE 自动轮次内部输出' };
+    }
+    else if (user.startsWith('这是你之前委托给')) reply = { text: user.split('结果：\n').at(-1)! };
     else if (json.tools.some((t: any) => t.name === 'start_task') && /写文件|桌面|联网搜索|长任务/.test(user))
       reply = last.type === 'function_call_output' ? { text: '任务已安排，完成后告诉你。' } : { tool: { name: 'start_task', args: { title: user.slice(0, 40), task: user } } };
     else if (user.startsWith('补充任务:')) reply = last.type === 'function_call_output' ? { text: '补充已送达。' } : { tool: { name: 'task_message', args: { task_id: user.slice('补充任务:'.length), text: '改为蓝色' } } };
@@ -209,6 +226,54 @@ test('the Mac manages its own skills privately and stores them for cloud reuse',
   const runId = messages.json.messages.at(-1).run_id;
   const context = await serverDb.tx(async tx => buildContext(tx, settings({ PI_BOT_DATABASE_URL: TEST_DB, PI_BOT_JWT_SECRET: 'j'.repeat(40) }), { ...await tx.get('bot_runs', runId), executor: 'cloud' }));
   assert.ok(context.skills.some(skill => skill.name === 'mac-report'));
+});
+
+test('natural-language commission runs on the real Mac agent with durable writes, checkpoints and one public report', { skip }, async () => {
+  const bot = await app.call('botCreate', { name: '自动检查员', persona: '' , avatar: { shape: 'bean', color: 'mint', scheme: 'light' } }) as Bot;
+  await app.call('send', { botId: bot.id, text: '建立自动检查链路测试' });
+  const automation = await eventually(async () => {
+    const a = await serverDb.tx(tx => tx.one("SELECT * FROM bot_automations WHERE bot_id=$1 AND kind='commission'", [bot.id]));
+    const running = await serverDb.tx(tx => tx.one("SELECT 1 FROM bot_runs WHERE bot_id=$1 AND lane='conversation' AND status IN ('queued','running')", [bot.id]));
+    return a && !running && a;
+  });
+  await serverDb.tx(async tx => {
+    await tx.rows('UPDATE bot_automations SET next_wake_at=now() WHERE automation_id=$1', [automation.automation_id]);
+    await tx.notify({ user_id: automation.user_id, bot_id: bot.id });
+  });
+  const report = await eventually(async () => {
+    const page = await app.call('messages', { botId: bot.id }) as MessagePage;
+    return page.messages.find(m => m.content === '自动检查已完成，文件已保存。');
+  }, 20000);
+  assert.equal(report.status, 'completed');
+  assert.equal(readFileSync(join(dir, 'pi-bot', bot.slug, 'automation/result.txt'), 'utf8'), '自动检查已完成');
+  const state = await serverDb.tx(tx => tx.get('bot_automations', automation.automation_id));
+  assert.equal(state.status, 'enabled', 'completing an occurrence preserves the periodic commission');
+  assert.deepEqual(state.checkpoint.completed, ['已保存 automation/result.txt']);
+  const round = await serverDb.tx(tx => tx.one('SELECT r.* FROM bot_runs r JOIN automation_rounds ar ON ar.run_id=r.run_id WHERE ar.automation_id=$1', [automation.automation_id]));
+  assert.ok(round!.automation_calls >= 4 && round!.automation_calls <= 20);
+  assert.equal(round!.effect_pending, false);
+  const effects = await serverDb.tx(tx => tx.rows('SELECT status FROM automation_effects WHERE run_id=$1', [round!.run_id]));
+  assert.deepEqual(effects.map(x => x.status), ['confirmed']);
+  const page = await app.call('messages', { botId: bot.id }) as MessagePage;
+  assert.equal(page.messages.filter(m => m.content === report.content).length, 1);
+  assert.doesNotMatch(JSON.stringify(page), /PRIVATE|automation_finish|task_checkpoint|用户授权范围/);
+});
+
+test('real Mac patrol only gets read tools and completes without adding a chat message or moving visible activity', { skip }, async () => {
+  const bot = await app.call('botCreate', { name: '静默巡检员', persona: '', avatar: { shape: 'bean', color: 'mint', scheme: 'light' } }) as Bot;
+  const previous = await serverDb.tx(tx => tx.get('bots', bot.id));
+  await serverDb.tx(async tx => {
+    await tx.rows('UPDATE bot_automations SET next_wake_at=now() WHERE bot_id=$1', [bot.id]);
+    await tx.notify({ user_id: previous.user_id, bot_id: bot.id });
+  });
+  await eventually(async () => serverDb.tx(tx => tx.one("SELECT ar.* FROM automation_rounds ar JOIN bot_automations a USING(automation_id) WHERE a.bot_id=$1 AND ar.status='completed'", [bot.id])), 20000);
+  const page = await app.call('messages', { botId: bot.id }) as MessagePage;
+  assert.deepEqual(page.messages, []);
+  const current = await serverDb.tx(tx => tx.get('bots', bot.id));
+  assert.equal(current.last_active_at.getTime(), previous.last_active_at.getTime());
+  await app.call('botDelete', { id: bot.id });
+  const state = await serverDb.tx(tx => tx.one('SELECT * FROM bot_automations WHERE bot_id=$1', [bot.id]));
+  assert.equal(state!.status, 'stopped');
 });
 
 test('logout unbinds the Mac and the server falls back to the cloud', { skip }, async () => {

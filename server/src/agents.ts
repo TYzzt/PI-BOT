@@ -5,6 +5,7 @@ import type { Hub } from "./hub.js";
 import type { LlmClaims } from "./security.js";
 import { ACTIVE, MAX_DELEGATION_DEPTH, delegationChain, insertRun, resolveModel } from "./bots.js";
 import { cancelRun, dispatchMac } from "./runs.js";
+import { AutomationScheduler } from "./automations.js";
 import { TASK_CONCURRENCY, resumeExecution } from "./scheduling.js";
 
 export const MAX_TASKS_PER_RUN = 5;
@@ -95,6 +96,8 @@ export async function createTask(
   body: { run_id: string; agent?: string; task: string; wait: boolean; kind?: "background" | "delegation"; title?: string; request_id?: string;resumed_from?:string },
 ) {
   const parent = await callerRun(tx, userId, claims, body.run_id);
+  if (parent.automation_readonly) fail(403, "自主巡检不能创建任务或委托其他 Bot");
+  if (parent.execution_policy === "mac_only" && !body.wait) fail(422, "自动工作中的协作必须同步等待，不能另行向用户回报");
   const kind = body.kind ?? "delegation";
   if (body.request_id) {
     const old = await tx.one("SELECT t.*, b.name AS bot_name FROM agent_tasks t JOIN bots b ON b.bot_id=t.target_bot_id WHERE t.parent_run_id=$1 AND t.request_id=$2", [parent.run_id, body.request_id]);
@@ -154,6 +157,8 @@ export async function startTask(tx: Tx, hub: Hub, task: Row) {
     return null;
   }
   const conn = hub.device(task.user_id);
+  const parent = await tx.get("bot_runs", task.parent_run_id);
+  if (parent?.execution_policy === "mac_only" && (!conn?.capabilities?.includes("always-on-v1") || parent.cancel_requested || !ACTIVE.includes(parent.status))) return null;
   const run = await insertRun(tx, {
     userId: task.user_id,
     botId: target.bot_id,
@@ -220,6 +225,7 @@ export async function cancelTask(tx: Tx, hub: Hub, userId: string, claims: LlmCl
 export async function reportLater(tx: Tx, userId: string, claims: LlmClaims, taskId: string, s: Settings) {
   const t = await ownTask(tx, userId, claims, taskId, true);
   const parent = await tx.get("bot_runs", t.parent_run_id);
+  if (parent?.execution_policy === "mac_only") fail(422, "自动工作中的协作只能返回本轮，不能改为公开回报");
   if (TERMINAL.includes(t.status) || t.mode === "report") {
     if (parent?.waiting_on_task_id && !await resumeExecution(tx, parent, s)) fail(409, "等待执行名额后继续");
     return agentTaskOut(t);
@@ -291,6 +297,7 @@ export class AgentDispatcher {
     await this.startQueued();
     await this.deliverReports();
     await Promise.all([this.forwardCancels(), this.forwardInstructions()]);
+    await new AutomationScheduler(this.db, this.s, this.hub).once();
   }
   private async startQueued() {
     const queued = await this.db.tx((tx) =>
@@ -319,6 +326,7 @@ export class AgentDispatcher {
       tx.rows(
         `SELECT t.task_id FROM agent_tasks t
          WHERE t.mode='report' AND t.delivered_at IS NULL AND t.status IN ('completed','failed','cancelled')
+           AND NOT EXISTS (SELECT 1 FROM bot_runs p WHERE p.run_id=t.parent_run_id AND p.execution_policy='mac_only')
            AND NOT EXISTS (SELECT 1 FROM bot_runs r WHERE r.bot_id=t.parent_bot_id AND r.lane='conversation' AND r.status = ANY($1))
          ORDER BY t.finished_at LIMIT 20`,
         [ACTIVE],
@@ -393,7 +401,7 @@ export class AgentDispatcher {
   }
 
   private async dispatchConversations() {
-    const runs = await this.db.tx(tx => tx.rows("SELECT run_id FROM bot_runs WHERE executor='mac' AND status='queued' ORDER BY (origin='report'), created_at LIMIT 100"));
+    const runs = await this.db.tx(tx => tx.rows("SELECT run_id FROM bot_runs WHERE executor='mac' AND status='queued' ORDER BY (execution_policy='mac_only'), (origin='report'), created_at LIMIT 100"));
     for (const r of runs) await dispatchMac(this.db, this.s, this.hub, r.run_id).catch(() => {});
   }
   private async forwardInstructions() {

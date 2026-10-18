@@ -349,7 +349,7 @@ test("Mac offline: runs fall back to the cloud runner through the proxy, with me
   const forwarded = provider.requests.findLast(r => r.body.stream && r.body.input.at(-1)?.role === "user" && JSON.stringify(r.body.input.at(-1).content).includes("记住蓝鲸"))!.body;
   assert.equal(forwarded.model, "upstream-model");
   assert.match(forwarded.input[0].content, /Mac 当前离线/);
-  assert.deepEqual(forwarded.tools.map((t: any) => t.name), ["start_task", "task_status", "task_message", "cancel_task", "ask_agent", "get_ui_catalog", "show_ui", "skill_manage", "skill_load", "memory_manage", "history_search", "agent_directory", "resume_task"], "cloud conversation runs get memory and collaboration, never file or shell tools");
+  assert.deepEqual(forwarded.tools.map((t: any) => t.name), ["start_task", "task_status", "task_message", "cancel_task", "automation_manage", "ask_agent", "get_ui_catalog", "show_ui", "skill_manage", "skill_load", "memory_manage", "history_search", "agent_directory", "resume_task"], "cloud conversation runs get memory and collaboration, never file or shell tools");
   const second = await send("之前说了什么？");
   assert.equal(second.content, "你之前说的是蓝鲸。");
   assert.deepEqual(second.progress, [], "direct answers have no extra acknowledgement");

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { scanContent } from "../../packages/agent/src/hermes-memory/content-scanner.js";
 import { normalizeMemoryLookupText } from "../../packages/agent/src/hermes-memory/memory-lookup.js";
 import { fail, type Row, type Tx } from "./db.js";
+import { checkpointAutomation } from "./automations.js";
 import { callerRun, createTask } from "./agents.js";
 import type { LlmClaims } from "./security.js";
 import type { Hub } from "./hub.js";
@@ -94,6 +95,7 @@ export async function manageMemory(
   body: z.infer<typeof memoryRequest>,
 ) {
   const run = await callerRun(tx, userId, claims, body.run_id);
+  if (run.automation_readonly && !["list", "search"].includes(body.action)) fail(403, "自主巡检只能读取记忆");
   await tx.one("SELECT bot_id FROM bots WHERE bot_id=$1 FOR NO KEY UPDATE", [
     run.bot_id,
   ]);
@@ -257,6 +259,7 @@ export async function checkpoint(
   version: number,
 ) {
   const run = await callerRun(tx, userId, claims, runId);
+  if (run.origin === "automation") return checkpointAutomation(tx, run, data, version);
   if (run.lane !== "task" || !run.task_id)
     fail(422, "只有任务执行方可以保存检查点");
   const r = await tx.one(

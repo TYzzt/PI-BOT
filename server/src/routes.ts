@@ -32,6 +32,7 @@ import { complete, findModel, proxyResponses, recordUsage } from "./llm.js";
 import type { WebSearch } from "./search.js";
 import { manageSkill, skillRequest } from "./skills.js";
 
+import { automationRequest, automationFinishRequest, manageAutomation, saveAutomationDecision, recordAutomationEffect } from "./automations.js";
 import {saveUiState,submitUiAction} from "./ui.js";
 import { manageMemory, memoryRequest, searchHistory, directory, checkpoint, checkpointSchema, resumeTask } from "./memory.js";
 
@@ -150,6 +151,13 @@ async function deviceFiles(ctx: Context, method: "list" | "read") {
 }
 
 export const routes: Route[] = [
+  {method:"POST",path:"/agent/automations/effect",auth:"llm",tag:"agents",summary:"自动工作操作日志",internal:true,
+    body:z.object({run_id:uuid,tool_call_id:z.string().min(1).max(200),phase:z.enum(["start","end"]),confirmed:z.boolean().optional(),tool_name:z.enum(["write_file","edit_file","run_command"]).optional(),summary:z.string().max(2000).optional(),result:z.string().max(4000).optional()}).strict(),
+    handler:async({tx,user,llm,body})=>recordAutomationEffect(tx,user.user_id,llm!,body)},
+  { method:"POST",path:"/agent/automations",auth:"llm",tag:"agents",summary:"管理长期委托与自主巡检",internal:true,body:automationRequest,
+    handler:async({tx,user,llm,body})=>manageAutomation(tx,user.user_id,llm!,body) },
+  { method:"POST",path:"/agent/automations/finish",auth:"llm",tag:"agents",summary:"提交自动轮次结果",internal:true,body:automationFinishRequest,
+    handler:async({tx,user,llm,body})=>saveAutomationDecision(tx,user.user_id,llm!,body) },
   {method:"POST",path:"/agent/memory",auth:"llm",tag:"memory",summary:"当前 Bot 的私有记忆",internal:true,body:memoryRequest,
     handler:async({tx,user,llm,body})=>manageMemory(tx,user.user_id,llm!,body)},
   {method:"POST",path:"/agent/history/search",auth:"llm",tag:"memory",summary:"检索当前 Bot 历史",internal:true,
@@ -352,8 +360,11 @@ export const routes: Route[] = [
     handler: async ({ tx, user, params }) => {
       const bot = await ownBot(tx, user.user_id, params.id);
       if (bot.is_main) fail(409, "主智能体不能删除");
-      if (await tx.one("SELECT 1 FROM bot_runs WHERE bot_id=$1 AND status IN ('queued','running','waiting_approval')", [params.id]))
+      if (await tx.one("SELECT 1 FROM bot_runs WHERE bot_id=$1 AND execution_policy='any' AND status IN ('queued','running','waiting_approval')", [params.id]))
         fail(409, "请先停止正在进行的任务");
+      await tx.rows("UPDATE bot_runs r SET cancel_requested=true FROM bot_automations a WHERE r.automation_id=a.automation_id AND (a.bot_id=$1 OR r.bot_id=$1) AND r.status IN ('queued','running','waiting_approval')", [params.id]);
+      await tx.rows("UPDATE bot_automations SET status='stopped',version=version+1,next_wake_at=NULL WHERE bot_id=$1", [params.id]);
+      await tx.rows("UPDATE automation_reports p SET discarded_at=now() FROM bot_automations a WHERE p.automation_id=a.automation_id AND a.bot_id=$1 AND p.delivered_at IS NULL", [params.id]);
       await tx.update("bots", params.id, { archived_at: new Date() });
       await tx.notify({ user_id: user.user_id, bot_id: params.id });
       return { ok: true };

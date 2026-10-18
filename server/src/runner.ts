@@ -7,6 +7,7 @@ import {
   a2uiTools,
   askAgentTool,
   taskTools,
+  automationTools,
   CANCELLED,
   createBotAgent,
   webSearchTool,
@@ -21,6 +22,10 @@ const requestSchema = z.object({
     task_id:z.string().uuid().optional(),checkpoint_version:z.number().int().min(0).optional(),
     observation_enabled:z.boolean().default(false),
     lane: z.enum(["conversation", "task"]).default("task"),
+    execution_policy: z.enum(["any", "mac_only"]).default("any"),
+    automation_readonly: z.boolean().default(false),
+    deadline_at: z.string().optional(),
+    automation: z.unknown().optional(),
     instructions: z.array(z.object({ id: z.string().uuid(), text: z.string().max(8000) })).default([]),
     bot: z.object({ id: z.string().uuid(), name: z.string(), slug: z.string() }),
     model: z.object({
@@ -96,6 +101,7 @@ export async function createRunner(options: { token: string; dir: string; factor
     const parsed = requestSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(422).send({ error: "运行参数无效" });
     const p = parsed.data;
+    if (p.run.execution_policy === "mac_only" || p.run.automation) return reply.code(403).send({ error: "自动工作仅允许 Mac 执行" });
     if (active.has(p.run.run_id)) return reply.code(409).send({ error: "运行已存在" });
     const state: Running = { cancelled: (cancelledBeforeStart.get(p.run.run_id) ?? 0) > Date.now(), prompted: false,
       received: new Set(p.run.instructions.map(i => i.id)), pending: [...p.run.instructions] };
@@ -115,7 +121,7 @@ export async function createRunner(options: { token: string; dir: string; factor
       await mkdir(cwd, { recursive: true, mode: 0o700 });
       const api = p.base_url.replace(/\/llm\/v1\/?$/, "");
       const tools = [
-        ...(p.run.lane === "conversation" ? taskTools(api, () => p.token, p.run.run_id) : []),
+        ...(p.run.lane === "conversation" ? [...taskTools(api, () => p.token, p.run.run_id), ...automationTools(api, () => p.token, p.run.run_id)] : []),
         ...(p.run.lane !== "conversation" && p.run.search_enabled ? [webSearchTool(api, () => p.token)] : []),
         ...(p.run.agents_enabled ? [askAgentTool(api, () => p.token, p.run.run_id, { conversation: p.run.lane === "conversation" })] : []),
       ];

@@ -4,6 +4,7 @@ import { HttpError, type Row } from "./db.js";
 export interface DeviceConnection {
   deviceId: string;
   userId: string;
+  capabilities?: string[];
   send(message: Row): void;
   close(code: number): void;
 }
@@ -50,6 +51,9 @@ export class Hub {
   }
   online(userId: string) {
     return this.devices.has(userId);
+  }
+  capableUsers(feature: string) {
+    return [...this.devices.values()].filter(conn => conn.capabilities?.includes(feature)).map(conn => conn.userId);
   }
   kick(deviceId: string) {
     for (const conn of this.devices.values())

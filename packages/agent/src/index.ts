@@ -50,6 +50,7 @@ export interface BotAgentOptions {
   systemPrompt: string;
   history: HistoryMessage[];
   memory?: MemoryOptions;
+  readonly?: boolean;
   runId?:string;
   onObservation?:(event:Observation)=>void;
   tools: ToolDefinition[];
@@ -74,6 +75,7 @@ export type AgentFactory = (options: BotAgentOptions) => Promise<AgentHandle>;
 
 export { a2uiTools, UI_INSTRUCTIONS } from "./a2ui.js";
 export { webSearchTool } from "./web-search.js";
+export { automationTools } from "./automations.js";
 export { taskTools, TASK_TOOL_NAMES } from "./tasks.js";
 export { askAgentTool, type AskAgentOptions } from "./ask-agent.js";
 export { isInternalTool, type SkillSummary } from "./skills.js";
@@ -211,7 +213,7 @@ export class PiAgent implements AgentHandle {
 }
 
 export const createBotAgent: AgentFactory = async (o) => {
-  if (o.tools.some(tool => isInternalTool(tool.name))) throw new Error("内部工具名称不能由外部工具覆盖");
+  if (o.tools.some(tool => isInternalTool(tool.name) && !["automation_manage", "automation_finish"].includes(tool.name))) throw new Error("内部工具名称不能由外部工具覆盖");
   mkdirSync(o.agentDir, { recursive: true, mode: 0o700 });
   const runtime = await ModelRuntime.create({
     credentials: new InMemoryCredentialStore(),
@@ -271,7 +273,7 @@ export const createBotAgent: AgentFactory = async (o) => {
   });
   await resourceLoader.reload();
   if (resourceLoader.getExtensions().errors.length) throw new Error("内部能力插件加载失败");
-  const allowed = new Set([...o.tools.map(t => t.name), ...(o.skills ? SKILL_TOOLS : []),...(o.memory?MEMORY_TOOLS.filter(n=>n!== (o.memory!.lane==="task"?"resume_task":"task_checkpoint")):[])]);
+  const allowed = new Set([...o.tools.map(t => t.name), ...(o.skills ? SKILL_TOOLS.filter(n => !o.readonly || n !== "skill_manage") : []),...(o.memory?MEMORY_TOOLS.filter(n=>n!== (o.memory!.lane==="task"?"resume_task":"task_checkpoint")):[])]);
   const { session } = await createAgentSession({
     cwd: o.cwd,
     agentDir: o.agentDir,

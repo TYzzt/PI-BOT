@@ -54,6 +54,11 @@ export async function sockets(
   app.get("/ws/device", { websocket: true }, (ws, req) => {
     let conn: DeviceConnection | undefined;
     let seen = 0;
+    let lastMessageAt = Date.now();
+    // A sleeping Mac can retain a TCP connection without being able to execute.
+    const heartbeat = setInterval(() => {
+      if (conn && Date.now() - lastMessageAt > 60000) ws.terminate();
+    }, 15000);
     let queue = Promise.resolve();
     const ready = db
       .tx((tx) => device(tx, req.headers, "GET", "/ws/device", Buffer.alloc(0), s))
@@ -81,7 +86,11 @@ export async function sockets(
           } catch {
             return;
           }
-          if (m.type === "ping") {
+          lastMessageAt = Date.now();
+          if (m.type === "capabilities") {
+            conn.capabilities = Array.isArray(m.features) ? m.features.filter((x: unknown) => x === "always-on-v1") : [];
+            dispatcher?.kick();
+          } else if (m.type === "ping") {
             send(ws, { type: "pong" });
             if (Date.now() - seen > 30000) {
               seen = Date.now();
@@ -99,6 +108,7 @@ export async function sockets(
         .catch(() => {});
     });
     ws.on("close", () => {
+      clearInterval(heartbeat);
       void ready.then(async () => {
         if (!conn) return;
         const current = hub.detach(conn);

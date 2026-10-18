@@ -37,6 +37,10 @@ export function settings(env = process.env) {
     /** Cloud runs one worker executes at once; delegating runs wait on their children. */
     workerConcurrency: integer(env.PI_BOT_WORKER_CONCURRENCY, 4, 1, 64),
     conversationConcurrency: integer(env.PI_BOT_CONVERSATION_CONCURRENCY, 4, 1, 64),
+    automationRoundSeconds: integer(env.PI_BOT_AUTOMATION_ROUND_SECONDS, 300, 10, 1800),
+    automationModelCalls: integer(env.PI_BOT_AUTOMATION_MODEL_CALLS, 20, 1, 200),
+    automationDailyRounds: integer(env.PI_BOT_AUTOMATION_DAILY_ROUNDS, 96, 1, 10000),
+    automationPatrolDailyRounds: integer(env.PI_BOT_AUTOMATION_PATROL_DAILY_ROUNDS, 8, 1, 1000),
     historyLimit: integer(env.PI_BOT_HISTORY_LIMIT, 40, 4, 400),
     memoryThreshold: integer(env.PI_BOT_MEMORY_THRESHOLD, 60, 10, 2000),
     vaultFile: env.PI_BOT_VAULT_FILE,

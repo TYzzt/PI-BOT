@@ -7,12 +7,29 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Type } from "typebox";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { createBotAgent, redactor, summarize, type ToolActivity } from "../src/index.js";
+import { createBotAgent, redactor, summarize, automationTools, type ToolActivity } from "../src/index.js";
 
 const SECRET = "proxy-token-123456";
 const text = (c: any): string => (Array.isArray(c) ? c.map((p) => p.text ?? "").join("") : String(c ?? ""));
 const requests: any[] = [];
 let server: ReturnType<typeof createServer>, url: string, dir: string;
+
+test("readonly patrol activates its finish and checkpoint tools without skill management or execution tools", async () => {
+  const agent = await createBotAgent({
+    model: { id: "patrol", name: "巡检", baseUrl: url, modelId: "test", contextWindow: 32000, maxTokens: 1000 },
+    apiKey: SECRET, cwd: dir, agentDir: join(dir, "patrol"), systemPrompt: "只读巡检", history: [], readonly: true,
+    tools: automationTools(url, () => SECRET, "00000000-0000-4000-8000-000000000001", true),
+    skills: { baseUrl: url, token: () => SECRET, runId: "patrol", catalog: [] },
+    memory: { baseUrl: url, token: () => SECRET, runId: "patrol", lane: "task", context: "", readonly: true },
+  });
+  try {
+    assert.ok(agent.tools.includes("automation_finish"));
+    assert.ok(agent.tools.includes("task_checkpoint"));
+    assert.ok(agent.tools.includes("skill_load"));
+    for (const name of ["skill_manage", "resume_task", "run_command", "write_file", "edit_file", "ask_agent"])
+      assert.ok(!agent.tools.includes(name), name);
+  } finally { agent.dispose(); }
+});
 
 before(async () => {
   dir = mkdtempSync(join(tmpdir(), "pi-bot-agent-"));

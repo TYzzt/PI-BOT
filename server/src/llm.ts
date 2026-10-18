@@ -106,6 +106,16 @@ export async function proxyResponses(
   signal: AbortSignal,
   correlation?:{run:Row;generationId?:string;parentTool?:string},
 ) {
+  if (correlation?.run.execution_policy === "mac_only") {
+    const admitted = await db.tx(async tx => {
+      const r = correlation!.run;
+      const root = await tx.one("SELECT r.run_id FROM bot_runs r JOIN automation_rounds ar ON ar.run_id=r.run_id WHERE r.automation_id=$1 AND ar.status='active'", [r.automation_id]);
+      if (!root || claims.src !== "mac") return false;
+      return !!await tx.one(`UPDATE bot_runs SET automation_calls=automation_calls+1
+        WHERE run_id=$1 AND status='running' AND NOT cancel_requested AND automation_calls<$2 AND deadline_at>now() RETURNING run_id`, [root.run_id, s.automationModelCalls]);
+    });
+    if (!admitted) return openAiError(reply, 429, "自动工作已停止或达到本轮模型调用上限");
+  }
   const key = new Vault(s.vaultFile).open(model.secret, model.model_id);
   const payload: Row = {
     ...body,

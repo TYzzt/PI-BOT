@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import { a2uiTools, askAgentTool, taskTools, CANCELLED, createBotAgent, webSearchTool, type AgentFactory, type AgentHandle, type ToolActivity, type SkillSummary } from '@pi-bot/agent';
+import { a2uiTools, askAgentTool, taskTools, automationTools, CANCELLED, createBotAgent, webSearchTool, type AgentFactory, type AgentHandle, type ToolActivity, type SkillSummary } from '@pi-bot/agent';
 import type { Mood } from '@pi-bot/bot-face';
 import { libraryDir, libraryTools, Sandbox } from './library.js';
 
@@ -9,6 +9,10 @@ export interface RunContext {
   run_id: string;
   executor: 'mac' | 'cloud';
   lane?: 'conversation' | 'task';
+  execution_policy?: 'any' | 'mac_only';
+  automation_readonly?: boolean;
+  deadline_at?: string;
+  automation?: { id: string; kind: 'patrol' | 'commission'; version: number; checkpoint_version: number; checkpoint: Record<string, unknown> };
   instructions?: { id: string; text: string }[];
   bot: { id: string; name: string; slug: string };
   model: { id: string; name: string; context_window: number; max_tokens: number };
@@ -60,13 +64,14 @@ export class Executor {
     event({ kind: 'started' });
     this.deps.activity(run, null, 'thinking');
     let timedOut = false;
-    const deadline = run.lane === 'conversation' ? setTimeout(() => { timedOut = true; void state.agent?.abort(); }, 60000) : undefined;
+    const timeoutMs = run.deadline_at ? Math.max(1, Date.parse(run.deadline_at) - Date.now()) : run.lane === 'conversation' ? 60000 : undefined;
+    const deadline = timeoutMs === undefined ? undefined : setTimeout(() => { timedOut = true; void state.agent?.abort(); }, timeoutMs);
     let latest = '', lastSent = 0, pendingText: NodeJS.Timeout | undefined, refresh: NodeJS.Timeout | undefined;
     const flush = () => { clearTimeout(pendingText); pendingText = undefined; lastSent = Date.now(); event({ kind: 'text', text: latest }); };
     try {
       const sandbox = new Sandbox(await libraryDir(this.deps.libraryRoot, run.bot.slug));
       let token = await this.deps.llmToken(run.bot.id);
-      const tools = run.lane === "conversation" ? [] : libraryTools(sandbox, {
+      let tools = run.lane === "conversation" ? [] : libraryTools(sandbox, {
         requestOutside: (path, reason, signal) => new Promise<boolean>(resolve => {
           const requestId = randomUUID();
           const timer = setTimeout(() => settle(false), this.deps.approvalTimeoutMs ?? 15 * 60 * 1000);
@@ -82,8 +87,34 @@ export class Executor {
           event({ kind: 'approval', request_id: requestId, path, reason });
         }),
       });
+      if (run.automation_readonly) tools = tools.filter(t => ['list_files', 'read_file', 'search_files'].includes(t.name));
       const api = this.deps.proxyUrl.replace(/\/llm\/v1\/?$/, '');
-      if (run.lane === "conversation") tools.push(...taskTools(api, () => token, run.run_id));
+      if (run.execution_policy === 'mac_only' && !run.automation_readonly) tools = tools.map(tool => {
+        if (!['write_file', 'edit_file', 'run_command'].includes(tool.name)) return tool;
+        return { ...tool, execute: async (id, args, signal, update, ctx) => {
+          const journal = async (phase: 'start' | 'end', confirmed?: boolean, result?: string) => {
+            const response = await fetch(`${api}/agent/automations/effect`, {
+              method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ run_id: run.run_id, tool_call_id: id, phase, confirmed, tool_name: tool.name, summary: JSON.stringify(args).slice(0,2000), result }),
+              redirect: 'error', signal: AbortSignal.timeout(15000),
+            });
+            if (!response.ok) throw new Error('操作状态无法确认，已停止自动执行');
+          };
+          await journal('start');
+          const result = await tool.execute(id, args, signal, update, ctx);
+          let confirmed = true;
+          if (tool.name === 'run_command') {
+            try {
+              const output = JSON.parse(result.content.filter(c => c.type === 'text').map(c => c.text).join(''));
+              confirmed = output.exit_code === 0 && !output.timed_out;
+            } catch { confirmed = false; }
+          }
+          await journal('end', confirmed, result.content.filter(c => c.type === 'text').map(c => c.text).join('').slice(0,4000));
+          return result;
+        } };
+      });
+      if (run.lane === "conversation") tools.push(...taskTools(api, () => token, run.run_id), ...automationTools(api, () => token, run.run_id));
+      if (run.automation) tools.push(...automationTools(api, () => token, run.run_id, true));
       if (run.lane !== "conversation" && run.search_enabled) tools.push(webSearchTool(api, () => token));
       if (run.agents_enabled) tools.push(askAgentTool(api, () => token, run.run_id, { conversation: run.lane === "conversation" }));
       tools.push(...a2uiTools(messages => { event({ kind: 'ui', messages }); }));
@@ -95,6 +126,7 @@ export class Executor {
       state.agent = await (this.deps.factory ?? createBotAgent)({
         model: { id: run.model.id, name: run.model.name, baseUrl: this.deps.proxyUrl, modelId: run.model.id, contextWindow: run.model.context_window, maxTokens: run.model.max_tokens },
         apiKey: token,
+        readonly: run.automation_readonly,
         cwd: sandbox.root,
         agentDir: join(this.deps.agentDir, 'bots', run.bot.id),
         systemPrompt: run.system,
@@ -102,7 +134,7 @@ export class Executor {
         tools,
         skills: { baseUrl: api, token: () => token, runId: run.run_id, catalog: run.skills ?? [] },
         runId:run.run_id,
-        memory:{baseUrl:api,token:()=>token,runId:run.run_id,lane:run.lane??'task',context:run.memory_context??'',taskId:run.task_id,checkpointVersion:run.checkpoint_version},
+        memory:{baseUrl:api,token:()=>token,runId:run.run_id,lane:run.lane??'task',context:run.memory_context??'',taskId:run.task_id,checkpointVersion:run.checkpoint_version,readonly:run.automation_readonly},
         onObservation:run.observation_enabled?e=>event({kind:'observation',...e}):undefined,
         onTool,
         onProgress: lines => {
@@ -111,7 +143,7 @@ export class Executor {
           event({ kind: 'progress', lines });
         },
       });
-      if (timedOut) throw new Error('对话响应超时，请重新发送');
+      if (timedOut) throw new Error(run.automation ? '自动轮次超过执行时限' : '对话响应超时，请重新发送');
       if (state.cancelled) throw new Error(CANCELLED);
       refresh = setInterval(() => { void this.deps.llmToken(run.bot.id).then(t => { token = t; return state.agent?.setApiKey(t); }).catch(() => {}); }, TOKEN_REFRESH_MS);
       const initial = state.pending.splice(0);
@@ -125,11 +157,11 @@ export class Executor {
       });
       clearTimeout(pendingText);
       event({ kind: 'done', state: 'completed', text: final });
-      this.deps.activity(run, null, 'celebrate');
+      this.deps.activity(run, null, run.automation ? null : 'celebrate');
     } catch (error) {
       clearTimeout(pendingText);
       const cancelled = !timedOut && (state.cancelled || (error instanceof Error && error.message === CANCELLED));
-      const message = timedOut ? '对话响应超时，请重新发送' : error instanceof Error && !cancelled ? error.message.slice(0, 300) : null;
+      const message = timedOut ? (run.automation ? '自动轮次超过执行时限' : '对话响应超时，请重新发送') : error instanceof Error && !cancelled ? error.message.slice(0, 300) : null;
       event({ kind: 'done', state: cancelled ? 'cancelled' : 'failed', error: message ?? '运行失败', text: latest || undefined });
       this.deps.activity(run, null, cancelled ? null : 'error');
     } finally {

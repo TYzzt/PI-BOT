@@ -43,7 +43,7 @@ export class Worker {
         "SELECT run_id FROM bot_runs WHERE executor='cloud' AND status='running' AND lease_until < now() FOR UPDATE SKIP LOCKED",
       );
       for (const r of stale) await finishRun(tx, r.run_id, "failed", "云端执行中断，请重新发送");
-      const candidates = await tx.rows("SELECT run_id FROM bot_runs WHERE executor='cloud' AND status='queued' AND NOT cancel_requested ORDER BY (lane='task'), (origin='report'), created_at LIMIT 100");
+      const candidates = await tx.rows("SELECT run_id FROM bot_runs WHERE executor='cloud' AND execution_policy='any' AND status='queued' AND NOT cancel_requested ORDER BY (lane='task'), (origin='report'), created_at LIMIT 100");
       let run: Row | null = null;
       for (const candidate of candidates) {
         run = await claimExecution(tx, candidate.run_id, this.s, this.id);

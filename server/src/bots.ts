@@ -8,6 +8,7 @@ import type { Settings } from "./config.js";
 import { searchAvailable } from "./search.js";
 import { directory, privateMemoryContext, forgottenContext, maskForgotten } from "./memory.js";
 import { estimateTokens } from "@earendil-works/pi-coding-agent";
+import { ensurePatrol, wakePatrol, automationForRun, settleAutomation } from "./automations.js";
 import { recordRun } from "./observations.js";
 
 export const ACTIVE = ["queued", "running", "waiting_approval"];
@@ -129,7 +130,7 @@ export const approvalOut = (a: Row) => ({
   created_at: a.created_at,
 });
 export async function botOut(tx: Tx, b: Row) {
-  const [run, last, approvals, tasks] = await Promise.all([
+  const [run, last, approvals, tasks, automatic] = await Promise.all([
     tx.one(
       "SELECT * FROM bot_runs WHERE bot_id=$1 AND lane='conversation' ORDER BY (status IN ('running','waiting_approval')) DESC, created_at DESC LIMIT 1",
       [b.bot_id],
@@ -148,14 +149,16 @@ export async function botOut(tx: Tx, b: Row) {
       LEFT JOIN bot_messages m ON m.message_id=r.assistant_message_id
       WHERE (t.parent_bot_id=$1 OR t.target_bot_id=$1) AND t.status IN ('queued','running','waiting_approval')
       ORDER BY t.created_at`, [b.bot_id]),
+    tx.rows("SELECT r.*,a.kind FROM bot_runs r JOIN bot_automations a USING(automation_id) WHERE r.bot_id=$1 AND r.origin='automation' AND a.status='enabled' AND r.status IN ('queued','running','waiting_approval')", [b.bot_id]),
   ]);
+  const autoRunning = automatic.filter(r => r.status !== "queued");
   const running = tasks.filter(t => t.status !== "queued");
   const activeTool = running.flatMap(t => t.tools ?? []).findLast(t => t.state === "running");
-  const status = approvals.length ? "waiting_approval" : running.length ? "running" : tasks.length ? "queued" : run?.status ?? null;
+  const status = approvals.length ? "waiting_approval" : running.length || autoRunning.length ? "running" : tasks.length || automatic.length ? "queued" : run?.status ?? null;
   const labels: Record<string, string> = { run_command: "正在运行命令", web_search: "正在查找资料", read_file: "正在阅读文件", write_file: "正在整理文件", edit_file: "正在修改文件", ask_agent: "正在等待协作结果" };
-  const activity = { status, tool: activeTool?.name ?? null, running_count: running.length,
-    queued_count: tasks.length - running.length,
-    summary: approvals.length ? "等你批准访问请求" : running.length > 1 ? `正在处理 ${running.length} 个任务` : running.length ? labels[activeTool?.name] ?? "正在处理任务" : tasks.length ? `有 ${tasks.length} 个任务排队中` : run && ACTIVE.includes(run.status) ? "正在思考" : null };
+  const activity = { status, tool: activeTool?.name ?? null, running_count: running.length + autoRunning.length,
+    queued_count: tasks.length - running.length + automatic.length - autoRunning.length,
+    summary: approvals.length ? "等你批准访问请求" : running.length > 1 ? `正在处理 ${running.length} 个任务` : running.length ? labels[activeTool?.name] ?? "正在处理任务" : autoRunning.length ? autoRunning.some(r => r.kind === "commission") ? "正在跟进" : "正在检查" : tasks.length ? `有 ${tasks.length} 个任务排队中` : run && ACTIVE.includes(run.status) ? "正在思考" : null };
   return {
     id: b.bot_id,
     name: b.name,
@@ -202,7 +205,7 @@ export async function createBot(
   await checkModel(tx, input.model_id);
   const id = randomUUID();
   const slug = await uniqueSlug(tx, userId, input.slug ?? slugBase(input.name));
-  return tx.insert("bots", {
+  const bot = await tx.insert("bots", {
     bot_id: id,
     user_id: userId,
     name: input.name,
@@ -211,6 +214,8 @@ export async function createBot(
     model_id: input.model_id ?? null,
     avatar: input.avatar ?? avatarFor(id),
   });
+  await ensurePatrol(tx, id, userId);
+  return bot;
 }
 export async function updateBot(
   tx: Tx,
@@ -251,10 +256,10 @@ export async function ensureMainBot(tx: Tx, userId: string) {
   });
   return tx.update("bots", bot.bot_id, { is_main: true });
 }
-async function nextSeq(tx: Tx, botId: string, count: number) {
+async function nextSeq(tx: Tx, botId: string, count: number, visible = true) {
   const r = await tx.one(
-    "UPDATE bots SET next_seq=next_seq+$2, last_active_at=now() WHERE bot_id=$1 RETURNING next_seq",
-    [botId, count],
+    "UPDATE bots SET next_seq=next_seq+$2, last_active_at=CASE WHEN $3 THEN now() ELSE last_active_at END WHERE bot_id=$1 RETURNING next_seq",
+    [botId, count, visible],
   );
   return r!.next_seq - count;
 }
@@ -283,7 +288,11 @@ export interface NewRun {
   requestId: string;
   text: string;
   mac: { deviceId: string } | null;
-  origin?: "user" | "agent" | "report";
+  origin?: "user" | "agent" | "report" | "automation";
+  automationId?: string;
+  executionPolicy?: "any" | "mac_only";
+  automationReadonly?: boolean;
+  deadlineAt?: Date;
   taskId?: string;
   lane?: "conversation" | "task";
   /** Set when the incoming message was written by another bot rather than the user. */
@@ -291,13 +300,13 @@ export interface NewRun {
 }
 /** Appends the incoming message, an empty reply and a queued run; the caller has locked the bot and checked it is idle. */
 export async function insertRun(tx: Tx, o: NewRun) {
-  const seq = await nextSeq(tx, o.botId, 2);
   const runId = randomUUID(),
     userMessageId = randomUUID(),
     assistantMessageId = randomUUID();
   const executor = o.mac ? "mac" : "cloud";
   const task=o.taskId?await tx.get("agent_tasks",o.taskId):null;
   const parent=task?await tx.get("bot_runs",task.parent_run_id):null;
+  const seq = await nextSeq(tx, o.botId, 2, (o.executionPolicy ?? parent?.execution_policy) !== "mac_only" || o.origin === "report");
   const run = await tx.insert("bot_runs", {
     run_id: runId,
     bot_id: o.botId,
@@ -310,6 +319,10 @@ export async function insertRun(tx: Tx, o: NewRun) {
     assistant_message_id: assistantMessageId,
     origin: o.origin ?? "user",
     task_id: o.taskId ?? null,
+    automation_id: o.automationId ?? parent?.automation_id ?? null,
+    execution_policy: o.executionPolicy ?? parent?.execution_policy ?? "any",
+    automation_readonly: o.automationReadonly ?? parent?.automation_readonly ?? false,
+    deadline_at: o.deadlineAt ?? parent?.deadline_at ?? null,
     lane: o.lane ?? "conversation",
     trace_id:parent?.trace_id??runId,
     parent_run_id:parent?.run_id??null,
@@ -337,6 +350,7 @@ export async function insertRun(tx: Tx, o: NewRun) {
     executor,
     visibility: o.lane === "task" ? "task" : "public",
   });
+  if (!o.origin || o.origin === "user") await wakePatrol(tx, o.botId);
   await tx.notify({ user_id: o.userId, bot_id: o.botId });
   return run;
 }
@@ -355,6 +369,10 @@ export interface RunContext {
   task_id?: string;
   checkpoint_version?: number;
   observation_enabled?: boolean;
+  execution_policy?: "any" | "mac_only";
+  automation_readonly?: boolean;
+  deadline_at?: string;
+  automation?: { id: string; kind: "patrol" | "commission"; version: number; checkpoint_version: number; checkpoint: Record<string, unknown> };
   search_enabled: boolean;
   /** Whether the run may hand work to other bots through `ask_agent`. */
   agents_enabled: boolean;
@@ -408,9 +426,10 @@ export function systemPrompt(
   executor: "mac" | "cloud",
   options: { search?: boolean; now?: Date; agents?: Collaborator[]; depth?: number; lane?: "conversation" | "task" } = {},
 ) {
-  const date = (options.now ?? new Date()).toISOString().slice(0, 10);
+  const now = options.now ?? new Date();
+  const date = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
   const parts = [
-    `你是「${bot.name}」，一个运行在 Pi Bot 中的智能体。今天是 ${date}。`,
+    `你是「${bot.name}」，一个运行在 Pi Bot 中的智能体。今天是 ${date}。当前 UTC 时间 ${now.toISOString()}；默认时区 Asia/Shanghai，当地时间 ${new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Shanghai", dateStyle: "short", timeStyle: "short" }).format(now)}。自动时间规则优先使用委托已有时区。`,
   ];
   if (bot.persona.trim()) parts.push(`你的人设与职责：\n${bot.persona.trim()}`);
   if (memory.trim()) parts.push(`你对之前对话的长期记忆（摘要）：\n${memory.trim()}`);
@@ -481,7 +500,11 @@ export async function buildContext(
   const taskRecord=run.task_id?await tx.get("agent_tasks",run.task_id):null;
   const checkpointText=taskRecord?JSON.stringify(taskRecord.checkpoint):'';
   const memoryContext=(privateContext+(run.lane==="task"&&taskRecord?`\n当前任务 ID：${taskRecord.task_id}；检查点版本：${taskRecord.checkpoint_version}\n检查点：${checkpointText.slice(0,4000)}${checkpointText.length>4000?'\n[检查点已截断，需要时用 task_status 读取完整版本]':''}`:'')).slice(0,12500);
-  const system=systemPrompt(bot,maskForgotten(memory?.summary??'',forgotten),run.executor,{search,agents,depth,lane:run.lane});
+  const automation = await automationForRun(tx, run);
+  let system=systemPrompt(bot,maskForgotten(memory?.summary??'',forgotten),run.executor,{search,agents,depth,lane:run.lane});
+  if (run.lane === "conversation") system += "\n长期委托和自主巡检：用户说持续关注、定期检查或指定时间继续时，用 automation_manage 建立委托，记录用户的具体授权范围和时间规则；不要用一次性 start_task 代替。查询、调整、暂停、恢复、停止自动工作也使用该工具。全部操作仅在用户明确要求全部时使用 all=true。所有自动工作等待支持此能力的 Mac 在线，不在云端执行。创建前先查询，避免重复委托。";
+  if (automation) system += `\n你正在执行自动工作，当前时间 ${new Date().toISOString()}。本轮状态、检查点和通知决定必须调用 automation_finish 提交，然后结束；不要只用普通文字结束。没有重要变化时 notify=false。只有可交付成果、重要风险、需要用户决策或约定提醒才 notify=true，并提供根据事实生成的稳定 notification_key（同一事项同一状态不得换 key 重报）。每日/间隔委托的 complete 只完成本次，不停止后续周期；需要用户时 waiting_user。等待时不能睡眠或循环轮询，保存进度并安排至少一分钟后的唤醒。${automation.kind === "patrol" ? '这是默认只读巡检，只能检查和整理，不能执行命令、修改文件、委托其他 Bot 或自行新增目标；有已有授权的未完成工作时提出具体续接建议，不擅自恢复取消的任务。' : '仅执行委托记载的授权目标，不扩大范围。先核实检查点和操作结果，未知副作用不可重放。'}\n委托状态：${JSON.stringify({ id: automation.automation_id, version: automation.version, checkpoint_version: automation.checkpoint_version, checkpoint: automation.checkpoint })}`;
+  if (run.automation_readonly) system += "\n只读巡检中 memory_manage 仅允许 list/search，skill_manage 不可用。";
   const skills=await skillCatalog(tx,bot.bot_id);
   const instructions=run.task_id && run.lane === "task" ? (await tx.rows("SELECT instruction_id AS id, text FROM agent_task_instructions WHERE task_id=$1 AND delivered_at IS NULL ORDER BY created_at, instruction_id", [run.task_id])) as { id: string; text: string }[] : [];
   const tokens=(text:string)=>estimateTokens({role:"user",content:text,timestamp:0});
@@ -514,14 +537,18 @@ export async function buildContext(
     instructions,
     memory_context:memoryContext,
     task_id:run.task_id??undefined,
-    checkpoint_version:taskRecord?.checkpoint_version??0,
+    checkpoint_version:automation?.checkpoint_version??taskRecord?.checkpoint_version??0,
     observation_enabled:s.tracingEnabled,
     lane: run.lane ?? "conversation",
     system,
     history,
     text,
     search_enabled: run.lane === "task" && search,
-    agents_enabled: depth<MAX_DELEGATION_DEPTH,
+    execution_policy: run.execution_policy,
+    automation_readonly: run.automation_readonly,
+    deadline_at: run.deadline_at ? new Date(run.deadline_at).toISOString() : undefined,
+    automation: automation ? { id: automation.automation_id, kind: automation.kind, version: automation.version, checkpoint_version: automation.checkpoint_version, checkpoint: automation.checkpoint } : undefined,
+    agents_enabled: !run.automation_readonly && depth<MAX_DELEGATION_DEPTH,
     skills,
   };
 }
@@ -575,13 +602,20 @@ export async function finishRun(
   state: "completed" | "failed" | "cancelled",
   error: string | null,
   content?: string,
+  now = new Date(),
 ) {
   const run = await tx.one(
     "SELECT * FROM bot_runs WHERE run_id=$1 FOR NO KEY UPDATE",
     [runId],
   );
   if (!run || !ACTIVE.includes(run.status)) return null;
-  const final = run.cancel_requested ? "cancelled" : state;
+  let final = run.cancel_requested ? "cancelled" : state;
+  if (run.origin === "automation") {
+    // User input locks the Bot before resetting its patrol. Keep the same order.
+    await tx.one("SELECT bot_id FROM bots WHERE bot_id=$1 FOR NO KEY UPDATE", [run.bot_id]);
+    const settled = await settleAutomation(tx, run, final, error, now);
+    final = settled.state as typeof final; error = settled.error;
+  }
   await tx.rows(
     "UPDATE bot_runs SET status=$2, error=$3, finished_at=now(), lease_until=NULL WHERE run_id=$1",
     [runId, final, final === "failed" ? error : null],
@@ -594,7 +628,8 @@ export async function finishRun(
     "UPDATE approvals SET status='expired', decided_at=now() WHERE run_id=$1 AND status='pending'",
     [runId],
   );
-  await tx.rows("UPDATE bots SET last_active_at=now(),knowledge_dirty=knowledge_dirty OR $2,knowledge_revision=knowledge_revision+CASE WHEN $2 THEN 1 ELSE 0 END WHERE bot_id=$1", [run.bot_id,run.lane==='task'&&final==='completed']);
+  await tx.rows("UPDATE bots SET last_active_at=CASE WHEN $3 THEN now() ELSE last_active_at END,knowledge_dirty=knowledge_dirty OR $2,knowledge_revision=knowledge_revision+CASE WHEN $2 THEN 1 ELSE 0 END WHERE bot_id=$1", [run.bot_id,run.lane==='task'&&final==='completed'&&!run.automation_readonly,run.execution_policy!=="mac_only"||run.origin==="report"]);
+  if (run.lane === "task" && run.execution_policy !== "mac_only") await wakePatrol(tx, run.bot_id);
   if (run.origin === "agent" && run.task_id) {
     const reply = await tx.one("SELECT content FROM bot_messages WHERE message_id=$1", [run.assistant_message_id]);
     await tx.rows(`UPDATE agent_tasks SET checkpoint=checkpoint || jsonb_build_object('final_status',$2::text,'result',$3::text,'saved_at',now()),
@@ -605,7 +640,7 @@ export async function finishRun(
     );
     if (task) await tx.notify({ user_id: run.user_id, bot_id: task.parent_bot_id });
   }
-  if (final === "cancelled" && run.lane === "task") await cancelDelegations(tx, runId);
+  if ((final === "cancelled" || (final === "failed" && run.execution_policy === "mac_only")) && run.lane === "task") await cancelDelegations(tx, runId);
   await tx.notify({ user_id: run.user_id, bot_id: run.bot_id });
   await recordRun(tx,{...run,status:final,error:final==='failed'?error:null,finished_at:new Date()},run.observation_enabled);
   return { ...run, status: final };
