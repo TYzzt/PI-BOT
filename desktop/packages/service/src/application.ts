@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import type { Mood } from '@pi-bot/bot-face';
 import type { AgentFactory } from '@pi-bot/agent';
 import type { AccountState, AppEvent, Bot, Connection, LocalActivity, Method, MessagePage, ModelOption } from '../../protocol/src/index.js';
-import { checkServerUrl, cloudFetch, CloudHttpError, CloudSocket, newIdentity, signer, type Signer } from './cloud.js';
+import { checkServerUrl, cloudFetch, CloudHttpError, CloudSocket, newIdentity, identityFromPrivateKey, signer, type Signer } from './cloud.js';
 import type { Credentials } from './keychain.js';
 import { Executor, agentDirFor, type RunContext } from './executor.js';
 import { previewList, previewRead } from './library.js';
@@ -27,7 +27,7 @@ export interface ApplicationOptions {
 }
 
 /**
- * The Mac harness: binds this computer to a Pi Bot account, keeps the device
+ * The computer harness: binds this computer to a Pi Bot account, keeps the device
  * socket open, executes bot runs locally and proxies UI calls to the server.
  */
 export class Application {
@@ -53,7 +53,7 @@ export class Application {
     }
   }
   state(): AccountState {
-    return { connection: this.connection, serverUrl: this.account?.serverUrl ?? null, user: this.account?.user ?? null, deviceLabel: this.account?.deviceLabel ?? null, libraryRoot: this.o.libraryRoot };
+    return { connection: this.connection, serverUrl: this.account?.serverUrl ?? null, user: this.account?.user ?? null, deviceId: this.account?.deviceId ?? null, deviceLabel: this.account?.deviceLabel ?? null, libraryRoot: this.o.libraryRoot };
   }
   private setConnection(connection: Connection) {
     if (this.connection === connection) return;
@@ -133,6 +133,7 @@ export class Application {
       }
       case 'event': {
         const e = m.event ?? {};
+        if (e.type === 'presence') { this.o.emit({type:'bots'}); return; }
         if (e.type === 'bot' || e.type === 'delta' || e.type === 'bots') this.o.emit(e as AppEvent);
         return;
       }
@@ -149,9 +150,11 @@ export class Application {
   async login(input: { serverUrl: string; username: string; password: string; label: string }) {
     const serverUrl = checkServerUrl(input.serverUrl);
     const auth = await cloudFetch<{ access_token: string; user: Account['user'] }>(serverUrl, 'POST', '/auth/login', { body: { username: input.username, password: input.password } });
-    const identity = newIdentity();
-    const reg = await cloudFetch<{ device: { id: string } }>(serverUrl, 'POST', '/devices/register', { body: { public_key: identity.publicKey, label: input.label }, headers: { authorization: `Bearer ${auth.access_token}` } });
-    await this.logout();
+    const savedKey = this.account?.serverUrl === serverUrl && this.account?.user.id === auth.user.id
+      ? await this.o.credentials.get(this.account.deviceId) : null;
+    const identity = savedKey ? identityFromPrivateKey(savedKey) : newIdentity();
+    const reg = await cloudFetch<{ device: { id: string } }>(serverUrl, 'POST', '/devices/register', { body: { public_key: identity.publicKey, label: input.label, platform: process.platform }, headers: { authorization: `Bearer ${auth.access_token}` } });
+    await this.logout(false);
     const account: Account = { serverUrl, deviceId: reg.device.id, deviceLabel: input.label, user: { id: auth.user.id, username: auth.user.username, display_name: auth.user.display_name } };
     await this.o.credentials.set(account.deviceId, identity.privateKey);
     mkdirSync(this.o.dataDir, { recursive: true, mode: 0o700 });
@@ -161,7 +164,11 @@ export class Application {
     this.connect(account, identity.privateKey);
     return this.state();
   }
-  async logout() {
+  async logout(revoke = true) {
+    if (revoke && this.account && this.sign) {
+      try { await this.cloud('POST', `/devices/${this.account.deviceId}/revoke`); }
+      catch (error) { if (!(error instanceof CloudHttpError && error.status === 401)) throw error; }
+    }
     this.executor?.stopAll();
     this.socket?.stop();
     if (this.account) await this.o.credentials.delete(this.account.deviceId).catch(() => {});
@@ -179,6 +186,13 @@ export class Application {
       case 'login': return this.login(input);
       case 'logout': return this.logout();
       case 'models': return this.cloud<ModelOption[]>('GET', '/models');
+      case 'devices': return this.cloud('GET', '/devices');
+      case 'deviceRevoke': return this.cloud('POST', `/devices/${input.id}/revoke`);
+      case 'openLibrary': {
+        const bot = await this.cloud<Bot>('GET', `/bots/${input.id}`);
+        if (!this.account || bot.execution_device_id !== this.account.deviceId) throw new Error('资料库位于另一台执行电脑，请在那台电脑上打开或使用手机浏览');
+        return { slug: bot.slug };
+      }
       case 'bots': return this.cloud<{ bots: Bot[] }>('GET', '/bots');
       case 'botCreate': return this.cloud<Bot>('POST', '/bots', input);
       case 'botUpdate': { const { id, ...patch } = input; return this.cloud<Bot>('PATCH', `/bots/${id}`, patch); }

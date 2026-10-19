@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { lstat, mkdir, readdir, readFile, realpath, stat, writeFile, rename } from 'node:fs/promises';
 import { homedir } from 'node:os';
+import { commandShell } from './platform.js';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Type } from 'typebox';
@@ -104,7 +105,7 @@ function shellPath() {
 export function runCommand(command: string, cwd: string, timeoutMs: number, signal?: AbortSignal) {
   return new Promise<{ exit_code: number | null; timed_out: boolean; output: string }>((done, reject) => {
     if (signal?.aborted) return reject(new Error('CANCELLED'));
-    const child = spawn('/bin/zsh', ['-c', command], { cwd, env: { ...process.env, PATH: shellPath(), PI_BOT_LIBRARY: cwd }, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(commandShell(), ['-c', command], { cwd, env: { ...process.env, PATH: shellPath(), PI_BOT_LIBRARY: cwd }, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '', settled = false, timedOut = false;
     const stop = () => {
       try { process.kill(-child.pid!, 'SIGTERM'); } catch {}
@@ -221,7 +222,7 @@ export function libraryTools(sandbox: Sandbox, hooks: ToolHooks): ToolDefinition
       },
     },
     {
-      name: 'run_command', label: '执行命令', description: '在 Mac 上用 zsh 执行命令，默认工作目录是资料库。返回退出码和最后 30KB 输出。不要执行破坏性或需要交互的命令。',
+      name: 'run_command', label: '执行命令', description: `在执行电脑上用 ${commandShell()} 执行命令，默认工作目录是资料库。返回退出码和最后 30KB 输出。不要执行破坏性或需要交互的命令。`,
       parameters: Type.Object({ command: Type.String({ minLength: 1, maxLength: 20000 }), cwd: Type.Optional(Type.String()), timeout_seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 600 })) }),
       execute: async (_id, args: any, signal) => {
         const cwd = await sandbox.resolve(args.cwd ?? '.', { mustExist: true });

@@ -34,7 +34,7 @@ export function automationTools(baseUrl: string, token: () => string, runId: str
   }] as ToolDefinition[];
   return [{
     name: "automation_manage", label: "管理长期委托与自主巡检",
-    description: "用户要求持续关注、定期检查或以后继续时建立长期委托，立即返回。先 list 避免重复。create 必须给 goal、用户授权范围 authorization、schedule。list 可查检查点和 version；修改使用 expected_version。patrol=true 操作默认巡检；all=true 仅在用户明确要求全部时使用。暂停不再新建轮次并使旧结果失效，stop 还取消执行。全部自动工作等待 Mac 在线。",
+    description: "用户要求持续关注、定期检查或以后继续时建立长期委托，立即返回。先 list 避免重复。create 必须给 goal、用户授权范围 authorization、schedule。list 可查检查点和 version；修改使用 expected_version。patrol=true 操作默认巡检；all=true 仅在用户明确要求全部时使用。暂停不再新建轮次并使旧结果失效，stop 还取消执行。全部自动工作等待绑定电脑在线。",
     parameters: Type.Object({
       action: Type.Union(["list", "create", "update", "pause", "resume", "stop"].map(x => Type.Literal(x))),
       automation_id: Type.Optional(Type.String({ format: "uuid" })), patrol: Type.Optional(Type.Boolean()), all: Type.Optional(Type.Boolean()),

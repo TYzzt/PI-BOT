@@ -1,4 +1,4 @@
-/** Imported only by the cloud Worker. No frontend, Mac or Runner dependency. */
+/** Imported only by the cloud Worker. No frontend, device or Runner dependency. */
 import type { Database, Row } from "./db.js";
 import type { Settings } from "./config.js";
 import { bounded, sanitize } from "./observations.js";

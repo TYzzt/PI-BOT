@@ -18,8 +18,8 @@ export function taskTools(baseUrl: string, token: () => string, runId: string): 
   return [
     {
       name: "start_task", label: "安排后台任务",
-      description: "创建独立的后台任务并立即返回。task 包含目标、相关上下文、已有条件和期望输出；不要重复创建已有任务。最多同时执行两个，其他排队。",
-      parameters: Type.Object({ title: Type.String({ minLength: 1, maxLength: 80 }), task: Type.String({ minLength: 1, maxLength: 8000 }) }),
+      description: "创建独立的后台任务并立即返回。task 包含目标、相关上下文、已有条件和期望输出；不要重复创建已有任务。最多同时执行两个，其他排队。读写文件或命令使用 device，等待绑定电脑上线；仅联网搜索、纯云端处理可用 cloud。",
+      parameters: Type.Object({ execution: Type.Optional(Type.Union([Type.Literal("device"),Type.Literal("cloud")])), title: Type.String({ minLength: 1, maxLength: 80 }), task: Type.String({ minLength: 1, maxLength: 8000 }) }),
       execute: async (id, args: any) => result(await call("POST", "", { ...args, run_id: runId, kind: "background", wait: false, request_id: id })),
     },
     {

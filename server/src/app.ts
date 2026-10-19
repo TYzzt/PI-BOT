@@ -12,7 +12,7 @@ import { settings, type Settings } from "./config.js";
 import { Hub } from "./hub.js";
 import { routes, type Context, type Route } from "./routes.js";
 import { sockets } from "./sockets.js";
-import { failOrphanedMacRuns } from "./runs.js";
+import { failOrphanedDeviceRuns } from "./runs.js";
 import { WebSearch } from "./search.js";
 import { AgentDispatcher } from "./agents.js";
 
@@ -99,7 +99,7 @@ export async function createApp(
 ) {
   await migrate(db);
   await bootstrapAdmin(db, s);
-  await failOrphanedMacRuns(db);
+  await failOrphanedDeviceRuns(db);
   const app = Fastify({ logger: false, bodyLimit: 8 * 1024 * 1024 });
   app.removeContentTypeParser("application/json");
   app.addContentTypeParser(

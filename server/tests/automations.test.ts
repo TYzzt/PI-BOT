@@ -8,7 +8,7 @@ import { settings } from "../src/config.js";
 import { Hub, type DeviceConnection } from "../src/hub.js";
 import { createBot, insertRun, finishRun, botOut, messagesPage } from "../src/bots.js";
 import { AutomationScheduler, automationRequest, manageAutomation, saveAutomationDecision, checkpointAutomation, recordAutomationEffect } from "../src/automations.js";
-import { failDeviceRuns, failOrphanedMacRuns } from "../src/runs.js";
+import { failDeviceRuns, failOrphanedDeviceRuns } from "../src/runs.js";
 import { claimExecution } from "../src/scheduling.js";
 import { manageMemory } from "../src/memory.js";
 import { createTask, reportLater } from "../src/agents.js";
@@ -22,7 +22,7 @@ let db: Database, hub: Hub, user: string, bot: string, device: string, patrol: s
 let sent: Row[], conn: DeviceConnection;
 const config = () => settings({ PI_BOT_DATABASE_URL: TEST_DB ?? "test", PI_BOT_JWT_SECRET: "j".repeat(40) });
 const scheduler = (options = config()) => new AutomationScheduler(db, options, hub, () => now);
-const claims = (): LlmClaims => ({ sub: user, src: "mac", bot, did: device });
+const claims = (): LlmClaims => ({ sub: user, src: "device", bot, did: device });
 before(() => { if (!skip) db = new Database(TEST_DB!); });
 beforeEach(async () => {
   if (skip) return;
@@ -44,7 +44,7 @@ async function due(id = patrol) { await db.tx(tx => tx.rows("UPDATE bot_automati
 async function current(id = patrol) { return db.tx(tx => tx.get("bot_automations", id)); }
 async function active(id = patrol) { return db.tx(tx => tx.one("SELECT r.* FROM bot_runs r JOIN automation_rounds ar ON ar.run_id=r.run_id WHERE ar.automation_id=$1 AND ar.status='active'", [id])); }
 async function dialogue() {
-  return db.tx(tx => insertRun(tx, { userId: user, botId: bot, requestId: randomUUID(), text: "管理自动工作", mac: { deviceId: device } }));
+  return db.tx(tx => insertRun(tx, { userId: user, botId: bot, requestId: randomUUID(), text: "管理自动工作", computer: { deviceId: device } }));
 }
 async function control(run: Row, body: object) {
   return db.tx(tx => manageAutomation(tx, user, claims(), automationRequest.parse({ run_id: run.run_id, request_id: randomUUID(), ...body }), now));
@@ -98,30 +98,30 @@ test("upgrading an existing database creates exactly one patrol without changing
 test("default patrol waits offline and for compatible Mac, never becomes a cloud job", { skip }, async () => {
   assert.equal((await db.tx(tx => tx.rows("SELECT * FROM bot_automations WHERE bot_id=$1", [bot]))).length, 1);
   hub.detach(conn); await due(); await scheduler().once();
-  assert.equal((await current()).status, "waiting_mac"); assert.equal(await active(), undefined);
+  assert.equal((await current()).status, "waiting_device"); assert.equal(await active(), undefined);
   conn.capabilities = []; hub.attach(conn); await scheduler().once(); assert.equal(await active(), undefined);
   conn.capabilities = ["always-on-v1"]; await scheduler().once();
   const run = (await active())!;
-  assert.equal(run.executor, "mac"); assert.equal(run.execution_policy, "mac_only");
+  assert.equal(run.executor, "device"); assert.equal(run.execution_policy, "device_only");
   assert.equal(sent.filter(m => m.type === "run").length, 1);
   const ctx = sent.find(m => m.type === "run")!.run;
   assert.equal(ctx.automation.kind, "patrol"); assert.equal(ctx.automation_readonly, true); assert.equal(ctx.agents_enabled, false);
   assert.equal(await db.tx(tx => claimExecution(tx, run.run_id, config(), randomUUID())), null);
 });
 
-test("an offline backlog cannot starve due work or reports belonging to an online Mac", { skip }, async () => {
-  const offlineUser = randomUUID();
+test("one computer's offline backlog cannot starve another computer's due work or reports on the same account", { skip }, async () => {
+  const offlineDevice = randomUUID();
   await db.tx(async tx => {
-    await tx.insert("users", { user_id: offlineUser, username: "offline-user", role: "user", password_hash: "unused" });
-    for (let i = 0; i < 101; i++) await createBot(tx, offlineUser, { name: `offline-${i}`, persona: "" });
-    await tx.rows("UPDATE bot_automations SET next_wake_at=$2 WHERE user_id=$1", [offlineUser, new Date(now.getTime() - 86400000)]);
-    const offline = await tx.rows("SELECT automation_id FROM bot_automations WHERE user_id=$1 LIMIT 51", [offlineUser]);
+    await tx.insert("devices", { device_id: offlineDevice, user_id: user, public_key: "offline-device", label: "Offline Linux", platform: "linux" });
+    for (let i = 0; i < 101; i++) await createBot(tx, user, { name: `offline-${i}`, persona: "", execution_device_id: offlineDevice });
+    await tx.rows("UPDATE bot_automations SET next_wake_at=$2 WHERE bot_id IN (SELECT bot_id FROM bots WHERE execution_device_id=$1)", [offlineDevice, new Date(now.getTime() - 86400000)]);
+    const offline = await tx.rows("SELECT a.automation_id FROM bot_automations a JOIN bots b USING(bot_id) WHERE b.execution_device_id=$1 LIMIT 51", [offlineDevice]);
     for (const a of offline) await tx.insert("automation_reports", { report_id: randomUUID(), automation_id: a.automation_id,
       version: 1, event_key: "offline-pending", category: "milestone", content: "离线待回报", available_at: new Date(now.getTime() - 86400000) });
   });
   await due(); await scheduler().once();
   assert.ok(await active());
-  const count = await db.tx(tx => tx.one("SELECT count(*) AS n FROM bot_automations WHERE user_id=$1 AND status='waiting_mac'", [offlineUser]));
+  const count = await db.tx(tx => tx.one("SELECT count(*) AS n FROM bot_automations a JOIN bots b USING(bot_id) WHERE b.execution_device_id=$1 AND a.status='waiting_device'", [offlineDevice]));
   assert.equal(count!.n, 101);
   await done((await active())!, { notify: true, summary: "在线用户的重要结果", notification_key: "online-result" });
   await scheduler().once();
@@ -176,17 +176,17 @@ test("commission controls preserve checkpoints, reject stale decisions and cance
 test("Mac interruption preserves queued work and safely restarts a read-only round without failure charge", { skip }, async () => {
   await due(); await scheduler().once(); const first = (await active())!;
   hub.detach(conn); await failDeviceRuns(db, device);
-  assert.equal((await current()).status, "waiting_mac"); assert.equal((await current()).failures, 0);
+  assert.equal((await current()).status, "waiting_device"); assert.equal((await current()).failures, 0);
   now = new Date(); hub.attach(conn); await scheduler().once(); const resumed = (await active())!;
-  assert.notEqual(resumed.run_id, first.run_id); assert.equal(resumed.executor, "mac");
+  assert.notEqual(resumed.run_id, first.run_id); assert.equal(resumed.executor, "device");
   await done(resumed);
   // Simulate a queued automatic run that had not reached the socket when the process died.
   await due(); await scheduler().once(); const queued = (await active())!;
   await db.tx(tx => tx.rows("UPDATE bot_runs SET status='queued' WHERE run_id=$1", [queued.run_id]));
-  hub.detach(conn); await failOrphanedMacRuns(db);
+  hub.detach(conn); await failOrphanedDeviceRuns(db);
   assert.equal((await db.tx(tx => tx.get("bot_runs", queued.run_id))).status, "queued");
-  assert.equal((await db.tx(tx => tx.get("bot_runs", queued.run_id))).executor, "mac");
-  assert.equal((await current()).status, "waiting_mac");
+  assert.equal((await db.tx(tx => tx.get("bot_runs", queued.run_id))).executor, "device");
+  assert.equal((await current()).status, "waiting_device");
   const view = await db.tx(async tx => botOut(tx, await tx.get("bots", bot)));
   assert.equal(view.activity.running_count, 0); assert.equal(view.activity.queued_count, 0);
 });
@@ -278,7 +278,7 @@ test("automatic delegation inherits Mac-only policy and shares the root model-ca
   const a = await commission(); await due(a.id); await scheduler().once(); const root = (await active(a.id))!;
   const peer = await db.tx(tx => createBot(tx, user, { name: "协作者", persona: "研究" }));
   const child = await db.tx(tx => createTask(tx, hub, user, claims(), { run_id: root.run_id, agent: peer.bot_id, task: "核对资料", wait: true }));
-  assert.equal(child.run!.execution_policy, "mac_only"); assert.equal(child.run!.automation_id, a.id);
+  assert.equal(child.run!.execution_policy, "device_only"); assert.equal(child.run!.automation_id, a.id);
   assert.equal(new Date(child.run!.deadline_at).getTime(), new Date(root.deadline_at).getTime());
   await assert.rejects(db.tx(tx => reportLater(tx, user, claims(), child.task.id, config())), /不能改为公开回报/);
   await db.tx(tx => tx.rows("UPDATE bot_runs SET automation_calls=$2,waiting_on_task_id=NULL WHERE run_id=$1", [root.run_id, config().automationModelCalls]));

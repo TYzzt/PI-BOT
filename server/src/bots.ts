@@ -10,6 +10,7 @@ import { directory, privateMemoryContext, forgottenContext, maskForgotten } from
 import { estimateTokens } from "@earendil-works/pi-coding-agent";
 import { ensurePatrol, wakePatrol, automationForRun, settleAutomation } from "./automations.js";
 import { recordRun } from "./observations.js";
+import { checkDevice } from './devices.js';
 
 export const ACTIVE = ["queued", "running", "waiting_approval"];
 export const avatarSchema = z.object({
@@ -21,6 +22,7 @@ export const botInput = z.object({
   name: z.string().trim().min(1).max(40),
   persona: z.string().max(8000).default(""),
   model_id: z.string().uuid().nullable().optional(),
+  execution_device_id: z.string().uuid().nullable().optional(),
   avatar: avatarSchema.optional(),
   slug: z
     .string()
@@ -58,6 +60,7 @@ export const runOut = (r: Row | undefined) =>
         bot_id: r.bot_id,
         status: r.status,
         executor: r.executor,
+        device_id: r.device_id,
         lane: r.lane,
         task_id: r.task_id,
         error: r.error,
@@ -165,6 +168,7 @@ export async function botOut(tx: Tx, b: Row) {
     slug: b.slug,
     persona: b.persona,
     model_id: b.model_id,
+    execution_device_id: b.execution_device_id,
     avatar: b.avatar,
     is_main: b.is_main ?? false,
     created_at: b.created_at,
@@ -203,6 +207,10 @@ export async function createBot(
   input: z.infer<typeof botInput>,
 ) {
   await checkModel(tx, input.model_id);
+  const target = input.execution_device_id === undefined
+    ? (await tx.one('SELECT device_id FROM devices WHERE user_id=$1 AND revoked_at IS NULL ORDER BY created_at,device_id LIMIT 1', [userId]))?.device_id ?? null
+    : input.execution_device_id;
+  await checkDevice(tx, userId, target);
   const id = randomUUID();
   const slug = await uniqueSlug(tx, userId, input.slug ?? slugBase(input.name));
   const bot = await tx.insert("bots", {
@@ -212,6 +220,7 @@ export async function createBot(
     slug,
     persona: input.persona,
     model_id: input.model_id ?? null,
+    execution_device_id: target,
     avatar: input.avatar ?? avatarFor(id),
   });
   await ensurePatrol(tx, id, userId);
@@ -223,13 +232,22 @@ export async function updateBot(
   botId: string,
   patch: z.infer<typeof botPatch>,
 ) {
-  await ownBot(tx, userId, botId);
+  const bot = await ownBot(tx, userId, botId, true);
   if (patch.model_id !== undefined) await checkModel(tx, patch.model_id);
+  if (patch.execution_device_id !== undefined && patch.execution_device_id !== bot.execution_device_id) {
+    await checkDevice(tx, userId, patch.execution_device_id);
+    if (await tx.one("SELECT 1 FROM bot_runs WHERE bot_id=$1 AND status=ANY($2)", [botId,ACTIVE]) ||
+        await tx.one("SELECT 1 FROM agent_tasks WHERE (parent_bot_id=$1 OR target_bot_id=$1) AND status IN ('queued','running','waiting_approval')", [botId]))
+      fail(409, '请先结束或取消未完成的任务，再更换执行电脑');
+    await tx.rows("UPDATE bot_automations SET status='paused',version=version+1,next_wake_at=NULL WHERE bot_id=$1 AND status NOT IN ('completed','stopped')", [botId]);
+    await tx.rows("UPDATE automation_reports p SET discarded_at=now() FROM bot_automations a WHERE p.automation_id=a.automation_id AND a.bot_id=$1 AND p.delivered_at IS NULL", [botId]);
+  }
   // The library directory keeps its slug when a bot is renamed.
   return tx.update("bots", botId, {
     name: patch.name,
     persona: patch.persona,
     model_id: patch.model_id,
+    execution_device_id: patch.execution_device_id,
     avatar: patch.avatar,
     updated_at: new Date(),
   });
@@ -269,7 +287,7 @@ export async function postMessage(
   botId: string,
   text: string,
   requestId: string,
-  mac: { deviceId: string } | null,
+  computer: { deviceId: string } | null,
 ) {
   const bot = await ownBot(tx, userId, botId, true);
   const existing = await tx.one(
@@ -278,7 +296,7 @@ export async function postMessage(
   );
   if (existing) return { run: existing, bot, created: false };
   if (!(await resolveModel(tx, bot))) fail(503, "管理员尚未配置可用模型");
-  const run = await insertRun(tx, { userId, botId, requestId, text, mac });
+  const run = await insertRun(tx, { userId, botId, requestId, text, computer });
   return { run, bot, created: true };
 }
 
@@ -287,10 +305,12 @@ export interface NewRun {
   botId: string;
   requestId: string;
   text: string;
-  mac: { deviceId: string } | null;
+  computer: { deviceId: string } | null;
+  /** Fixed target for queued device tasks, even while it is offline. */
+  targetDeviceId?: string | null;
   origin?: "user" | "agent" | "report" | "automation";
   automationId?: string;
-  executionPolicy?: "any" | "mac_only";
+  executionPolicy?: "any" | "device_only";
   automationReadonly?: boolean;
   deadlineAt?: Date;
   taskId?: string;
@@ -303,17 +323,17 @@ export async function insertRun(tx: Tx, o: NewRun) {
   const runId = randomUUID(),
     userMessageId = randomUUID(),
     assistantMessageId = randomUUID();
-  const executor = o.mac ? "mac" : "cloud";
+  const executor = o.computer || o.targetDeviceId ? "device" : "cloud";
   const task=o.taskId?await tx.get("agent_tasks",o.taskId):null;
   const parent=task?await tx.get("bot_runs",task.parent_run_id):null;
-  const seq = await nextSeq(tx, o.botId, 2, (o.executionPolicy ?? parent?.execution_policy) !== "mac_only" || o.origin === "report");
+  const seq = await nextSeq(tx, o.botId, 2, (o.executionPolicy ?? parent?.execution_policy) !== "device_only" || o.origin === "report");
   const run = await tx.insert("bot_runs", {
     run_id: runId,
     bot_id: o.botId,
     user_id: o.userId,
     request_id: o.requestId,
     executor,
-    device_id: o.mac?.deviceId ?? null,
+    device_id: o.targetDeviceId ?? o.computer?.deviceId ?? null,
     status: "queued",
     user_message_id: userMessageId,
     assistant_message_id: assistantMessageId,
@@ -357,7 +377,7 @@ export async function insertRun(tx: Tx, o: NewRun) {
 
 export interface RunContext {
   run_id: string;
-  executor: "mac" | "cloud";
+  executor: "device" | "cloud";
   bot: { id: string; name: string; slug: string };
   model: { id: string; name: string; context_window: number; max_tokens: number };
   system: string;
@@ -369,7 +389,7 @@ export interface RunContext {
   task_id?: string;
   checkpoint_version?: number;
   observation_enabled?: boolean;
-  execution_policy?: "any" | "mac_only";
+  execution_policy?: "any" | "device_only";
   automation_readonly?: boolean;
   deadline_at?: string;
   automation?: { id: string; kind: "patrol" | "commission"; version: number; checkpoint_version: number; checkpoint: Record<string, unknown> };
@@ -423,7 +443,7 @@ function collaborationPrompt(agents: Collaborator[], depth: number) {
 export function systemPrompt(
   bot: Row,
   memory: string,
-  executor: "mac" | "cloud",
+  executor: "device" | "cloud",
   options: { search?: boolean; now?: Date; agents?: Collaborator[]; depth?: number; lane?: "conversation" | "task" } = {},
 ) {
   const now = options.now ?? new Date();
@@ -434,22 +454,22 @@ export function systemPrompt(
   if (bot.persona.trim()) parts.push(`你的人设与职责：\n${bot.persona.trim()}`);
   if (memory.trim()) parts.push(`你对之前对话的长期记忆（摘要）：\n${memory.trim()}`);
   parts.push(
-    executor === "mac"
+    executor === "device"
       ? [
-          "执行环境：你在用户的 Mac 上工作。",
+          "执行环境：你在用户的电脑上工作。",
           `你的资料库目录是 ~/pi-bot/${bot.slug}，也是当前工作目录；文件工具中的相对路径都位于资料库内，产出的文件请保存在这里。`,
           "你可以读写资料库文件并执行终端命令。访问资料库以外的路径前，必须先调用 request_outside_access 说明原因并等待用户批准。",
           "不要执行破坏性或不可逆的系统操作；需要密码或交互登录时请让用户自行处理。",
         ].join("\n")
       : [
-          "执行环境：用户的 Mac 当前离线，资料库文件和终端都不可用。",
-          `你只能对话${options.search ? "和联网搜索" : ""}。任务需要读写文件或运行命令时，说明需要等 Mac 上线后再继续，不要假装已经完成。`,
+          "执行环境：当前运行在云端，绑定电脑的资料库文件和终端在本次运行中不可用。",
+          `你只能对话${options.search ? "和联网搜索" : ""}。需要本机文件或命令的工作用 start_task(execution=device) 排队，等待绑定电脑上线；纯联网搜索用 execution=cloud，不要假装已经完成本地工作。`,
         ].join("\n"),
   );
   if (options.lane === "conversation") parts.push([
     "你现在处于对话调度通道：持续接话、理解意图、安排工作、查询任务和整理回报。",
     "闲聊和已有依据的简单问题直接回答。凡需要搜索、读写文件、执行命令或较长推理的工作，立即用 start_task 创建后台任务，成功后用一句具体的话说明正在做什么，然后结束当前回合。你自己不能执行这些工作，也不要等待后台完成。",
-    "start_task 的 task 必须自包含：用户目标、相关上下文、已有条件、文件位置和期望输出。避免重复创建已有任务。",
+    "start_task 默认在绑定电脑执行；纯联网搜索或不依赖本地文件的云端处理可指定 execution=cloud。start_task 的 task 必须自包含：用户目标、相关上下文、已有条件、文件位置和期望输出。避免重复创建已有任务。",
     "查询任务用 task_status，结果仅代表记录的活动和更新时间；查询外部训练、部署的最新状态时，另建一个简短的核查任务，不要把缓存当作刚查到的外部进度。",
     "用户补充或改变已有任务要求时，用 task_message 发给准确的任务。工具会说明是已传达、排队或已结束；已结束则结合原结果用 start_task 创建后续任务。",
     "用户要求停止时用 cancel_task。仅一个活动任务可直接定位；多个任务且指代不明时澄清。明确停止全部时传 all=true。",
@@ -502,7 +522,7 @@ export async function buildContext(
   const memoryContext=(privateContext+(run.lane==="task"&&taskRecord?`\n当前任务 ID：${taskRecord.task_id}；检查点版本：${taskRecord.checkpoint_version}\n检查点：${checkpointText.slice(0,4000)}${checkpointText.length>4000?'\n[检查点已截断，需要时用 task_status 读取完整版本]':''}`:'')).slice(0,12500);
   const automation = await automationForRun(tx, run);
   let system=systemPrompt(bot,maskForgotten(memory?.summary??'',forgotten),run.executor,{search,agents,depth,lane:run.lane});
-  if (run.lane === "conversation") system += "\n长期委托和自主巡检：用户说持续关注、定期检查或指定时间继续时，用 automation_manage 建立委托，记录用户的具体授权范围和时间规则；不要用一次性 start_task 代替。查询、调整、暂停、恢复、停止自动工作也使用该工具。全部操作仅在用户明确要求全部时使用 all=true。所有自动工作等待支持此能力的 Mac 在线，不在云端执行。创建前先查询，避免重复委托。";
+  if (run.lane === "conversation") system += "\n长期委托和自主巡检：用户说持续关注、定期检查或指定时间继续时，用 automation_manage 建立委托，记录用户的具体授权范围和时间规则；不要用一次性 start_task 代替。查询、调整、暂停、恢复、停止自动工作也使用该工具。全部操作仅在用户明确要求全部时使用 all=true。所有自动工作等待支持此能力的电脑在线，不在云端执行。创建前先查询，避免重复委托。";
   if (automation) system += `\n你正在执行自动工作，当前时间 ${new Date().toISOString()}。本轮状态、检查点和通知决定必须调用 automation_finish 提交，然后结束；不要只用普通文字结束。没有重要变化时 notify=false。只有可交付成果、重要风险、需要用户决策或约定提醒才 notify=true，并提供根据事实生成的稳定 notification_key（同一事项同一状态不得换 key 重报）。每日/间隔委托的 complete 只完成本次，不停止后续周期；需要用户时 waiting_user。等待时不能睡眠或循环轮询，保存进度并安排至少一分钟后的唤醒。${automation.kind === "patrol" ? '这是默认只读巡检，只能检查和整理，不能执行命令、修改文件、委托其他 Bot 或自行新增目标；有已有授权的未完成工作时提出具体续接建议，不擅自恢复取消的任务。' : '仅执行委托记载的授权目标，不扩大范围。先核实检查点和操作结果，未知副作用不可重放。'}\n委托状态：${JSON.stringify({ id: automation.automation_id, version: automation.version, checkpoint_version: automation.checkpoint_version, checkpoint: automation.checkpoint })}`;
   if (run.automation_readonly) system += "\n只读巡检中 memory_manage 仅允许 list/search，skill_manage 不可用。";
   const skills=await skillCatalog(tx,bot.bot_id);
@@ -648,8 +668,8 @@ export async function finishRun(
     "UPDATE approvals SET status='expired', decided_at=now() WHERE run_id=$1 AND status='pending'",
     [runId],
   );
-  await tx.rows("UPDATE bots SET last_active_at=CASE WHEN $3 THEN now() ELSE last_active_at END,knowledge_dirty=knowledge_dirty OR $2,knowledge_revision=knowledge_revision+CASE WHEN $2 THEN 1 ELSE 0 END WHERE bot_id=$1", [run.bot_id,run.lane==='task'&&final==='completed'&&!run.automation_readonly,run.execution_policy!=="mac_only"||run.origin==="report"]);
-  if (run.lane === "task" && run.execution_policy !== "mac_only") await wakePatrol(tx, run.bot_id);
+  await tx.rows("UPDATE bots SET last_active_at=CASE WHEN $3 THEN now() ELSE last_active_at END,knowledge_dirty=knowledge_dirty OR $2,knowledge_revision=knowledge_revision+CASE WHEN $2 THEN 1 ELSE 0 END WHERE bot_id=$1", [run.bot_id,run.lane==='task'&&final==='completed'&&!run.automation_readonly,run.execution_policy!=="device_only"||run.origin==="report"]);
+  if (run.lane === "task" && run.execution_policy !== "device_only") await wakePatrol(tx, run.bot_id);
   if (run.origin === "agent" && run.task_id) {
     const reply = await tx.one("SELECT content FROM bot_messages WHERE message_id=$1", [run.assistant_message_id]);
     await tx.rows(`UPDATE agent_tasks SET checkpoint=checkpoint || jsonb_build_object('final_status',$2::text,'result',$3::text,'saved_at',now()),
@@ -660,13 +680,13 @@ export async function finishRun(
     );
     if (task) await tx.notify({ user_id: run.user_id, bot_id: task.parent_bot_id });
   }
-  if ((final === "cancelled" || (final === "failed" && run.execution_policy === "mac_only")) && run.lane === "task") await cancelDelegations(tx, runId);
+  if ((final === "cancelled" || (final === "failed" && run.execution_policy === "device_only")) && run.lane === "task") await cancelDelegations(tx, runId);
   await tx.notify({ user_id: run.user_id, bot_id: run.bot_id });
   await recordRun(tx,{...run,status:final,error:final==='failed'?error:null,finished_at:new Date()},run.observation_enabled);
   return { ...run, status: final };
 }
 /**
- * A delegating run that stops early takes its hand-offs with it. Running Mac
+ * A delegating run that stops early takes its hand-offs with it. Running device
  * children only get `cancel_requested`; the API's dispatcher forwards the cancel.
  */
 export async function cancelDelegations(tx: Tx, runId: string) {

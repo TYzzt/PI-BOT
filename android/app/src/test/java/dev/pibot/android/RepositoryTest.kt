@@ -27,6 +27,7 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -49,9 +50,9 @@ private const val USER = """{"id":"u1","username":"bob","display_name":"Bob","ro
 private const val BOT = """{"id":"b1","name":"研究助理","slug":"research","persona":"","model_id":null,
   "avatar":{"shape":"blob","color":"orange","scheme":"light"},"created_at":"2026-10-11T08:00:00Z","updated_at":"2026-10-11T08:00:00Z",
   "last_active_at":"2026-10-11T08:00:00Z","latest_run":null,"last_message":null,"pending_approvals":[]}"""
-private const val RUN = """{"id":"r1","bot_id":"b1","status":"running","executor":"mac","error":null,"user_message_id":"m1","assistant_message_id":"m2","created_at":"2026-10-11T08:01:00Z","finished_at":null}"""
+private const val RUN = """{"id":"r1","bot_id":"b1","status":"running","executor":"device","error":null,"user_message_id":"m1","assistant_message_id":"m2","created_at":"2026-10-11T08:01:00Z","finished_at":null}"""
 private fun msg(id: String, seq: Int, role: String, content: String, status: String) =
-    """{"id":"$id","bot_id":"b1","run_id":"r1","seq":$seq,"role":"$role","content":"$content","status":"$status","executor":"mac","tools":[],"created_at":"2026-10-11T08:01:00Z","updated_at":"2026-10-11T08:01:00Z"}"""
+    """{"id":"$id","bot_id":"b1","run_id":"r1","seq":$seq,"role":"$role","content":"$content","status":"$status","executor":"device","tools":[],"created_at":"2026-10-11T08:01:00Z","updated_at":"2026-10-11T08:01:00Z"}"""
 
 class RepositoryTest {
     private lateinit var server: MockWebServer
@@ -111,14 +112,14 @@ class RepositoryTest {
 
             server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
-                    webSocket.send("""{"type":"hello","mac_online":true}""")
+                    webSocket.send("""{"type":"hello","device_online":true}""")
                 }
 
                 override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
                     webSocket.close(code, reason)
                 }
             }))
-            respond(200, """{"bots":[$BOT],"mac":{"online":true}}""")
+            respond(200, """{"bots":[$BOT],"computer":{"online":true}}""")
             repo.startEvents()
             withTimeout(5000) {
                 repo.live.first { it }
@@ -130,7 +131,7 @@ class RepositoryTest {
             val refreshed = server.takeRequest(5, TimeUnit.SECONDS)!!
             assertEquals("/pibot/bots", refreshed.path)
             assertEquals("Bearer tok", refreshed.getHeader("Authorization"))
-            assertTrue(repo.mac.value.online)
+            assertTrue(repo.computer.value.online)
         } finally {
             repo.stopEvents()
             scope.cancel()
@@ -148,12 +149,15 @@ class RepositoryTest {
     @Test
     fun botsMessagesAndSending() = runBlocking {
         login()
-        respond(200, """{"bots":[$BOT],"mac":{"online":true,"device":{"id":"d1","label":"Bob 的 Mac","online":true}}}""")
+        respond(200, """{"bots":[$BOT],"computer":{"online":true,"device":{"id":"d1","label":"Bob 的 Mac","online":true}},"devices":[{"id":"d1","label":"Bob 的 Mac","platform":"darwin","online":true},{"id":"d2","label":"Linux","platform":"linux","online":false}]}""")
         repo.refreshBots()
         assertEquals("Bearer tok", server.takeRequest().getHeader("Authorization"))
         assertEquals("研究助理", repo.bots.value!!.single().name)
-        assertTrue(repo.mac.value.online)
-        assertEquals("Bob 的 Mac", repo.mac.value.device?.label)
+        assertTrue(repo.computer.value.online)
+        assertEquals("Bob 的 Mac", repo.computer.value.device?.label)
+        assertEquals(listOf("d1", "d2"), repo.devices.value.map { it.id })
+        assertEquals("linux", repo.devices.value.last().platform)
+        assertFalse(repo.devices.value.last().online)
 
         respond(200, """{"messages":[${msg("m0", 1, "user", "早", "completed")}],"has_more":true}""")
         repo.loadTail("b1")
@@ -181,11 +185,12 @@ class RepositoryTest {
     fun botEditsAlwaysSendTheModelSoItCanBeCleared() = runBlocking {
         login()
         respond(200, BOT)
-        repo.updateBot("b1", BotInput("研究助理", "", null, Avatar("cloud", "mint", "dark")))
+        repo.updateBot("b1", BotInput("研究助理", "", null, Avatar("cloud", "mint", "dark"), "d2"))
         val request = server.takeRequest()
         assertEquals("PATCH", request.method)
         val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
         assertTrue(body.containsKey("model_id"))
+        assertEquals("d2", body["execution_device_id"]!!.jsonPrimitive.content)
         assertEquals("cloud", body["avatar"]!!.jsonObject["shape"]!!.jsonPrimitive.content)
     }
 
@@ -198,7 +203,7 @@ class RepositoryTest {
         assertEquals("周报.md", list.entries.single().name)
         respond(503, "")
         val e = assertThrows(ApiException::class.java) { runBlocking { repo.files("b1", "") } }
-        assertEquals("Mac 离线，资料库不可用", e.message)
+        assertEquals("电脑离线，资料库不可用", e.message)
     }
 
     @Test

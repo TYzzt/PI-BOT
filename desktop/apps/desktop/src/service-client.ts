@@ -85,3 +85,14 @@ export class ServiceClient {
   }
   stop() { this.stopped = true; clearTimeout(this.timer); this.timer = undefined; this.socket?.destroy(); }
 }
+
+/** Check authenticated IPC before starting another instance. */
+export function serviceRunning(timeoutMs = 800): Promise<boolean> {
+  return new Promise(resolve => {
+    const client = new ServiceClient(event => {
+      if (event.type === 'service.status' && event.connected) { clearTimeout(timer); client.stop(); resolve(true); }
+    });
+    const timer = setTimeout(() => { client.stop(); resolve(false); },timeoutMs);
+    client.start();
+  });
+}

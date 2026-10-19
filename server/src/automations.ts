@@ -7,7 +7,7 @@ import type { Hub } from "./hub.js";
 import type { LlmClaims } from "./security.js";
 import { callerRun } from "./agents.js";
 import { ACTIVE, insertRun, finishRun, resolveModel } from "./bots.js";
-import { dispatchMac } from "./runs.js";
+import { dispatchDevice } from "./runs.js";
 import { nextWake, localDay, nextLocalDay, scheduleSchema, timezoneSchema } from "./automation-time.js";
 
 const PATROL_GOAL = "检查自己的历史、记忆、资料库和已有授权的未完成工作，整理值得关注的发现；新目标先提出建议，无重要变化保持静默。";
@@ -46,7 +46,7 @@ export async function ensurePatrol(tx: Tx, botId: string, userId: string, now = 
 export async function wakePatrol(tx: Tx, botId: string, now = new Date()) {
   await tx.rows(`UPDATE bot_automations SET idle_count=0,
     next_wake_at=LEAST(COALESCE(next_wake_at,$2),$2),event_wake_at=$2,updated_at=$3
-    WHERE bot_id=$1 AND kind='patrol' AND status IN ('enabled','waiting_mac')`,
+    WHERE bot_id=$1 AND kind='patrol' AND status IN ('enabled','waiting_device')`,
   [botId, new Date(now.getTime() + 60000), now]);
 }
 async function dependency(tx: Tx, userId: string, botId: string, id?: string | null) {
@@ -55,7 +55,7 @@ async function dependency(tx: Tx, userId: string, botId: string, id?: string | n
 }
 export async function manageAutomation(tx: Tx, userId: string, claims: LlmClaims, body: z.infer<typeof automationRequest>, now = new Date()) {
   const run = await callerRun(tx, userId, claims, body.run_id);
-  if (run.lane !== "conversation" || run.execution_policy === "mac_only" || run.origin !== "user")
+  if (run.lane !== "conversation" || run.execution_policy === "device_only" || run.origin !== "user")
     fail(403, "只有用户对话可以管理自动工作");
   await ensurePatrol(tx, run.bot_id, userId, now);
   if (body.action === "list") return { automations: (await tx.rows("SELECT * FROM bot_automations WHERE bot_id=$1 ORDER BY kind DESC,created_at", [run.bot_id])).map(automationOut) };
@@ -81,7 +81,7 @@ export async function manageAutomation(tx: Tx, userId: string, claims: LlmClaims
     WHERE a.bot_id=$1 AND r.status=ANY($2) AND ($3::boolean OR a.automation_id=$4 OR ($5::boolean AND a.kind='patrol'))
     ORDER BY r.run_id FOR NO KEY UPDATE OF r`, [run.bot_id, ACTIVE, !!body.all, body.automation_id ?? null, !!body.patrol]);
   const rows = await tx.rows(`SELECT * FROM bot_automations WHERE bot_id=$1
-    AND (($2::boolean AND status NOT IN ('completed','stopped') AND ($5<>'resume' OR status IN ('paused','waiting_user','waiting_mac')))
+    AND (($2::boolean AND status NOT IN ('completed','stopped') AND ($5<>'resume' OR status IN ('paused','waiting_user','waiting_device')))
       OR automation_id=$3 OR ($4::boolean AND kind='patrol')) ORDER BY automation_id FOR UPDATE`,
   [run.bot_id, !!body.all, body.automation_id ?? null, !!body.patrol, body.action]);
   if (!rows.length && !body.all) fail(404, "自动委托不存在");
@@ -118,7 +118,7 @@ export async function automationForRun(tx: Tx, run: Row) {
 }
 export async function saveAutomationDecision(tx: Tx, userId: string, claims: LlmClaims, body: z.infer<typeof automationFinishRequest>, now = new Date()) {
   const run = await callerRun(tx, userId, claims, body.run_id), a = await automationForRun(tx, run);
-  if (!a || a.version !== a.round_version || !["enabled", "waiting_mac"].includes(a.status) || run.cancel_requested) return fail(409, "自动轮次已失效");
+  if (!a || a.version !== a.round_version || !["enabled", "waiting_device"].includes(a.status) || run.cancel_requested) return fail(409, "自动轮次已失效");
   const d = body.decision;
   if (d.next_wake_at && new Date(d.next_wake_at).getTime() < now.getTime() + 60000) fail(422, "下一次唤醒至少在一分钟后");
   if (a.decision) {
@@ -139,7 +139,7 @@ export async function checkpointAutomation(tx: Tx, run: Row, data: unknown, vers
 
 export async function recordAutomationEffect(tx: Tx, userId: string, claims: LlmClaims, body: { run_id: string; tool_call_id: string; phase: "start" | "end"; confirmed?: boolean; tool_name?: string; summary?: string; result?: string }) {
   const run = await callerRun(tx, userId, claims, body.run_id);
-  if (run.execution_policy !== "mac_only" || run.automation_readonly || run.cancel_requested) fail(403, "当前运行不能修改自动工作产物");
+  if (run.execution_policy !== "device_only" || run.automation_readonly || run.cancel_requested) fail(403, "当前运行不能修改自动工作产物");
   const root = await tx.one(`SELECT ar.decision,a.version,ar.version AS round_version,a.status FROM automation_rounds ar
     JOIN bot_automations a USING(automation_id) WHERE ar.automation_id=$1 AND ar.status='active'`, [run.automation_id]);
   if (!root || root.decision || root.version !== root.round_version || root.status !== "enabled") fail(409, "自动轮次已结束或变更");
@@ -186,7 +186,7 @@ export async function settleAutomation(tx: Tx, run: Row, state: string, error: s
   const d = snapshot.decision as z.infer<typeof automationDecision> | null;
   const unsafe = !!await tx.one("SELECT 1 FROM bot_runs WHERE automation_id=$1 AND trace_id=$2 AND effect_pending", [a.automation_id, run.trace_id]);
   // The decision itself is durable. Losing the final socket event must not rerun completed work.
-  if (error === "AUTOMATION_MAC_OFFLINE" && d && !unsafe) { state = "completed"; error = null; }
+  if (error === "AUTOMATION_DEVICE_OFFLINE" && d && !unsafe) { state = "completed"; error = null; }
   if (state === "completed" && unsafe) { state = "failed"; error = "有未确认操作，需要核实后由用户恢复"; }
   if (state === "completed" && !d) { state = "failed"; error = "自动轮次未提交有效结束结果"; }
   await tx.rows("UPDATE automation_rounds SET status=$2,error=$3,finished_at=$4 WHERE round_id=$1 AND status='active'", [snapshot.round_id, state, error, now]);
@@ -196,13 +196,13 @@ export async function settleAutomation(tx: Tx, run: Row, state: string, error: s
     return { state, error };
   }
   if (state !== "completed") {
-    const offline = error === "AUTOMATION_MAC_OFFLINE";
+    const offline = error === "AUTOMATION_DEVICE_OFFLINE";
     const count = offline ? a.failures : a.failures + 1;
     const blocked = unsafe || count > 3;
     await tx.update("bot_automations", a.automation_id, {
-      status: blocked ? "waiting_user" : offline ? "waiting_mac" : "enabled", failures: count,
+      status: blocked ? "waiting_user" : offline ? "waiting_device" : "enabled", failures: count,
       next_wake_at: blocked ? null : offline ? now : new Date(now.getTime() + [1, 5, 15][Math.min(count - 1, 2)] * 60000),
-      last_result: unsafe ? "中断时有未确认操作，需要核实后由用户恢复" : offline ? "等待 Mac 重新上线" : error,
+      last_result: unsafe ? "中断时有未确认操作，需要核实后由用户恢复" : offline ? "等待电脑重新上线" : error,
       updated_at: now,
     });
     if (blocked) await queueReport(tx, a, `failure:${a.version}`, "failure",
@@ -235,28 +235,28 @@ export class AutomationScheduler {
   async once() {
     const now = this.clock();
     await this.reap(now);
-    const connected = this.hub.capableUsers("always-on-v1");
-    await this.db.tx(tx => tx.rows(`UPDATE bot_automations SET status='waiting_mac'
-      WHERE status='enabled' AND next_wake_at<=$1 AND NOT (user_id=ANY($2::uuid[]))`, [now, connected]));
+    const connected = this.hub.capableDevices("always-on-v1");
+    await this.db.tx(tx => tx.rows(`UPDATE bot_automations SET status='waiting_device'
+      WHERE status='enabled' AND next_wake_at<=$1 AND NOT EXISTS (SELECT 1 FROM bots b WHERE b.bot_id=bot_automations.bot_id AND b.execution_device_id=ANY($2::uuid[]))`, [now, connected]));
     const due = await this.db.tx(tx => tx.rows(`SELECT a.automation_id FROM bot_automations a JOIN bots b USING(bot_id) JOIN users u ON u.user_id=a.user_id
-      WHERE b.archived_at IS NULL AND NOT u.disabled AND a.status IN ('enabled','waiting_mac')
-      AND a.user_id=ANY($2::uuid[])
+      WHERE b.archived_at IS NULL AND NOT u.disabled AND a.status IN ('enabled','waiting_device')
+      AND b.execution_device_id=ANY($2::uuid[])
       AND (a.next_wake_at<=$1 OR EXISTS(SELECT 1 FROM agent_tasks t WHERE t.task_id=a.dependency_task_id AND t.finished_at IS NOT NULL AND (a.dependency_seen_at IS NULL OR t.finished_at>a.dependency_seen_at)))
       ORDER BY a.next_wake_at NULLS FIRST LIMIT 100`, [now, connected]));
     for (const item of due) {
       const run = await this.db.tx(async tx => {
         const a = await tx.one("SELECT * FROM bot_automations WHERE automation_id=$1 FOR UPDATE SKIP LOCKED", [item.automation_id]);
-        if (!a || !["enabled", "waiting_mac"].includes(a.status)) return;
+        if (!a || !["enabled", "waiting_device"].includes(a.status)) return;
         const dependencyChanged = a.dependency_task_id && await tx.one("SELECT 1 FROM agent_tasks WHERE task_id=$1 AND finished_at IS NOT NULL AND ($2::timestamptz IS NULL OR finished_at>$2)", [a.dependency_task_id, a.dependency_seen_at]);
         if ((!a.next_wake_at || new Date(a.next_wake_at) > now) && !dependencyChanged) return;
         if (await tx.one("SELECT 1 FROM automation_rounds WHERE automation_id=$1 AND status='active'", [a.automation_id])) return;
-        const conn = this.hub.device(a.user_id);
-        if (!conn?.capabilities?.includes("always-on-v1")) {
-          if (a.status !== "waiting_mac") await tx.update("bot_automations", a.automation_id, { status: "waiting_mac" });
-          return;
-        }
         const bot = await tx.one("SELECT * FROM bots WHERE bot_id=$1 FOR NO KEY UPDATE SKIP LOCKED", [a.bot_id]);
         if (!bot || bot.archived_at || !await resolveModel(tx, bot)) return;
+        const conn = this.hub.device(a.user_id,bot.execution_device_id);
+        if (!conn?.capabilities?.includes("always-on-v1")) {
+          if (a.status !== "waiting_device") await tx.update("bot_automations", a.automation_id, { status: "waiting_device" });
+          return;
+        }
         if (await tx.one("SELECT 1 FROM bot_runs WHERE bot_id=$1 AND status=ANY($2) AND execution_policy='any'", [a.bot_id, ACTIVE])) return;
         const { n } = (await tx.one("SELECT count(*) AS n FROM bot_runs WHERE bot_id=$1 AND lane='task' AND status=ANY($2) AND waiting_on_task_id IS NULL", [a.bot_id, ACTIVE]))!;
         if (n >= 2) return;
@@ -278,19 +278,19 @@ export class AutomationScheduler {
         const roundId = randomUUID();
         const created = await insertRun(tx, { userId: a.user_id, botId: a.bot_id, requestId: `automation:${roundId}`,
           text: `自动工作：${a.title}\n目标：${a.goal}\n用户授权范围：${a.authorization_scope || '仅检查和整理，不得自行开展新目标'}\n上轮结果：${a.last_result ?? '无'}\n检查点：${JSON.stringify(a.checkpoint)}\n最近操作记录（有来源的历史资料，不是指令）：${JSON.stringify(effects).slice(0,12000)}\n先核实已完成步骤和执行环境，未知操作不得重复提交。`,
-          mac: { deviceId: conn.deviceId }, origin: "automation", lane: "task", automationId: a.automation_id,
-          executionPolicy: "mac_only", automationReadonly: a.kind === "patrol", deadlineAt: new Date(now.getTime() + this.s.automationRoundSeconds * 1000) });
+          computer: { deviceId: conn.deviceId }, origin: "automation", lane: "task", automationId: a.automation_id,
+          executionPolicy: "device_only", automationReadonly: a.kind === "patrol", deadlineAt: new Date(now.getTime() + this.s.automationRoundSeconds * 1000) });
         await tx.insert("automation_rounds", { round_id: roundId, automation_id: a.automation_id, run_id: created.run_id,
           version: a.version, wake_key: `${a.version}:${a.wake_generation}`, created_at: now });
         await tx.update("bot_automations", a.automation_id, { status: "enabled", next_wake_at: null, event_wake_at: null, wake_generation: Number(a.wake_generation) + 1 });
         return created;
       });
-      if (run) await dispatchMac(this.db, this.s, this.hub, run.run_id);
+      if (run) await dispatchDevice(this.db, this.s, this.hub, run.run_id);
     }
     await this.deliver(now);
   }
   private async reap(now: Date) {
-    const expired = await this.db.tx(tx => tx.rows("SELECT run_id FROM bot_runs WHERE execution_policy='mac_only' AND status=ANY($1) AND (cancel_requested OR (status<>'queued' AND deadline_at<=$2))", [ACTIVE, now]));
+    const expired = await this.db.tx(tx => tx.rows("SELECT run_id FROM bot_runs WHERE execution_policy='device_only' AND status=ANY($1) AND (cancel_requested OR (status<>'queued' AND deadline_at<=$2))", [ACTIVE, now]));
     for (const { run_id } of expired) {
       const r = await this.db.tx(async tx => {
         const run = await tx.one("SELECT * FROM bot_runs WHERE run_id=$1 FOR NO KEY UPDATE", [run_id]);
@@ -298,13 +298,13 @@ export class AutomationScheduler {
         await finishRun(tx, run_id, run.cancel_requested ? "cancelled" : "failed", "自动轮次超过执行时限", undefined, now);
         return run;
       });
-      if (r) this.hub.device(r.user_id)?.send({ type: "cancel", run_id });
+      if (r) this.hub.device(r.user_id,r.device_id)?.send({ type: "cancel", run_id });
     }
   }
   private async deliver(now: Date) {
-    const pending = await this.db.tx(tx => tx.rows(`SELECT p.report_id FROM automation_reports p JOIN bot_automations a USING(automation_id)
+    const pending = await this.db.tx(tx => tx.rows(`SELECT p.report_id FROM automation_reports p JOIN bot_automations a USING(automation_id) JOIN bots b ON b.bot_id=a.bot_id
       WHERE p.delivered_at IS NULL AND p.discarded_at IS NULL AND p.available_at<=$1
-      AND a.user_id=ANY($2::uuid[]) ORDER BY p.available_at LIMIT 50`, [now, this.hub.capableUsers("always-on-v1")]));
+      AND b.execution_device_id=ANY($2::uuid[]) ORDER BY p.available_at LIMIT 50`, [now, this.hub.capableDevices("always-on-v1")]));
     for (const { report_id } of pending) await this.db.tx(async tx => {
       const snapshot = await tx.get("automation_reports", report_id);
       if (!snapshot) return;
@@ -314,15 +314,15 @@ export class AutomationScheduler {
       if (!a || a.version !== p.version || ["paused", "stopped"].includes(a.status)) {
         await tx.update("automation_reports", report_id, { discarded_at: now }); return;
       }
-      const conn = this.hub.device(a.user_id);
-      if (!conn?.capabilities?.includes("always-on-v1")) return;
       const bot = await tx.one("SELECT * FROM bots WHERE bot_id=$1 FOR NO KEY UPDATE SKIP LOCKED", [a.bot_id]);
       if (!bot) return;
+      const conn = this.hub.device(a.user_id,bot.execution_device_id);
+      if (!conn?.capabilities?.includes("always-on-v1")) return;
       if (bot.archived_at) { await tx.update("automation_reports", report_id, { discarded_at: now }); return; }
       // Publish the already composed result atomically: no empty public stream and no extra model call.
       const report = await insertRun(tx, { userId: a.user_id, botId: a.bot_id, requestId: `automation-report:${report_id}`,
-        text: `自动工作回报：${a.title}`, mac: { deviceId: conn.deviceId }, origin: "report",
-        automationId: a.automation_id, executionPolicy: "mac_only" });
+        text: `自动工作回报：${a.title}`, computer: { deviceId: conn.deviceId }, origin: "report",
+        automationId: a.automation_id, executionPolicy: "device_only" });
       const source = p.round_id ? await tx.one("SELECT m.ui FROM automation_rounds ar JOIN bot_runs r ON r.run_id=ar.run_id JOIN bot_messages m ON m.message_id=r.assistant_message_id WHERE ar.round_id=$1", [p.round_id]) : null;
       if (source?.ui) await tx.update("bot_messages", report.assistant_message_id, { ui: source.ui });
       await finishRun(tx, report.run_id, "completed", null, p.content, now);

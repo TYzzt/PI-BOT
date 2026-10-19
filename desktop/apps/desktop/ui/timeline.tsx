@@ -127,7 +127,7 @@ export function Timeline({ bot, messages, hasMore, mood, online, onLoadMore, onS
           <div className="intro">
             <PiBot avatar={bot.avatar} mood={mood === 'idle' ? 'happy' : mood} size={150} followPointer />
             <h2>{bot.is_main ? '有什么想做的，告诉我' : `我是 ${bot.name}`}</h2>
-            <p className="muted">{bot.is_main ? '我是 Pi Bot，你的主智能体。查资料、写作、整理文件，或只是聊聊天，都可以直接找我。' : bot.persona ? bot.persona.slice(0, 140) : '告诉我你想做什么。我的资料都放在自己的资料库里，随时可以在 Finder 中查看。'}</p>
+            <p className="muted">{bot.is_main ? '我是 Pi Bot，你的主智能体。查资料、写作、整理文件，或只是聊聊天，都可以直接找我。' : bot.persona ? bot.persona.slice(0, 140) : '告诉我你想做什么。我的资料都放在自己的资料库里，随时可以在文件管理器中查看。'}</p>
           </div>
         )}
         {messages.map(m => {
@@ -149,7 +149,7 @@ export function Timeline({ bot, messages, hasMore, mood, online, onLoadMore, onS
                   action={async input => { const result=await call<{messages:Message[]}>('uiAction',{botId:bot.id,messageId:m.id,...input}); onSent({messages:result.messages,has_more:hasMore}); }} />}
                 <span className="meta">
                   {time(m.created_at)}
-                  {m.executor === 'cloud' && <span className="tag" title="Mac 离线时在云端运行，只能对话和联网搜索">云端</span>}
+                  {m.executor === 'cloud' && <span className="tag" title="电脑离线时在云端运行，只能对话和联网搜索">云端</span>}
                   {m.status === 'failed' && <span className="tag bad">{run?.assistant_message_id === m.id && run.error ? run.error : '运行失败'}</span>}
                   {m.status === 'cancelled' && <span className="tag">已停止</span>}
                 </span>
@@ -162,7 +162,7 @@ export function Timeline({ bot, messages, hasMore, mood, online, onLoadMore, onS
       </div>
       <div className="composer">
         {error && <p className="error small">{error}</p>}
-        {!online && <p className="muted small">Mac 未连接服务器，暂时无法发送。</p>}
+        {!online && <p className="muted small">电脑未连接服务器，暂时无法发送。</p>}
         <div className="input">
           <textarea value={text} onChange={e => setText(e.target.value)} onKeyDown={key} rows={Math.min(8, Math.max(1, text.split('\n').length))} placeholder={`给 ${bot.name} 发消息`} disabled={!online} />
           <button className="send" disabled={!text.trim() || !online || sending} onClick={send} title="发送（Enter）">↑</button>

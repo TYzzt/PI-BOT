@@ -37,9 +37,6 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-      # The shared suite exercises the Mac harness, which invokes /bin/zsh.
-      - name: Install desktop test dependencies
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh
       - run: npm ci --ignore-scripts
       - name: Validate Ubuntu deployment scripts
         run: |

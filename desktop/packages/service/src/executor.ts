@@ -2,14 +2,15 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { a2uiTools, askAgentTool, taskTools, automationTools, CANCELLED, createBotAgent, webSearchTool, type AgentFactory, type AgentHandle, type ToolActivity, type SkillSummary } from '@pi-bot/agent';
 import type { Mood } from '@pi-bot/bot-face';
+import { commandShell } from './platform.js';
 import { libraryDir, libraryTools, Sandbox } from './library.js';
 
 /** What the server sends with `{type:'run'}`; mirrors server `RunContext`. */
 export interface RunContext {
   run_id: string;
-  executor: 'mac' | 'cloud';
+  executor: 'device' | 'cloud';
   lane?: 'conversation' | 'task';
-  execution_policy?: 'any' | 'mac_only';
+  execution_policy?: 'any' | 'device_only';
   automation_readonly?: boolean;
   deadline_at?: string;
   automation?: { id: string; kind: 'patrol' | 'commission'; version: number; checkpoint_version: number; checkpoint: Record<string, unknown> };
@@ -89,7 +90,7 @@ export class Executor {
       });
       if (run.automation_readonly) tools = tools.filter(t => ['list_files', 'read_file', 'search_files'].includes(t.name));
       const api = this.deps.proxyUrl.replace(/\/llm\/v1\/?$/, '');
-      if (run.execution_policy === 'mac_only' && !run.automation_readonly) tools = tools.map(tool => {
+      if (run.execution_policy === 'device_only' && !run.automation_readonly) tools = tools.map(tool => {
         if (!['write_file', 'edit_file', 'run_command'].includes(tool.name)) return tool;
         return { ...tool, execute: async (id, args, signal, update, ctx) => {
           const journal = async (phase: 'start' | 'end', confirmed?: boolean, result?: string) => {
@@ -129,7 +130,7 @@ export class Executor {
         readonly: run.automation_readonly,
         cwd: sandbox.root,
         agentDir: join(this.deps.agentDir, 'bots', run.bot.id),
-        systemPrompt: run.system,
+        systemPrompt: `${run.system}\n实际执行环境：${process.platform}；shell：${commandShell()}；资料库绝对路径：${sandbox.root}。`,
         history: run.history,
         tools,
         skills: { baseUrl: api, token: () => token, runId: run.run_id, catalog: run.skills ?? [] },

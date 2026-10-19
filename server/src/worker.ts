@@ -15,7 +15,7 @@ import {recordUi} from "./ui.js";
 const RUN_LIMIT_MS = 30 * 60 * 1000;
 
 /**
- * Executes cloud runs (Mac offline) through the Runner and keeps each bot's
+ * Executes cloud runs (computer offline) through the Runner and keeps each bot's
  * rolling memory summary up to date.
  */
 export class Worker {

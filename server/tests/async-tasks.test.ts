@@ -34,7 +34,7 @@ const factory: AgentFactory = async options => {
       if (options.tools.some(t => t.name === "start_task")) {
         if (text.startsWith("launch ")) {
           const name = text.slice(7);
-          return `已安排 ${name}：${JSON.parse(await tool("start_task", { title: name, task: `work:${name}` })).id}`;
+          return `已安排 ${name}：${JSON.parse(await tool("start_task", { execution: "cloud", title: name, task: `work:${name}` })).id}`;
         }
         if (text.startsWith("change ")) {
           const id = text.slice(7);
@@ -186,16 +186,16 @@ test("two background jobs keep dialogue available, queue a third, steer, cancel 
 test("task endpoints validate run identity, user and bot ownership, and durable instruction retries are idempotent", { skip }, async () => {
   const user = (await api("/me")).data.user;
   const context = await db.tx(async tx => {
-    const run = await insertRun(tx, { userId: user.id, botId: bot, requestId: randomUUID(), text: "control", mac: null });
+    const run = await insertRun(tx, { userId: user.id, botId: bot, requestId: randomUUID(), text: "control", computer: null });
     await tx.rows("UPDATE bot_runs SET status='running' WHERE run_id=$1", [run.run_id]);
     return run;
   });
   const llm = await issueLlmToken({ sub: user.id, src: "cloud", bot }, s);
   const wrongBot = (await api("/bots", { name: "other", persona: "" })).data.id;
   const wrong = await issueLlmToken({ sub: user.id, src: "cloud", bot: wrongBot }, s);
-  const created = await api("/agent/tasks", { run_id: context.run_id, kind: "background", title: "D", task: "work:D", wait: false, request_id: "stable-call" }, llm);
+  const created = await api("/agent/tasks", { run_id: context.run_id, kind: "background", execution: "cloud", title: "D", task: "work:D", wait: false, request_id: "stable-call" }, llm);
   assert.equal(created.status, 200);
-  const repeated = await api("/agent/tasks", { run_id: context.run_id, kind: "background", task: "work:D", wait: false, request_id: "stable-call" }, llm);
+  const repeated = await api("/agent/tasks", { run_id: context.run_id, kind: "background", execution: "cloud", task: "work:D", wait: false, request_id: "stable-call" }, llm);
   assert.equal(repeated.data.id, created.data.id);
   assert.equal((await api(`/agent/tasks/${created.data.id}?run_id=${context.run_id}`, undefined, wrong)).status, 404);
   assert.equal((await api("/agent/tasks", { run_id: context.run_id, agent: "other", task: "x", wait: true }, llm)).status, 422);
@@ -215,32 +215,32 @@ test("Mac task events remain private, queued dialogue survives disconnect, and i
   const keys = deviceKeys();
   const registration = await api("/devices/register", { public_key: keys.publicKey, label: "async test Mac" });
   keys.setId(registration.data.device.id);
-  const mac = socket(base.replace("http", "ws") + "/ws/device", keys.headers("GET", "/ws/device"));
-  await mac.next(m => m.type === "hello");
+  const computer = socket(base.replace("http", "ws") + "/ws/device", keys.headers("GET", "/ws/device"));
+  await computer.next(m => m.type === "hello");
   const events = socket(base.replace("http", "ws") + "/ws/events", { authorization: `Bearer ${token}` });
   await events.next(m => m.type === "hello");
   const posted = await send("manual control");
-  const control = (await mac.next(m => m.type === "run" && m.run.run_id === posted.run.id)).run;
+  const control = (await computer.next(m => m.type === "run" && m.run.run_id === posted.run.id)).run;
   const user = (await api("/me")).data.user;
-  const llm = await issueLlmToken({ sub: user.id, src: "mac", bot, did: registration.data.device.id }, s);
-  const t = await api("/agent/tasks", { run_id: control.run_id, kind: "background", title: "Mac work", task: "Mac files", wait: false }, llm);
+  const llm = await issueLlmToken({ sub: user.id, src: "device", bot, did: registration.data.device.id }, s);
+  const t = await api("/agent/tasks", { run_id: control.run_id, kind: "background", execution: "device", title: "Mac work", task: "Mac files", wait: false }, llm);
   assert.equal(t.status, 200, JSON.stringify(t.data));
-  const task = (await mac.next(m => m.type === "run" && m.run.lane === "task")).run;
-  mac.send({ type: "run_event", run_id: task.run_id, event: { kind: "text", text: "PRIVATE Mac output" } });
-  mac.send({ type: "run_event", run_id: task.run_id, event: { kind: "approval", request_id: "outside", path: "/tmp/specific", reason: "needed" } });
-  await mac.next(m => m.type === "approval_created");
+  const task = (await computer.next(m => m.type === "run" && m.run.lane === "task")).run;
+  computer.send({ type: "run_event", run_id: task.run_id, event: { kind: "text", text: "PRIVATE Mac output" } });
+  computer.send({ type: "run_event", run_id: task.run_id, event: { kind: "approval", request_id: "outside", path: "/tmp/specific", reason: "needed" } });
+  await computer.next(m => m.type === "approval_created");
   const detail = (await api(`/bots/${bot}`)).data;
   assert.ok(detail.pending_approvals.some((a: any) => a.run_id === task.run_id));
-  const message = await api(`/agent/tasks/${t.data.id}/messages`, { run_id: control.run_id, request_id: "mac-instruction", text: "please change" }, llm);
+  const message = await api(`/agent/tasks/${t.data.id}/messages`, { run_id: control.run_id, request_id: "computer-instruction", text: "please change" }, llm);
   assert.equal(message.status, 200);
-  const forwarded = await mac.next(m => m.type === "task_message" && m.run_id === task.run_id);
-  mac.send({ type: "run_event", run_id: task.run_id, event: { kind: "instruction_ack", id: forwarded.instruction_id } });
+  const forwarded = await computer.next(m => m.type === "task_message" && m.run_id === task.run_id);
+  computer.send({ type: "run_event", run_id: task.run_id, event: { kind: "instruction_ack", id: forwarded.instruction_id } });
   await eventually(async () => (await db.tx(tx => tx.one("SELECT delivered_at FROM agent_task_instructions WHERE instruction_id=$1", [forwarded.instruction_id])))?.delivered_at);
   const queued = await send("queued conversation");
   assert.equal((await db.tx(tx => tx.get("bot_runs", queued.run.id))).status, "queued");
   assert.doesNotMatch(JSON.stringify(events.frames), /PRIVATE Mac/);
-  mac.close();
-  await mac.closed;
+  computer.close();
+  await computer.closed;
   await settled(queued.run.id);
   await eventually(async () => (await db.tx(tx => tx.get("agent_tasks", t.data.id))).status === "failed");
   const saved = await db.tx(tx => tx.get("agent_tasks", t.data.id));
@@ -259,12 +259,12 @@ test("waiting delegation releases its slot and resumes only when capacity is ava
   const target = (await api("/bots", { name: "specialist", persona: "" })).data.id;
   const capacityWorker = randomUUID();
   await db.tx(async tx => {
-    const parent = await insertRun(tx, { userId: user.id, botId: bot, requestId: randomUUID(), text: "parent", mac: null, lane: "task" });
+    const parent = await insertRun(tx, { userId: user.id, botId: bot, requestId: randomUUID(), text: "parent", computer: null, lane: "task" });
     assert.ok(await claimExecution(tx, parent.run_id, s, capacityWorker));
     const task = await createTask(tx, hub, user.id, { sub: user.id, src: "cloud", bot } as any, { run_id: parent.run_id, agent: "specialist", task: "child", wait: true });
     assert.equal((await tx.get("bot_runs", parent.run_id)).waiting_on_task_id, task.task.id);
-    const a = await insertRun(tx, { userId: user.id, botId: bot, requestId: randomUUID(), text: "a", mac: null, lane: "task" });
-    const b = await insertRun(tx, { userId: user.id, botId: bot, requestId: randomUUID(), text: "b", mac: null, lane: "task" });
+    const a = await insertRun(tx, { userId: user.id, botId: bot, requestId: randomUUID(), text: "a", computer: null, lane: "task" });
+    const b = await insertRun(tx, { userId: user.id, botId: bot, requestId: randomUUID(), text: "b", computer: null, lane: "task" });
     assert.ok(await claimExecution(tx, a.run_id, s, capacityWorker));
     assert.ok(await claimExecution(tx, b.run_id, s, capacityWorker));
     await finishRun(tx, task.run!.run_id, "completed", null, "child result");
@@ -286,9 +286,9 @@ test("multiple workers share the Bot capacity limit and queued user turns preced
   const runs = await db.tx(async tx => {
     const tasks = [];
     for (let i = 0; i < 3; i++) tasks.push(await insertRun(tx, { userId: user.id, botId: dedicated,
-      requestId: randomUUID(), text: `task ${i}`, mac: null, lane: "task" }));
-    const report = await insertRun(tx, { userId: user.id, botId: dedicated, requestId: randomUUID(), text: "report", mac: null, origin: "report" });
-    const human = await insertRun(tx, { userId: user.id, botId: dedicated, requestId: randomUUID(), text: "human", mac: null });
+      requestId: randomUUID(), text: `task ${i}`, computer: null, lane: "task" }));
+    const report = await insertRun(tx, { userId: user.id, botId: dedicated, requestId: randomUUID(), text: "report", computer: null, origin: "report" });
+    const human = await insertRun(tx, { userId: user.id, botId: dedicated, requestId: randomUUID(), text: "human", computer: null });
     return { tasks, report, human };
   });
   const workers = runs.tasks.map(() => randomUUID());

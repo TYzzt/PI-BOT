@@ -2,7 +2,7 @@ module.exports = {
   packagerConfig: {
     name: 'Pi Bot',
     appBundleId: 'dev.pi-bot.desktop',
-    icon: './assets/pi-bot',
+    icon: process.platform === 'darwin' ? './assets/pi-bot' : './assets/pi-bot.png',
     asar: true,
     extraResource: ['./runtime'],
     ignore: [/^\/runtime($|\/)/, /^\/src($|\/)/, /^\/ui($|\/)/],

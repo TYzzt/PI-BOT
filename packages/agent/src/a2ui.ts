@@ -36,7 +36,7 @@ export function a2uiTools(
       name: "show_ui",
       label: "展示交互界面",
       description:
-        "在 Mac 和手机聊天中展示或增量更新 A2UI 交互工具。messages 为 v0.9 消息数组，仅使用 get_ui_catalog 返回的目录与参数，按用户当前需求构建界面。普通问答和解释直接用文字回答。",
+        "在电脑和手机聊天中展示或增量更新 A2UI 交互工具。messages 为 v0.9 消息数组，仅使用 get_ui_catalog 返回的目录与参数，按用户当前需求构建界面。普通问答和解释直接用文字回答。",
       parameters: Type.Object({
         messages: Type.Array(Type.Record(Type.String(), Type.Unknown()), {
           minItems: 1,

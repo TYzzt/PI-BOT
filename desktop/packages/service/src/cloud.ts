@@ -1,11 +1,15 @@
 import WebSocket from 'ws';
-import { createHash, createPrivateKey, generateKeyPairSync, randomBytes, sign, type KeyObject } from 'node:crypto';
+import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, sign, type KeyObject } from 'node:crypto';
 
 export class CloudHttpError extends Error { constructor(readonly status: number, message: string) { super(message); } }
 export class CloudNetworkError extends Error {}
 const TIMEOUT_MS = 15000;
 
 export interface DeviceIdentity { privateKey: string; publicKey: string }
+export function identityFromPrivateKey(privateKey: string): DeviceIdentity {
+  const key = createPrivateKey({key:Buffer.from(privateKey,'base64'),format:'der',type:'pkcs8'});
+  return {privateKey,publicKey:createPublicKey(key).export({format:'der',type:'spki'}).subarray(-32).toString('base64')};
+}
 export function newIdentity(): DeviceIdentity {
   const { privateKey, publicKey } = generateKeyPairSync('ed25519');
   return { privateKey: privateKey.export({ format: 'der', type: 'pkcs8' }).toString('base64'), publicKey: publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('base64') };

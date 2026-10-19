@@ -309,5 +309,6 @@ export async function resumeTask(
     title: `续接：${old!.title}`.slice(0, 80),
     request_id: body.request_id,
     resumed_from: old!.task_id,
+    execution: old!.execution,
   });
 }

@@ -54,10 +54,11 @@ test("wait=true long-polls until the other bot finishes and returns its result",
 
 test("wait=false hands the task off without polling", async () => {
   calls.length = 0;
-  const r = await run({ agent: "写作助手", task: "调研竞品", wait: false });
+  const r = await run({ agent: "写作助手", task: "调研竞品", wait: false, execution: "cloud" });
   assert.match(output(r), /已转交给「写作助手」/);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].body.wait, false);
+  assert.equal(calls[0].body.execution, "cloud");
 });
 
 test("a wait past the limit becomes a later report", async () => {

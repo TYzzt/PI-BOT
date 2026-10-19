@@ -26,8 +26,9 @@ import {
   runOut,
   updateBot,
 } from "./bots.js";
-import { cancelRun, decideApproval, dispatchMac } from "./runs.js";
+import { cancelRun, decideApproval, dispatchDevice, failDeviceRuns } from "./runs.js";
 import { cancelTask, createTask, readTask, reportLater, TERMINAL, listTasks, messageTask, callerRun } from "./agents.js";
+import { deviceOut, deviceList, botConnection } from './devices.js';
 import { complete, findModel, proxyResponses, recordUsage } from "./llm.js";
 import type { WebSearch } from "./search.js";
 import { manageSkill, skillRequest } from "./skills.js";
@@ -114,21 +115,9 @@ const modelOut = (m: Row) => ({
   created_at: m.created_at,
   updated_at: m.updated_at,
 });
-const deviceOut = (d: Row, online: boolean) => ({
-  id: d.device_id,
-  user_id: d.user_id,
-  label: d.label,
-  created_at: d.created_at,
-  last_seen_at: d.last_seen_at,
-  revoked_at: d.revoked_at,
-  online,
-});
-async function macStatus(tx: Tx, hub: Hub, userId: string) {
-  const d = await tx.one(
-    "SELECT * FROM devices WHERE user_id=$1 AND revoked_at IS NULL",
-    [userId],
-  );
-  return { online: hub.online(userId), device: d ? deviceOut(d, hub.online(userId)) : null };
+async function computerStatus(tx: Tx, hub: Hub, userId: string) {
+  const devices = await deviceList(tx, hub, userId);
+  return { online: devices.some(d => d.online), device: devices.find(d => !d.revoked_at) ?? null };
 }
 async function setDefault(tx: Tx, id: string) {
   await tx.rows("UPDATE models SET is_default=false WHERE is_default AND model_id<>$1", [id]);
@@ -147,6 +136,7 @@ async function deviceFiles(ctx: Context, method: "list" | "read") {
     `files.${method}`,
     { slug: bot.slug, path: ctx.query.path },
     ctx.s.rpcTimeoutMs,
+    bot.execution_device_id,
   );
 }
 
@@ -170,7 +160,7 @@ export const routes: Route[] = [
     handler:async({tx,user,llm,body})=>checkpoint(tx,user.user_id,llm!,body.run_id,body.checkpoint,body.expected_version)},
   {method:"POST",path:"/agent/tasks/resume",auth:"llm",tag:"agents",summary:"用户要求后续接已结束任务",internal:true,
     body:z.object({run_id:uuid,task_id:uuid,request_id:z.string().min(1).max(200),text:z.string().max(8000).optional()}).strict(),
-    handler:async({tx,db,s,hub,user,llm,body,after})=>{const r=await resumeTask(tx,hub,user.user_id,llm!,body);if(r.run?.executor==="mac") after(()=>dispatchMac(db,s,hub,r.run!.run_id));return r.task;}},
+    handler:async({tx,db,s,hub,user,llm,body,after})=>{const r=await resumeTask(tx,hub,user.user_id,llm!,body);if(r.run?.executor==="device") after(()=>dispatchDevice(db,s,hub,r.run!.run_id));return r.task;}},
   {
     method: "POST", path: "/agent/skills", auth: "llm", tag: "skills", summary: "智能体私有能力管理",
     internal: true,
@@ -178,7 +168,7 @@ export const routes: Route[] = [
     handler: async ({ tx, user, llm, body }) => manageSkill(tx, user.user_id, llm!, body),
   },
   {
-    method: "POST", path: "/web/search", auth: "llm", tag: "web", summary: "联网搜索：Mac 与云端共用（短期智能体令牌）",
+    method: "POST", path: "/web/search", auth: "llm", tag: "web", summary: "联网搜索：电脑与云端共用（短期智能体令牌）",
     tx: false,
     body: z.object({ query: z.string().trim().min(1).max(2000), language: z.string().regex(/^(auto|all|[a-z]{2,3}(-[A-Za-z]{2,4})?)$/).default("auto") }),
     handler: async ({ webSearch, body, reply }) => {
@@ -193,6 +183,7 @@ export const routes: Route[] = [
     method: "POST", path: "/agent/tasks", auth: "llm", tag: "agents", summary: "智能体把任务委托给同一用户的另一个 Bot（短期智能体令牌）",
     body: z.object({
       run_id: uuid,
+      execution: z.enum(["device","cloud"]).optional(),
       agent: z.string().trim().min(1).max(100).optional(),
       kind: z.enum(["background", "delegation"]).default("delegation"),
       title: z.string().trim().min(1).max(80).optional(),
@@ -202,7 +193,7 @@ export const routes: Route[] = [
     }),
     handler: async ({ db, tx, s, hub, user, llm, body, after }) => {
       const { task, run } = await createTask(tx, hub, user.user_id, llm!, body);
-      if (run?.executor === "mac") after(() => dispatchMac(db, s, hub, run.run_id));
+      if (run?.executor === "device") after(() => dispatchDevice(db, s, hub, run.run_id));
       return task;
     },
   },
@@ -291,29 +282,46 @@ export const routes: Route[] = [
     },
   },
   {
-    method: "GET", path: "/me", auth: "actor", tag: "auth", summary: "当前用户与 Mac 在线状态",
-    handler: async ({ tx, hub, user }) => ({ user: userOut(user), mac: await macStatus(tx, hub, user.user_id) }),
+    method: "GET", path: "/me", auth: "actor", tag: "auth", summary: "当前用户与电脑在线状态",
+    handler: async ({ tx, hub, user }) => ({ user: userOut(user), computer: await computerStatus(tx, hub, user.user_id), devices: await deviceList(tx, hub, user.user_id) }),
   },
   {
-    method: "POST", path: "/devices/register", auth: "user", tag: "device", summary: "把这台 Mac 绑定为当前用户的 harness（替换旧设备）",
-    body: z.object({ public_key: z.string(), label: z.string().trim().min(1).max(80) }),
+    method: "POST", path: "/devices/register", auth: "user", tag: "device", summary: "注册或更新当前用户的一台执行电脑",
+    body: z.object({ public_key: z.string(), label: z.string().trim().min(1).max(80), platform: z.enum(["darwin","linux"]).default("darwin") }),
     handler: async ({ tx, hub, user, body, after }) => {
       try {
         decodeBase64(body.public_key, 32);
       } catch {
         fail(422, "公钥必须是 32 字节 Ed25519 的标准 Base64");
       }
-      const old = await tx.rows("UPDATE devices SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL RETURNING device_id", [user.user_id]);
-      after(() => old.forEach((d) => hub.kick(d.device_id)));
-      const d = await tx.insert("devices", { device_id: randomUUID(), user_id: user.user_id, public_key: body.public_key, label: body.label });
+      await tx.one("SELECT user_id FROM users WHERE user_id=$1 FOR UPDATE", [user.user_id]);
+      const prior = await tx.one("SELECT * FROM devices WHERE user_id=$1 AND public_key=$2 AND revoked_at IS NULL", [user.user_id,body.public_key]);
+      const first = !await tx.one("SELECT 1 FROM devices WHERE user_id=$1", [user.user_id]);
+      const d = prior ? await tx.update("devices",prior.device_id,{label:body.label,platform:body.platform}) : await tx.insert("devices", { device_id: randomUUID(), user_id: user.user_id, public_key: body.public_key, label: body.label, platform: body.platform });
+      if (first) await tx.rows("UPDATE bots SET execution_device_id=$2 WHERE user_id=$1 AND execution_device_id IS NULL", [user.user_id,d.device_id]);
+      after(() => hub.publish(user.user_id, {type:'bots'}));
       return { device: deviceOut(d, false), user: userOut(user) };
     },
   },
   {
-    method: "POST", path: "/device/llm-token", auth: "device", tag: "device", summary: "Mac 换取访问模型代理的短期令牌",
+    method: 'GET', path: '/devices', auth: 'actor', tag: 'device', summary: '我的执行电脑',
+    handler: ({tx,hub,user}) => deviceList(tx,hub,user.user_id),
+  },
+  {
+    method: 'POST', path: '/devices/:id/revoke', auth: 'actor', tag: 'device', summary: '解绑自己的执行电脑',
+    handler: async ({tx,db,hub,user,params,after}) => {
+      const d = await tx.one('SELECT * FROM devices WHERE device_id=$1 AND user_id=$2 FOR UPDATE',[params.id,user.user_id]);
+      if (!d) fail(404,'设备不存在');
+      const updated = await tx.update('devices',params.id,{revoked_at:new Date()});
+      after(async () => { hub.kick(params.id); await failDeviceRuns(db,params.id,'执行电脑已解绑',false); hub.publish(user.user_id,{type:'bots'}); });
+      return deviceOut(updated,false);
+    },
+  },
+  {
+    method: "POST", path: "/device/llm-token", auth: "device", tag: "device", summary: "电脑换取访问模型代理的短期令牌",
     body: z.object({ bot_id: uuid.optional() }),
     handler: async ({ s, user, device, body }) => ({
-      token: await issueLlmToken({ sub: user.user_id, src: "mac", did: device!.device_id, bot: body.bot_id }, s),
+      token: await issueLlmToken({ sub: user.user_id, src: "device", did: device!.device_id, bot: body.bot_id }, s),
       expires_in: s.llmTokenTtl,
       base_path: "/llm/v1",
     }),
@@ -332,13 +340,13 @@ export const routes: Route[] = [
       const rows = await tx.rows("SELECT * FROM bots WHERE user_id=$1 AND archived_at IS NULL ORDER BY is_main DESC,last_active_at DESC", [user.user_id]);
       const bots = [];
       for (const b of rows) bots.push(await botOut(tx, b));
-      return { bots, mac: await macStatus(tx, hub, user.user_id) };
+      return { bots, computer: await computerStatus(tx, hub, user.user_id), devices: await deviceList(tx, hub, user.user_id) };
     },
   },
   {
     method: "POST", path: "/bots", auth: "actor", tag: "bots", summary: "新建 Bot", body: botInput,
-    handler: async ({ tx, user, body }) => {
-      const b = await createBot(tx, user.user_id, body);
+    handler: async ({ tx, user, device, body }) => {
+      const b = await createBot(tx, user.user_id, { ...body, execution_device_id: body.execution_device_id === undefined ? device?.device_id : body.execution_device_id });
       await tx.notify({ user_id: user.user_id, bot_id: b.bot_id });
       return botOut(tx, b);
     },
@@ -348,7 +356,7 @@ export const routes: Route[] = [
     handler: async ({ tx, user, params }) => botOut(tx, await ownBot(tx, user.user_id, params.id)),
   },
   {
-    method: "PATCH", path: "/bots/:id", auth: "actor", tag: "bots", summary: "修改 Bot（名称、人设、模型、形象）", body: botPatch,
+    method: "PATCH", path: "/bots/:id", auth: "actor", tag: "bots", summary: "修改 Bot（名称、人设、模型、形象、执行电脑）", body: botPatch,
     handler: async ({ tx, user, params, body }) => {
       const b = await updateBot(tx, user.user_id, params.id, body);
       await tx.notify({ user_id: user.user_id, bot_id: b.bot_id });
@@ -356,7 +364,7 @@ export const routes: Route[] = [
     },
   },
   {
-    method: "DELETE", path: "/bots/:id", auth: "actor", tag: "bots", summary: "归档 Bot（Mac 上的资料库文件保留）",
+    method: "DELETE", path: "/bots/:id", auth: "actor", tag: "bots", summary: "归档 Bot（电脑上的资料库文件保留）",
     handler: async ({ tx, user, params }) => {
       const bot = await ownBot(tx, user.user_id, params.id);
       if (bot.is_main) fail(409, "主智能体不能删除");
@@ -379,12 +387,13 @@ export const routes: Route[] = [
     },
   },
   {
-    method: "POST", path: "/bots/:id/messages", auth: "actor", tag: "bots", summary: "给 Bot 发消息；Mac 在线时在 Mac 上运行，否则在云端运行",
+    method: "POST", path: "/bots/:id/messages", auth: "actor", tag: "bots", summary: "给 Bot 发消息；电脑在线时在电脑上运行，否则在云端运行",
     body: z.object({ text: z.string().trim().min(1).max(100000), request_id: z.string().min(8).max(80) }),
     handler: async ({ db, tx, s, hub, user, params, body, after }) => {
-      const conn = hub.device(user.user_id);
+      await ownBot(tx,user.user_id,params.id,true);
+      const conn = await botConnection(tx,hub,user.user_id,params.id);
       const { run, created } = await postMessage(tx, user.user_id, params.id, body.text, body.request_id, conn ? { deviceId: conn.deviceId } : null);
-      if (created && run.executor === "mac") after(() => dispatchMac(db, s, hub, run.run_id));
+      if (created && run.executor === "device") after(() => dispatchDevice(db, s, hub, run.run_id));
       const messages = await tx.rows("SELECT * FROM bot_messages WHERE message_id = ANY($1) ORDER BY seq", [[run.user_message_id, run.assistant_message_id]]);
       return { run: runOut(run), messages: messages.map((m) => messageOut(m)) };
     },
@@ -398,9 +407,10 @@ export const routes: Route[] = [
     method:"POST",path:"/bots/:id/messages/:messageId/ui-actions",auth:"actor",tag:"bots",summary:"提交界面操作并启动下一次 Bot 任务",
     body:z.object({revision:z.number().int().positive(),request_id:z.string().uuid(),states:z.array(z.object({surfaceId:z.string().min(1).max(80),data:z.record(z.string(),z.unknown())})).max(4),action:z.object({name:z.string().min(1).max(80),surfaceId:z.string().min(1).max(80),sourceComponentId:z.string().min(1).max(80),context:z.record(z.string(),z.unknown())})}),
     handler:async({db,tx,s,hub,user,params,body,after})=>{
-      const conn=hub.device(user.user_id);
+      await ownBot(tx,user.user_id,params.id,true);
+      const conn=await botConnection(tx,hub,user.user_id,params.id);
       const {run,created}=await submitUiAction(tx,user.user_id,params.id,params.messageId,body,conn?{deviceId:conn.deviceId}:null);
-      if(created&&run.executor==='mac')after(()=>dispatchMac(db,s,hub,run.run_id));
+      if(created&&run.executor==='device')after(()=>dispatchDevice(db,s,hub,run.run_id));
       const messages=await tx.rows("SELECT * FROM bot_messages WHERE message_id=ANY($1) ORDER BY seq",[[run.user_message_id,run.assistant_message_id]]);
       return {run:runOut(run),messages:messages.map(m=>messageOut(m))};
     },
@@ -423,11 +433,11 @@ export const routes: Route[] = [
     },
   },
   {
-    method: "GET", path: "/bots/:id/files", auth: "actor", tag: "files", summary: "列出 Mac 上的 Bot 资料库目录（Mac 离线时 503）",
+    method: "GET", path: "/bots/:id/files", auth: "actor", tag: "files", summary: "列出电脑上的 Bot 资料库目录（电脑离线时 503）",
     query: libraryPath, tx: false, handler: (ctx) => deviceFiles(ctx, "list"),
   },
   {
-    method: "GET", path: "/bots/:id/files/content", auth: "actor", tag: "files", summary: "读取 Mac 上的资料库文件（文本或小图片）",
+    method: "GET", path: "/bots/:id/files/content", auth: "actor", tag: "files", summary: "读取电脑上的资料库文件（文本或小图片）",
     query: libraryPath, tx: false, handler: (ctx) => deviceFiles(ctx, "read"),
   },
   {
@@ -474,16 +484,15 @@ export const routes: Route[] = [
         (SELECT count(*) FROM models WHERE enabled) AS models,
         (SELECT count(*) FROM bot_runs WHERE created_at > now() - interval '1 day') AS runs_today,
         (SELECT coalesce(sum(input_tokens+output_tokens),0) FROM usage_logs WHERE created_at > now() - interval '1 day') AS tokens_today`);
-      return { ...counts, macs_online: users.filter((u) => hub.online(u.user_id)).length };
+      return { ...counts, devices_online: hub.count() };
     },
   },
   {
     method: "GET", path: "/admin/api/users", auth: "admin", tag: "admin", summary: "用户列表",
     handler: async ({ tx, hub }) => {
-      const rows = await tx.rows(`SELECT u.*, (SELECT count(*) FROM bots b WHERE b.user_id=u.user_id AND b.archived_at IS NULL) AS bot_count,
-        d.label AS mac_label, d.last_seen_at AS mac_last_seen_at FROM users u
-        LEFT JOIN devices d ON d.user_id=u.user_id AND d.revoked_at IS NULL ORDER BY u.created_at`);
-      return rows.map((u) => ({ ...userOut(u), bot_count: u.bot_count, mac: u.mac_label ? { label: u.mac_label, last_seen_at: u.mac_last_seen_at, online: hub.online(u.user_id) } : null }));
+      const rows = await tx.rows(`SELECT u.*, (SELECT count(*) FROM bots b WHERE b.user_id=u.user_id AND b.archived_at IS NULL) AS bot_count FROM users u ORDER BY u.created_at`);
+      return Promise.all(rows.map(async u => ({ ...userOut(u), bot_count: u.bot_count, devices: await deviceList(tx,hub,u.user_id), computer: await computerStatus(tx,hub,u.user_id) })));
+
     },
   },
   {
@@ -505,8 +514,8 @@ export const routes: Route[] = [
         display_name: body.display_name, role: body.role, disabled: body.disabled, updated_at: new Date(),
       });
       if (body.disabled) {
-        const d = await tx.one("SELECT device_id FROM devices WHERE user_id=$1 AND revoked_at IS NULL", [params.id]);
-        if (d) after(() => hub.kick(d.device_id));
+        const devices = await tx.rows("SELECT device_id FROM devices WHERE user_id=$1 AND revoked_at IS NULL", [params.id]);
+        after(() => devices.forEach(d => hub.kick(d.device_id)));
       }
       return userOut(updated);
     },
@@ -515,10 +524,10 @@ export const routes: Route[] = [
     method: "DELETE", path: "/admin/api/users/:id", auth: "admin", tag: "admin", summary: "删除用户及其 Bot 记录",
     handler: async ({ tx, hub, user, params, after }) => {
       if (params.id === user.user_id) fail(400, "不能删除自己");
-      const d = await tx.one("SELECT device_id FROM devices WHERE user_id=$1 AND revoked_at IS NULL", [params.id]);
+      const devices = await tx.rows("SELECT device_id FROM devices WHERE user_id=$1 AND revoked_at IS NULL", [params.id]);
       await tx.get("users", params.id, true);
       await tx.rows("DELETE FROM users WHERE user_id=$1", [params.id]);
-      if (d) after(() => hub.kick(d.device_id));
+      after(() => devices.forEach(d => hub.kick(d.device_id)));
       return { ok: true };
     },
   },
@@ -585,17 +594,17 @@ export const routes: Route[] = [
     },
   },
   {
-    method: "GET", path: "/admin/api/devices", auth: "admin", tag: "admin", summary: "全部 Mac 设备",
+    method: "GET", path: "/admin/api/devices", auth: "admin", tag: "admin", summary: "全部电脑设备",
     handler: async ({ tx, hub }) => {
       const rows = await tx.rows("SELECT d.*, u.username FROM devices d JOIN users u USING(user_id) ORDER BY d.revoked_at NULLS FIRST, d.created_at DESC LIMIT 500");
-      return rows.map((d) => ({ ...deviceOut(d, !d.revoked_at && hub.device(d.user_id)?.deviceId === d.device_id), username: d.username }));
+      return rows.map((d) => ({ ...deviceOut(d, !d.revoked_at && !!hub.device(d.user_id,d.device_id)), username: d.username }));
     },
   },
   {
     method: "POST", path: "/admin/api/devices/:id/revoke", auth: "admin", tag: "admin", summary: "吊销设备",
-    handler: async ({ tx, hub, params, after }) => {
+    handler: async ({ tx, db, hub, params, after }) => {
       const d = await tx.update("devices", params.id, { revoked_at: new Date() });
-      after(() => hub.kick(d.device_id));
+      after(async () => { hub.kick(d.device_id); await failDeviceRuns(db,d.device_id,"执行电脑已解绑",false); });
       return deviceOut(d, false);
     },
   },

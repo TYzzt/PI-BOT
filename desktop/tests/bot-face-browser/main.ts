@@ -85,7 +85,7 @@ select.onchange = () => {
     running_count: status === 'running' ? 1 : 0, queued_count: status === 'queued' ? 1 : 0,
   };
   bot.latest_run = {
-    id: 'avatar-test-run', bot_id: bot.id, status, executor: 'mac', error: null,
+    id: 'avatar-test-run', bot_id: bot.id, status, executor: 'device', error: null,
     created_at: now(), finished_at: ['completed', 'failed', 'cancelled'].includes(status) ? now() : null,
     assistant_message_id: 'avatar-test-message',
   };

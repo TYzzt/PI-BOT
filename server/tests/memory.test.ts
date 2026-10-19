@@ -210,6 +210,7 @@ test(
       {
         run_id: run,
         kind: "background",
+          execution: "cloud",
         task: "整理材料",
         wait: false,
         request_id: "start-one",
@@ -345,6 +346,7 @@ test(
       {
         run_id: id,
         kind: "background",
+          execution: "cloud",
         task: "整理海洋动物知识",
         wait: false,
         request_id: "learn-completion",

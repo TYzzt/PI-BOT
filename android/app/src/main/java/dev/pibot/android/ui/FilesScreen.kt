@@ -56,12 +56,14 @@ import dev.pibot.android.data.PiBotRepository
 import dev.pibot.android.face.PiBotFace
 import dev.pibot.android.face.seedOf
 
-/** Read-only browser for a bot's library on the Mac (`~/pi-bot/<slug>`). */
+/** Read-only browser for a bot's library on the bound computer(`~/pi-bot/<slug>`). */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FilesScreen(repository: PiBotRepository, botId: String, onBack: () -> Unit) {
     val bot by repository.bot(botId).collectAsStateWithLifecycle(null)
-    val mac by repository.mac.collectAsStateWithLifecycle()
+    val devices by repository.devices.collectAsStateWithLifecycle()
+    val target = devices.firstOrNull { it.id == bot?.executionDeviceId }
+    val targetOnline = target?.online == true
     var path by remember { mutableStateOf("") }
     var opened by remember { mutableStateOf<String?>(null) }
     var list by remember { mutableStateOf<FileList?>(null) }
@@ -69,12 +71,12 @@ fun FilesScreen(repository: PiBotRepository, botId: String, onBack: () -> Unit) 
     var error by remember { mutableStateOf<String?>(null) }
     var reload by remember { mutableIntStateOf(0) }
 
-    LaunchedEffect(path, reload, mac.online) {
+    LaunchedEffect(path, reload, targetOnline, bot?.executionDeviceId) {
         list = null
         error = null
         runCatching { repository.files(botId, path) }.onSuccess { list = it }.onFailure { error = errorText(it) }
     }
-    LaunchedEffect(opened) {
+    LaunchedEffect(opened, bot?.executionDeviceId, targetOnline, reload) {
         file = null
         val target = opened ?: return@LaunchedEffect
         runCatching { repository.file(botId, target) }.onSuccess { file = it }.onFailure { error = errorText(it); opened = null }
@@ -110,8 +112,8 @@ fun FilesScreen(repository: PiBotRepository, botId: String, onBack: () -> Unit) 
             when {
                 opened != null -> FilePreview(file)
                 failure != null -> EmptyState(
-                    b?.avatar ?: ORANGE, if (mac.online) "error" else "sleeping",
-                    if (mac.online) "打不开" else "Mac 离线", failure,
+                    b?.avatar ?: ORANGE, if (targetOnline) "error" else "sleeping",
+                    if (targetOnline) "打不开" else "电脑离线", failure,
                 ) { Button(onClick = { reload++ }) { Text("重试") } }
                 entries == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                 entries.isEmpty() -> EmptyState(b?.avatar ?: ORANGE, "idle", "这里还是空的", "让 ${b?.name ?: "Bot"} 写点东西进来吧。")
@@ -179,7 +181,7 @@ private fun Unsupported(file: FileContent) {
     Column(Modifier.fillMaxSize().padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center) {
         Text("📄", fontSize = 48.sp)
         Text(file.name, fontWeight = FontWeight.SemiBold)
-        Text("${humanSize(file.size)} · 手机上暂不支持预览，请在 Mac 的 Finder 里打开。", color = Muted)
+        Text("${humanSize(file.size)} · 手机上暂不支持预览，请在电脑的文件管理器里打开。", color = Muted)
     }
 }
 

@@ -10,7 +10,7 @@
         "tags": [
           "web"
         ],
-        "summary": "联网搜索：Mac 与云端共用（短期智能体令牌）",
+        "summary": "联网搜索：电脑与云端共用（短期智能体令牌）",
         "security": [
           {
             "LlmBearer": []
@@ -75,6 +75,13 @@
                     "type": "string",
                     "format": "uuid",
                     "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "execution": {
+                    "type": "string",
+                    "enum": [
+                      "device",
+                      "cloud"
+                    ]
                   },
                   "agent": {
                     "type": "string",
@@ -356,7 +363,7 @@
         "tags": [
           "auth"
         ],
-        "summary": "当前用户与 Mac 在线状态",
+        "summary": "当前用户与电脑在线状态",
         "security": [
           {
             "UserBearer": []
@@ -380,7 +387,7 @@
         "tags": [
           "device"
         ],
-        "summary": "把这台 Mac 绑定为当前用户的 harness（替换旧设备）",
+        "summary": "注册或更新当前用户的一台执行电脑",
         "security": [
           {
             "UserBearer": []
@@ -401,6 +408,14 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 80
+                  },
+                  "platform": {
+                    "default": "darwin",
+                    "type": "string",
+                    "enum": [
+                      "darwin",
+                      "linux"
+                    ]
                   }
                 },
                 "required": [
@@ -421,12 +436,71 @@
         }
       }
     },
+    "/devices": {
+      "get": {
+        "tags": [
+          "device"
+        ],
+        "summary": "我的执行电脑",
+        "security": [
+          {
+            "UserBearer": []
+          },
+          {
+            "DeviceSignature": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "default": {
+            "description": "{ detail }"
+          }
+        }
+      }
+    },
+    "/devices/{id}/revoke": {
+      "post": {
+        "tags": [
+          "device"
+        ],
+        "summary": "解绑自己的执行电脑",
+        "security": [
+          {
+            "UserBearer": []
+          },
+          {
+            "DeviceSignature": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "default": {
+            "description": "{ detail }"
+          }
+        }
+      }
+    },
     "/device/llm-token": {
       "post": {
         "tags": [
           "device"
         ],
-        "summary": "Mac 换取访问模型代理的短期令牌",
+        "summary": "电脑换取访问模型代理的短期令牌",
         "security": [
           {
             "DeviceSignature": []
@@ -550,6 +624,18 @@
                       }
                     ]
                   },
+                  "execution_device_id": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "format": "uuid",
+                        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "avatar": {
                     "type": "object",
                     "properties": {
@@ -655,7 +741,7 @@
         "tags": [
           "bots"
         ],
-        "summary": "修改 Bot（名称、人设、模型、形象）",
+        "summary": "修改 Bot（名称、人设、模型、形象、执行电脑）",
         "security": [
           {
             "UserBearer": []
@@ -694,6 +780,18 @@
                     "maxLength": 8000
                   },
                   "model_id": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "format": "uuid",
+                        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "execution_device_id": {
                     "anyOf": [
                       {
                         "type": "string",
@@ -768,7 +866,7 @@
         "tags": [
           "bots"
         ],
-        "summary": "归档 Bot（Mac 上的资料库文件保留）",
+        "summary": "归档 Bot（电脑上的资料库文件保留）",
         "security": [
           {
             "UserBearer": []
@@ -857,7 +955,7 @@
         "tags": [
           "bots"
         ],
-        "summary": "给 Bot 发消息；Mac 在线时在 Mac 上运行，否则在云端运行",
+        "summary": "给 Bot 发消息；电脑在线时在电脑上运行，否则在云端运行",
         "security": [
           {
             "UserBearer": []
@@ -1234,7 +1332,7 @@
         "tags": [
           "files"
         ],
-        "summary": "列出 Mac 上的 Bot 资料库目录（Mac 离线时 503）",
+        "summary": "列出电脑上的 Bot 资料库目录（电脑离线时 503）",
         "security": [
           {
             "UserBearer": []
@@ -1279,7 +1377,7 @@
         "tags": [
           "files"
         ],
-        "summary": "读取 Mac 上的资料库文件（文本或小图片）",
+        "summary": "读取电脑上的资料库文件（文本或小图片）",
         "security": [
           {
             "UserBearer": []
@@ -1841,7 +1939,7 @@
         "tags": [
           "admin"
         ],
-        "summary": "全部 Mac 设备",
+        "summary": "全部电脑设备",
         "security": [
           {
             "UserBearer": []

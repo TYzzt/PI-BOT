@@ -19,21 +19,21 @@ import {recordUi} from "./ui.js";
 import { observationSchema, recordObservation } from "./observations.js";
 import { PROGRESS_CHARS, PROGRESS_SEGMENTS } from "@pi-bot/agent";
 
-export const MAC_OFFLINE = "Mac 已离线，可重新发送（将在云端运行）";
+export const DEVICE_OFFLINE = "执行电脑已离线，本次运行已中断；请核实结果后重新安排任务";
 
-/** Sends a freshly created Mac run to the connected harness, or falls back to the cloud. */
-export async function dispatchMac(db: Database, s: Settings, hub: Hub, runId: string) {
+/** Dispatches to the recorded device; only conversation turns can fall back to the cloud. */
+export async function dispatchDevice(db: Database, s: Settings, hub: Hub, runId: string) {
   const job = await db.tx(async (tx) => {
     const run = await tx.one("SELECT * FROM bot_runs WHERE run_id=$1 FOR NO KEY UPDATE SKIP LOCKED", [runId]);
-    if (!run || run.status !== "queued" || run.executor !== "mac") return null;
-    const conn = hub.device(run.user_id);
-    if (run.execution_policy === "mac_only") {
+    if (!run || run.status !== "queued" || run.executor !== "device") return null;
+    const conn = hub.device(run.user_id,run.device_id);
+    if (run.execution_policy === "device_only") {
       if (!conn?.capabilities?.includes("always-on-v1")) return null;
-      await tx.rows("UPDATE bot_automations SET status='enabled' WHERE automation_id=$1 AND status='waiting_mac'", [run.automation_id]);
-      if (run.device_id !== conn.deviceId) await tx.rows("UPDATE bot_runs SET device_id=$2 WHERE run_id=$1", [runId, conn.deviceId]);
+      await tx.rows("UPDATE bot_automations SET status='enabled' WHERE automation_id=$1 AND status='waiting_device'", [run.automation_id]);
       await tx.rows("UPDATE bot_runs SET deadline_at=$2 WHERE run_id=$1", [runId, new Date(Date.now() + s.automationRoundSeconds * 1000)]);
     }
-    if (run.execution_policy !== "mac_only" && (!conn || conn.deviceId !== run.device_id)) {
+    if (!conn && run.lane === "task") return null;
+    if (run.execution_policy !== "device_only" && !conn) {
       await tx.rows(
         "UPDATE bot_runs SET executor='cloud', device_id=NULL WHERE run_id=$1",
         [runId],
@@ -95,7 +95,7 @@ export async function handleRunEvent(
     runId = message.run_id;
   const own = (tx: Tx) =>
     tx.one(
-      "SELECT * FROM bot_runs WHERE run_id=$1 AND device_id=$2 AND executor='mac'",
+      "SELECT * FROM bot_runs WHERE run_id=$1 AND device_id=$2 AND executor='device'",
       [runId, conn.deviceId],
     );
   if (e.kind === "text") {
@@ -137,7 +137,7 @@ export async function handleRunEvent(
     live.delete(runId);
     await db.tx(async (tx) => {
       if (!(await own(tx))) return;
-      await finishRun(tx, runId, e.state, e.error ?? "Mac 运行失败", content);
+      await finishRun(tx, runId, e.state, e.error ?? "电脑运行失败", content);
     });
     return;
   }
@@ -189,43 +189,48 @@ export async function handleRunEvent(
   if (reply) conn.send(reply);
 }
 
-export async function failDeviceRuns(db: Database, deviceId: string, reason = MAC_OFFLINE) {
+export async function failDeviceRuns(db: Database, deviceId: string, reason = DEVICE_OFFLINE, keepQueued = true) {
   await db.tx(async (tx) => {
+    if (!keepQueued) {
+      const tasks = await tx.rows(`UPDATE agent_tasks SET status='failed',error=$2,finished_at=now(),updated_at=now()
+        WHERE device_id=$1 AND status='queued' AND child_run_id IS NULL RETURNING user_id,parent_bot_id`, [deviceId, reason]);
+      for (const t of tasks) await tx.notify({user_id:t.user_id,bot_id:t.parent_bot_id});
+    }
     const runs = await tx.rows(
-      "SELECT run_id FROM bot_runs WHERE executor='mac' AND device_id=$1 AND status = ANY($2)",
+      "SELECT run_id FROM bot_runs WHERE executor='device' AND device_id=$1 AND status = ANY($2)",
       [deviceId, ACTIVE],
     );
-    await tx.rows("UPDATE bot_runs SET executor='cloud', device_id=NULL WHERE executor='mac' AND device_id=$1 AND status='queued' AND lane='conversation' AND execution_policy='any'", [deviceId]);
-    await tx.rows("UPDATE bot_messages m SET executor='cloud' FROM bot_runs r WHERE m.message_id=r.assistant_message_id AND r.executor='cloud' AND r.status='queued' AND m.executor='mac'");
+    await tx.rows("UPDATE bot_runs SET executor='cloud', device_id=NULL WHERE executor='device' AND device_id=$1 AND status='queued' AND lane='conversation' AND execution_policy='any'", [deviceId]);
+    await tx.rows("UPDATE bot_messages m SET executor='cloud' FROM bot_runs r WHERE m.message_id=r.assistant_message_id AND r.executor='cloud' AND r.status='queued' AND m.executor='device'");
     for (const r of runs) {
       const current = await tx.get("bot_runs", r.run_id);
-      if (current?.executor !== "mac") continue;
+      if (current?.executor !== "device") continue;
       live.delete(r.run_id);
-      if (current.execution_policy === "mac_only" && current.status === "queued") {
-        await tx.rows("UPDATE bot_automations SET status='waiting_mac' WHERE automation_id=$1 AND status='enabled'", [current.automation_id]);
+      if (keepQueued && current.status === "queued" && (current.lane === "task" || current.execution_policy === "device_only")) {
+        await tx.rows("UPDATE bot_automations SET status='waiting_device' WHERE automation_id=$1 AND status='enabled'", [current.automation_id]);
         continue;
       }
-      await finishRun(tx, r.run_id, "failed", current.execution_policy === "mac_only" ? "AUTOMATION_MAC_OFFLINE" : reason);
+      await finishRun(tx, r.run_id, "failed", current.execution_policy === "device_only" ? "AUTOMATION_DEVICE_OFFLINE" : reason);
     }
   });
 }
-/** No device sockets survive a restart, so any Mac run still marked active is lost. */
-export async function failOrphanedMacRuns(db: Database) {
+/** Preserve queued local work after a restart, and fail interrupted device runs. */
+export async function failOrphanedDeviceRuns(db: Database) {
   await db.tx(async (tx) => {
     const runs = await tx.rows(
-      "SELECT run_id FROM bot_runs WHERE executor='mac' AND status = ANY($1)",
+      "SELECT run_id FROM bot_runs WHERE executor='device' AND status = ANY($1)",
       [ACTIVE],
     );
-    await tx.rows("UPDATE bot_runs SET executor='cloud', device_id=NULL WHERE executor='mac' AND status='queued' AND lane='conversation' AND execution_policy='any'");
-    await tx.rows("UPDATE bot_messages m SET executor='cloud' FROM bot_runs r WHERE m.message_id=r.assistant_message_id AND r.executor='cloud' AND r.status='queued' AND m.executor='mac'");
+    await tx.rows("UPDATE bot_runs SET executor='cloud', device_id=NULL WHERE executor='device' AND status='queued' AND lane='conversation' AND execution_policy='any'");
+    await tx.rows("UPDATE bot_messages m SET executor='cloud' FROM bot_runs r WHERE m.message_id=r.assistant_message_id AND r.executor='cloud' AND r.status='queued' AND m.executor='device'");
     for (const r of runs) {
       const current = await tx.get("bot_runs", r.run_id);
-      if (current?.executor === "mac") {
-        if (current.execution_policy === "mac_only" && current.status === "queued") {
-          await tx.rows("UPDATE bot_automations SET status='waiting_mac' WHERE automation_id=$1 AND status='enabled'", [current.automation_id]);
+      if (current?.executor === "device") {
+        if (current.status === "queued" && (current.lane === "task" || current.execution_policy === "device_only")) {
+          await tx.rows("UPDATE bot_automations SET status='waiting_device' WHERE automation_id=$1 AND status='enabled'", [current.automation_id]);
           continue;
         }
-        await finishRun(tx, r.run_id, "failed", current.execution_policy === "mac_only" ? "AUTOMATION_MAC_OFFLINE" : MAC_OFFLINE);
+        await finishRun(tx, r.run_id, "failed", current.execution_policy === "device_only" ? "AUTOMATION_DEVICE_OFFLINE" : DEVICE_OFFLINE);
       }
     }
   });
@@ -243,8 +248,8 @@ export async function cancelRun(tx: Tx, hub: Hub, userId: string, runId: string)
     await finishRun(tx, runId, "cancelled", null);
     return { run: { ...run!, status: "cancelled" }, notify: null };
   }
-  const conn = run!.executor === "mac" ? hub.device(userId) : undefined;
-  if (run!.executor === "mac" && conn?.deviceId === run!.device_id)
+  const conn = run!.executor === "device" ? hub.device(userId,run!.device_id) : undefined;
+  if (run!.executor === "device" && conn?.deviceId === run!.device_id)
     return { run: run!, notify: conn };
   if (run!.executor === "cloud" && run!.status !== "queued")
     return { run: run!, notify: null };
@@ -281,7 +286,7 @@ export async function decideApproval(
   }
   await tx.notify({ user_id: userId, bot_id: a!.bot_id });
   const run = await tx.get("bot_runs", a!.run_id);
-  const conn = hub.device(userId);
+  const conn = hub.device(userId,run?.device_id);
   return {
     approval: approvalOut(updated),
     send:

@@ -10,7 +10,7 @@ const PAGES: { id: Page; label: string }[] = [
   { id: "overview", label: "概览" },
   { id: "users", label: "用户" },
   { id: "models", label: "模型" },
-  { id: "devices", label: "Mac 设备" },
+  { id: "devices", label: "电脑设备" },
   { id: "usage", label: "用量" },
 ];
 
@@ -108,7 +108,7 @@ function OverviewPage() {
   const stats = [
     ["用户", data.users],
     ["Bot", data.bots],
-    ["在线 Mac", data.macs_online],
+    ["在线电脑", data.devices_online],
     ["启用模型", data.models],
     ["今日运行", data.runs_today],
     ["今日 Token", data.tokens_today],
@@ -201,7 +201,7 @@ function UsersPage({ me }: { me: User }) {
   return (
     <>
       <div className="toolbar">
-        <p className="muted">用户由管理员创建，没有自助注册。每个用户可以绑定一台 Mac。</p>
+        <p className="muted">用户由管理员创建，没有自助注册。每个用户可以同时绑定多台 Mac 或 Linux 执行电脑。</p>
         <button className="primary" onClick={() => setEditing("new")}>
           新建用户
         </button>
@@ -213,7 +213,7 @@ function UsersPage({ me }: { me: User }) {
             <th>用户</th>
             <th>角色</th>
             <th>Bot</th>
-            <th>Mac</th>
+            <th>电脑</th>
             <th>状态</th>
             <th />
           </tr>
@@ -228,15 +228,7 @@ function UsersPage({ me }: { me: User }) {
               <td>{u.role === "admin" ? <span className="badge accent">管理员</span> : "用户"}</td>
               <td>{u.bot_count ?? 0}</td>
               <td>
-                {u.mac ? (
-                  <span className="device">
-                    <i className={u.mac.online ? "dot on" : "dot"} />
-                    {u.mac.label}
-                    <span className="muted small">{u.mac.online ? "在线" : ago(u.mac.last_seen_at)}</span>
-                  </span>
-                ) : (
-                  <span className="muted">未绑定</span>
-                )}
+                {u.devices?.filter(d=>!d.revoked_at).length ? u.devices.filter(d=>!d.revoked_at).map(d=><div key={d.id} className="device"><i className={d.online ? 'dot on' : 'dot'}/>{d.label} · {d.platform === 'linux' ? 'Linux' : 'macOS'} · {d.online ? '在线' : '离线'}</div>) : <span className="muted">未绑定</span>}
               </td>
               <td>{u.disabled ? <span className="badge">已禁用</span> : <span className="badge ok">正常</span>}</td>
               <td className="actions">
@@ -248,7 +240,7 @@ function UsersPage({ me }: { me: User }) {
                     <button className="ghost" onClick={() => act(() => api.updateUser(u.id, { disabled: !u.disabled }))}>
                       {u.disabled ? "启用" : "禁用"}
                     </button>
-                    <button className="ghost danger" onClick={() => confirm(`删除用户 ${u.username}？其 Bot 记录会一并删除（Mac 上的资料库文件保留）。`) && act(() => api.deleteUser(u.id))}>
+                    <button className="ghost danger" onClick={() => confirm(`删除用户 ${u.username}？其 Bot 记录会一并删除（电脑上的资料库文件保留）。`) && act(() => api.deleteUser(u.id))}>
                       删除
                     </button>
                   </>
@@ -398,7 +390,7 @@ function DevicesPage() {
   const { data, error, reload } = useLoad<Device[]>(load);
   return (
     <>
-      <p className="muted">用户在 Mac 客户端登录即绑定设备；重新绑定会自动吊销旧设备。吊销后该 Mac 立即断开，需要重新登录。</p>
+      <p className="muted">用户在 Mac、Linux 客户端或命令行登录即可添加设备。吊销只断开所选设备，其他电脑继续工作。</p>
       {error && <p className="error">{error}</p>}
       <table>
         <thead>
@@ -416,7 +408,7 @@ function DevicesPage() {
               <td>
                 <span className="device">
                   <i className={d.online ? "dot on" : "dot"} />
-                  {d.label}
+                  {d.label} · {d.platform === 'linux' ? 'Linux' : 'macOS'}
                 </span>
               </td>
               <td>{d.username}</td>
@@ -439,7 +431,7 @@ function DevicesPage() {
   );
 }
 
-const SOURCES: Record<string, string> = { mac: "Mac", cloud: "云端", memory: "记忆整理", test: "测试" };
+const SOURCES: Record<string, string> = { device: "电脑", cloud: "云端", memory: "记忆整理", test: "测试" };
 
 function SearchUsagePanel() {
   const load = useCallback(() => api.searchUsage(), []);
