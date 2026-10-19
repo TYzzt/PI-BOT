@@ -48,6 +48,8 @@ journalctl --user -u pi-bot -f
 | `PI_BOT_SHELL` | `/bin/bash`，覆盖时须填写可执行文件的绝对路径 |
 | `PI_BOT_HTTP_SERVER_URL` | 默认仅回环地址允许 HTTP；测试局域网后端时显式填写其完整 HTTP 地址 |
 
+若网络依赖 `HTTP_PROXY` / `HTTPS_PROXY`，在同一配置文件中加入 `NODE_USE_ENV_PROXY=1`，并配置代理地址与 `NO_PROXY=localhost,127.0.0.1,[::1]`，再重启服务。Node.js 24 的 [环境代理支持](https://nodejs.org/download/release/latest-v24.x/docs/api/http.html#built-in-proxy-support)需要显式启用；桌面端复用后台服务的网络配置。
+
 账号、设备私钥和 IPC 令牌放在数据目录。目录权限为 `0700`，凭据与 socket 为 `0600`。桌面和后台服务须使用相同的数据目录；不同目录代表不同设备身份。
 
 ## 桌面版
