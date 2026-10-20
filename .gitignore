@@ -41,3 +41,7 @@ coverage/
 htmlcov/
 test-results/
 playwright-report/
+
+# Short Windows installer output and per-build NuGet scratch directories.
+/.w/
+/.t-*/

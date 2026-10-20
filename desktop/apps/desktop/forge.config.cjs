@@ -1,4 +1,7 @@
+const { resolve } = require('node:path');
 module.exports = {
+  // NuGet/Squirrel still enforce MAX_PATH even when Node supports long paths.
+  ...(process.platform === 'win32' ? { outDir: resolve(__dirname, '../../../.w') } : {}),
   packagerConfig: {
     name: 'Pi Bot',
     appBundleId: 'dev.pi-bot.desktop',

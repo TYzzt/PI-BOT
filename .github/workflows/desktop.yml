@@ -75,6 +75,6 @@ jobs:
           name: pi-bot-windows-x64-UNSIGNED-TEST
           if-no-files-found: error
           path: |
-            desktop/apps/desktop/out/make/**/*.exe
-            desktop/apps/desktop/out/make/**/*.zip
-            desktop/apps/desktop/out/make/SHA256SUMS.txt
+            .w/make/**/*.exe
+            .w/make/**/*.zip
+            .w/make/SHA256SUMS.txt
