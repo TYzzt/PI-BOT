@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readdirSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { readdirSync, readFileSync, writeFileSync, mkdtempSync, rmSync, cpSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { prepareRuntime, run } from './prepare-runtime.mjs';
 if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('请在 Windows x64 构建；不把未经验证的跨平台产物作为安装包');
@@ -12,6 +12,16 @@ const require = createRequire(resolve(root, 'package.json'));
 const scratch = mkdtempSync(resolve(root, '../.t-'));
 process.env.TEMP = scratch; process.env.TMP = scratch; process.env.SQUIRREL_TEMP = scratch;
 process.on('exit', () => { try { rmSync(scratch, { recursive: true, force: true }); } catch {} });
+// electron-winstaller 5.4.4 ships arch-suffixed 7-Zip binaries, while its
+// bundled Squirrel still requests 7z.exe/7z.dll. Stage a complete vendor copy
+// with aliases; use only binaries from the locked dependency, never the PATH.
+const vendor = resolve(scratch, 'vendor');
+cpSync(resolve(dirname(require.resolve('electron-winstaller/package.json')), 'vendor'), vendor, { recursive: true });
+for (const extension of ['exe', 'dll']) {
+  const legacy = resolve(vendor, `7z.${extension}`);
+  if (!existsSync(legacy)) cpSync(resolve(vendor, `7z-x64.${extension}`), legacy);
+}
+process.env.PI_BOT_SQUIRREL_VENDOR = vendor;
 run(process.execPath, ['scripts/build.mjs'], root);
 // Tests are a packaging gate, not an optional post-release step.
 run(process.execPath, ['--import', 'tsx', '--test', '--test-timeout=120000', 'tests/windows.test.ts'], root);

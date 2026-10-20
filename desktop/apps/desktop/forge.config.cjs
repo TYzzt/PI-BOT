@@ -11,7 +11,7 @@ module.exports = {
     ignore: [/^\/runtime($|\/)/, /^\/src($|\/)/, /^\/ui($|\/)/],
   },
   makers: [
-    { name: '@electron-forge/maker-squirrel', platforms: ['win32'], config: { name: 'PiBot', setupExe: 'Pi-Bot-Windows-x64-Setup.exe', setupIcon: './assets/pi-bot.ico', noMsi: true } },
+    { name: '@electron-forge/maker-squirrel', platforms: ['win32'], config: { ...(process.env.PI_BOT_SQUIRREL_VENDOR ? { vendorDirectory: process.env.PI_BOT_SQUIRREL_VENDOR } : {}), name: 'PiBot', setupExe: 'Pi-Bot-Windows-x64-Setup.exe', setupIcon: './assets/pi-bot.ico', noMsi: true } },
     { name: '@electron-forge/maker-zip', platforms: ['win32'] },
   ],
   hooks: {},
