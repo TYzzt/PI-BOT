@@ -14,7 +14,7 @@ const windows = process.platform === 'win32';
 const native = { skip: windows ? false : 'Requires Windows APIs and compiled MSVC helper' };
 if (windows) process.env.PI_BOT_WINDOWS_HELPER ||= resolve('native/dist/pi-bot-windows.exe');
 function temp(t: { after(fn: () => void): void }) {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pi-bot-win-')));
+  const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'pi-bot-win-')));
   t.after(() => rmSync(dir, { recursive: true, force: true })); return dir;
 }
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));

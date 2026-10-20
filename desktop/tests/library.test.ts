@@ -7,7 +7,7 @@ import { join, parse } from 'node:path';
 import { libraryDir, libraryTools, OutsideError, previewList, previewRead, Sandbox } from '../packages/service/src/library.js';
 
 function temp() {
-  const path = realpathSync(mkdtempSync(join(tmpdir(), 'pi-bot-lib-')));
+  const path = realpathSync.native(mkdtempSync(join(tmpdir(), 'pi-bot-lib-')));
   return { path, cleanup: () => rmSync(path, { recursive: true, force: true }) };
 }
 const call = async (tools: ReturnType<typeof libraryTools>, name: string, args: object, signal?: AbortSignal) => {
