@@ -2,11 +2,14 @@ module.exports = {
   packagerConfig: {
     name: 'Pi Bot',
     appBundleId: 'dev.pi-bot.desktop',
-    icon: process.platform === 'darwin' ? './assets/pi-bot' : './assets/pi-bot.png',
+    icon: process.platform === 'darwin' ? './assets/pi-bot' : process.platform === 'win32' ? './assets/pi-bot.ico' : './assets/pi-bot.png',
     asar: true,
     extraResource: ['./runtime'],
     ignore: [/^\/runtime($|\/)/, /^\/src($|\/)/, /^\/ui($|\/)/],
   },
-  makers: [],
+  makers: [
+    { name: '@electron-forge/maker-squirrel', platforms: ['win32'], config: { name: 'PiBot', setupExe: 'Pi-Bot-Windows-x64-Setup.exe', setupIcon: './assets/pi-bot.ico', noMsi: true } },
+    { name: '@electron-forge/maker-zip', platforms: ['win32'] },
+  ],
   hooks: {},
 };

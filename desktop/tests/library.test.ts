@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, symlinkSync, writeFileSync, mkdirSync, existsSync, readFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, parse } from 'node:path';
 import { libraryDir, libraryTools, OutsideError, previewList, previewRead, Sandbox } from '../packages/service/src/library.js';
 
 function temp() {
@@ -34,14 +34,14 @@ test('sandbox keeps file tools inside the library unless the user approves', asy
     const outside = join(dir.path, 'outside');
     mkdirSync(outside);
     writeFileSync(join(outside, 'secret.txt'), 'top secret');
-    symlinkSync(outside, join(root, 'link'));
+    symlinkSync(outside, join(root, 'link'), process.platform === 'win32' ? 'junction' : 'dir');
     const sandbox = new Sandbox(root);
     assert.equal(await sandbox.resolve('notes/a.md'), join(root, 'notes/a.md'));
     await assert.rejects(sandbox.resolve('../outside/secret.txt'), OutsideError);
     await assert.rejects(sandbox.resolve(join(outside, 'secret.txt')), OutsideError);
     await assert.rejects(sandbox.resolve('link/secret.txt'), OutsideError, 'symlinks cannot escape');
     await assert.rejects(sandbox.resolve('link/new.txt'), OutsideError, 'nor create files through a symlink');
-    await assert.rejects(sandbox.allow('/'), /不能授权整个磁盘/);
+    await assert.rejects(sandbox.allow(parse(root).root), /不能授权整个磁盘/);
     await sandbox.allow(outside);
     assert.equal(await sandbox.resolve('link/secret.txt'), join(outside, 'secret.txt'));
   } finally { dir.cleanup(); }
@@ -60,7 +60,7 @@ test('file tools read, write, edit and search inside the library', async () => {
     assert.match(await call(tools, 'edit_file', { path: 'notes/today.md', old_text: '买牛奶', new_text: '买豆浆' }), /1 处/);
     assert.match(await call(tools, 'search_files', { pattern: '豆浆', glob: '**/*.md' }), /notes\/today.md:2: 买豆浆/);
     assert.equal(await call(tools, 'search_files', { pattern: '豆浆', glob: '*.txt' }), '没有匹配');
-    await assert.rejects(call(tools, 'read_file', { path: '/etc/hosts' }), OutsideError);
+    await assert.rejects(call(tools, 'read_file', { path: join(dir.path, 'outside.txt') }), OutsideError);
   } finally { dir.cleanup(); }
 });
 
@@ -69,14 +69,14 @@ test('run_command runs in the library with a timeout and can be cancelled', asyn
   try {
     const root = await libraryDir(dir.path, 'bot');
     const tools = libraryTools(new Sandbox(root), { requestOutside: async () => false });
-    const r = JSON.parse(await call(tools, 'run_command', { command: 'pwd && echo $PI_BOT_LIBRARY && exit 3' }));
+    const r = JSON.parse(await call(tools, 'run_command', { command: process.platform === 'win32' ? '[Console]::WriteLine((Get-Location).Path); [Console]::WriteLine($env:PI_BOT_LIBRARY); exit 3' : 'pwd && echo $PI_BOT_LIBRARY && exit 3' }));
     assert.equal(r.exit_code, 3);
-    assert.equal(r.output.trim().split('\n')[0], root);
-    const slow = JSON.parse(await call(tools, 'run_command', { command: 'sleep 5', timeout_seconds: 1 }));
+    assert.equal(r.output.trim().split(/\r?\n/)[0], root);
+    const slow = JSON.parse(await call(tools, 'run_command', { command: process.platform === 'win32' ? 'Start-Sleep -Seconds 5' : 'sleep 5', timeout_seconds: 1 }));
     assert.equal(slow.timed_out, true);
     const controller = new AbortController();
     setTimeout(() => controller.abort(), 200);
-    await assert.rejects(call(tools, 'run_command', { command: 'sleep 5' }, controller.signal), /CANCELLED/);
+    await assert.rejects(call(tools, 'run_command', { command: process.platform === 'win32' ? 'Start-Sleep -Seconds 5' : 'sleep 5' }, controller.signal), /CANCELLED/);
   } finally { dir.cleanup(); }
 });
 
@@ -114,7 +114,7 @@ test('phone previews list and read only inside the library', async () => {
     assert.equal((await previewRead(dir.path, 'bot', 'img/dot.png')).kind, 'image');
     assert.equal((await previewRead(dir.path, 'bot', 'blob.bin')).kind, 'binary');
     await assert.rejects(previewList(dir.path, 'bot', '..'), OutsideError);
-    await assert.rejects(previewRead(dir.path, 'bot', '/etc/hosts'), OutsideError);
+    await assert.rejects(previewRead(dir.path, 'bot', join(dir.path, 'outside.txt')), OutsideError);
   } finally { dir.cleanup(); }
 });
 

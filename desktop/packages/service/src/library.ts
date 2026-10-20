@@ -1,8 +1,10 @@
+import { StringDecoder } from 'node:string_decoder';
+import { libraryFolder, powerShellArgs, validateWindowsPath, windowsHelper } from './windows.js';
 import { spawn } from 'node:child_process';
 import { lstat, mkdir, readdir, readFile, realpath, stat, writeFile, rename } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { commandShell } from './platform.js';
-import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep, parse } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Type } from 'typebox';
 import { withLibraryMutation } from './mutation-lock.js';
@@ -23,7 +25,7 @@ const inside = (root: string, path: string) => path === root || path.startsWith(
 export async function libraryDir(root: string, slug: string) {
   if (!SLUG.test(slug)) throw new Error('资料库名称无效');
   await mkdir(root, { recursive: true, mode: 0o755 });
-  const dir = join(root, slug);
+  const dir = join(root, libraryFolder(slug));
   await mkdir(dir, { recursive: true, mode: 0o755 });
   const info = await lstat(dir);
   if (info.isSymbolicLink() || !info.isDirectory()) throw new Error('资料库目录不安全');
@@ -36,8 +38,9 @@ export class Sandbox {
   constructor(readonly root: string, approved: string[] = []) { this.roots = [root, ...approved]; }
   get allowed() { return [...this.roots]; }
   expand(input: string) {
-    const value = input.trim() || '.';
-    if (value === '~' || value.startsWith('~/')) return join(homedir(), value.slice(1));
+    const value = input || '.';
+    if (process.platform === 'win32') validateWindowsPath(value);
+    if (value === '~' || (value.startsWith('~/') || value.startsWith('~\\'))) return join(homedir(), value.slice(1));
     return isAbsolute(value) ? resolve(value) : resolve(this.root, value);
   }
   /** Follows symlinks on the existing part of the path so links cannot escape the allowed roots. */
@@ -56,12 +59,13 @@ export class Sandbox {
   }
   async allow(input: string) {
     const full = this.expand(input);
+    if (full === parse(full).root || full === resolve(homedir())) throw new Error('不能授权整个磁盘或整个主目录，请指定更具体的路径');
     const real = await realpath(full).catch(() => full);
-    if (real === '/' || real === homedir()) throw new Error('不能授权整个磁盘或整个主目录，请指定更具体的路径');
+    if (real === parse(real).root || real === resolve(homedir())) throw new Error('不能授权整个磁盘或整个主目录，请指定更具体的路径');
     if (!this.roots.includes(real)) this.roots.push(real);
     return real;
   }
-  display(path: string) { return inside(this.root, path) ? relative(this.root, path) || '.' : path; }
+  display(path: string) { return inside(this.root, path) ? relative(this.root, path).split(sep).join('/') || '.' : path; }
 }
 
 export interface Entry { name: string; type: 'dir' | 'file'; size: number; modified: string }
@@ -99,24 +103,35 @@ export async function previewRead(root: string, slug: string, path: string) {
 
 const text = (value: string) => ({ content: [{ type: 'text' as const, text: value }], details: {} });
 function shellPath() {
+  if (process.platform === 'win32') return process.env.Path || process.env.PATH || '';
   const extra = ['/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'];
   return [...new Set([...(process.env.PATH ?? '').split(':').filter(Boolean), ...extra])].join(':');
 }
 export function runCommand(command: string, cwd: string, timeoutMs: number, signal?: AbortSignal) {
   return new Promise<{ exit_code: number | null; timed_out: boolean; output: string }>((done, reject) => {
     if (signal?.aborted) return reject(new Error('CANCELLED'));
-    const child = spawn(commandShell(), ['-c', command], { cwd, env: { ...process.env, PATH: shellPath(), PI_BOT_LIBRARY: cwd }, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const windows = process.platform === 'win32';
+    const env: NodeJS.ProcessEnv = { ...process.env, PI_BOT_LIBRARY: cwd };
+    if (!windows) env.PATH = shellPath();
+    const shell = commandShell();
+    const child = spawn(windows ? windowsHelper() : shell, windows ? ['run', shell, ...powerShellArgs(command)] : ['-c', command], { cwd, env, detached: !windows, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    child.stdin.on('error', () => {});
+    if (!windows) child.stdin.end();
     let output = '', settled = false, timedOut = false;
     const stop = () => {
+      if (windows) { child.stdin.end(); return; }
       try { process.kill(-child.pid!, 'SIGTERM'); } catch {}
       setTimeout(() => { try { process.kill(-child.pid!, 'SIGKILL'); } catch {} }, 1500).unref();
     };
     const timer = setTimeout(() => { timedOut = true; stop(); }, timeoutMs);
     signal?.addEventListener('abort', stop, { once: true });
-    const collect = (b: Buffer) => { output = (output + b.toString()).slice(-30000); };
-    child.stdout.on('data', collect); child.stderr.on('data', collect);
+    const decoders = [new StringDecoder('utf8'), new StringDecoder('utf8')];
+    const append = (text: string) => { output = (output + text).slice(-30000); };
+    child.stdout.on('data', (b: Buffer) => append(decoders[0].write(b)));
+    child.stderr.on('data', (b: Buffer) => append(decoders[1].write(b)));
     const finish = (error?: Error, code?: number | null) => {
-      if (settled) return; settled = true; clearTimeout(timer); signal?.removeEventListener('abort', stop);
+      if (settled) return; settled = true;
+      for (const decoder of decoders) append(decoder.end()); clearTimeout(timer); signal?.removeEventListener('abort', stop);
       if (error) reject(new Error('命令无法启动'));
       else if (signal?.aborted) reject(new Error('CANCELLED'));
       else done({ exit_code: code ?? null, timed_out: timedOut, output });
@@ -183,7 +198,7 @@ export function libraryTools(sandbox: Sandbox, hooks: ToolHooks): ToolDefinition
         const hits: string[] = [];
         await walk(dir, async file => {
           if (signal?.aborted) return false;
-          const rel = relative(dir, file);
+          const rel = relative(dir, file).split(sep).join('/');
           if (filter && !filter.test(rel) && !filter.test(basename(file))) return true;
           if (regex.test(rel)) hits.push(`${rel}（文件名匹配）`);
           const s = await stat(file).catch(() => null);
@@ -222,7 +237,7 @@ export function libraryTools(sandbox: Sandbox, hooks: ToolHooks): ToolDefinition
       },
     },
     {
-      name: 'run_command', label: '执行命令', description: `在执行电脑上用 ${commandShell()} 执行命令，默认工作目录是资料库。返回退出码和最后 30KB 输出。不要执行破坏性或需要交互的命令。`,
+      name: 'run_command', label: '执行命令', description: `在执行电脑上用 ${commandShell()} 执行命令，默认工作目录是资料库。返回退出码和最后 30000 个字符输出。不要执行破坏性或需要交互的命令。`,
       parameters: Type.Object({ command: Type.String({ minLength: 1, maxLength: 20000 }), cwd: Type.Optional(Type.String()), timeout_seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 600 })) }),
       execute: async (_id, args: any, signal) => {
         const cwd = await sandbox.resolve(args.cwd ?? '.', { mustExist: true });

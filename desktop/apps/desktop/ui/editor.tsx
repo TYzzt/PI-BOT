@@ -46,7 +46,7 @@ export function BotEditor({ bot, models, devices = [], currentDeviceId, onClose,
           <label>执行电脑
             <select value={deviceId} onChange={e=>setDeviceId(e.target.value)}>
               <option value="">未绑定 · 仅云端聊天</option>
-              {devices.filter(d=>!d.revoked_at || d.id===deviceId).map(d=><option key={d.id} value={d.id} disabled={!!d.revoked_at}>{d.label} · {d.platform === 'linux' ? 'Linux' : 'macOS'} · {d.revoked_at ? '已解绑' : d.online ? '在线' : '离线'}</option>)}
+              {devices.filter(d=>!d.revoked_at || d.id===deviceId).map(d=><option key={d.id} value={d.id} disabled={!!d.revoked_at}>{d.label} · {d.platform === 'linux' ? 'Linux' : d.platform === 'darwin' ? 'macOS' : d.platform === 'win32' ? 'Windows' : '未知平台'} · {d.revoked_at ? '已解绑' : d.online ? '在线' : '离线'}</option>)}
             </select>
           </label>
           <p className="muted small">文件留在所选电脑；离线时本地任务等待，云端仍可聊天和搜索。</p>

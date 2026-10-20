@@ -72,7 +72,7 @@ export interface Model {
 export interface Device {
   id: string;
   username: string;
-  platform: "linux" | "darwin";
+  platform: "linux" | "darwin" | "win32";
   label: string;
   created_at: string;
   last_seen_at: string | null;

@@ -95,7 +95,7 @@ function Settings({ state, onClose }: { state: AccountState; onClose(): void }) 
         </dl>
         <p className="muted small">Bot 在各自绑定的电脑上读写资料库、执行命令，访问资料库以外的文件前会先征得你同意。绑定电脑离线时，Bot 在云端聊天和搜索，本地任务等待原电脑上线。</p>
         <h3>执行电脑</h3>
-        {devices.filter(d=>!d.revoked_at).map(d=><div key={d.id} className="device-row"><span>{d.label} · {d.platform === 'linux' ? 'Linux' : 'macOS'} · {d.online ? '在线' : '离线'}{d.id === state.deviceId ? ' · 本机' : ''}</span><button className="ghost danger small" onClick={()=>void revoke(d)}>解绑</button></div>)}
+        {devices.filter(d=>!d.revoked_at).map(d=><div key={d.id} className="device-row"><span>{d.label} · {d.platform === 'linux' ? 'Linux' : d.platform === 'darwin' ? 'macOS' : d.platform === 'win32' ? 'Windows' : '未知平台'} · {d.online ? '在线' : '离线'}{d.id === state.deviceId ? ' · 本机' : ''}</span><button className="ghost danger small" onClick={()=>void revoke(d)}>解绑</button></div>)}
         {error && <p className="error">{error}</p>}
         <footer>
           <button className="ghost danger" onClick={() => { if (confirm('退出登录并解绑这台电脑？资料库文件会保留。')) void call('logout').then(onClose).catch(e => setError(errorText(e))); }}>退出登录</button>

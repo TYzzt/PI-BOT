@@ -16,9 +16,13 @@ export function prepareRuntime(root,runtime) {
   mkdirSync(resolve(runtime,'bin'),{recursive:true}); mkdirSync(resolve(runtime,'licenses'));
   for (const file of ['LICENSE','NOTICE','THIRD_PARTY_NOTICES.md']) cpSync(resolve(root,'..',file),resolve(runtime,file));
   cpSync(resolve(root,'../packages/agent/src/hermes-memory/LICENSE'),resolve(runtime,'licenses/pi-hermes-memory-LICENSE'));
-  cpSync(process.execPath,resolve(runtime,'bin/node'));
+  cpSync(process.execPath,resolve(runtime,process.platform==='win32'?'bin/node.exe':'bin/node'));
   for (const file of ['server.mjs','cli.mjs']) cpSync(resolve(root,'packages/service/dist',file),resolve(runtime,file));
+  if (process.platform==='win32') cpSync(resolve(root,'native/dist/pi-bot-windows.exe'),resolve(runtime,'pi-bot-windows.exe'));
   if (process.platform==='darwin') cpSync(resolve(root,'native/dist/keychain'),resolve(runtime,'keychain'));
   writeFileSync(resolve(runtime,'package.json'),JSON.stringify({name:'pi-bot-runtime',private:true,type:'module',dependencies:Object.fromEntries(deps.map(name=>[name,manifests.map(m=>m.dependencies?.[name]).find(Boolean)]))},null,2));
-  run('npm',['install','--omit=dev','--no-package-lock','--ignore-scripts','--no-audit','--no-fund'],runtime);
+  cpSync(resolve(root,'runtime-package-lock.json'),resolve(runtime,'package-lock.json'));
+  const npmCli=process.env.npm_execpath;
+  if (!npmCli) throw new Error('请通过 npm run 调用打包脚本，以使用当前 npm CLI');
+  run(process.execPath,[npmCli,'ci','--omit=dev','--ignore-scripts','--no-audit','--no-fund'],runtime);
 }

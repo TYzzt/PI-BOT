@@ -44,7 +44,7 @@ export interface Message { task_id?: string | null; id: string; bot_id: string; 
 export interface Approval { id: string; run_id: string; bot_id: string; kind: 'outside_access'; path: string; reason: string; status: string; expires_at: string }
 export interface Bot { execution_device_id?: string | null; active_tasks?: AgentTaskRef[]; activity?: { status: RunStatus | null; tool: string | null; summary: string | null; running_count: number; queued_count: number }; id: string; name: string; slug: string; persona: string; model_id: string | null; avatar: Avatar; is_main?: boolean; created_at: string; last_active_at: string; latest_run: Run | null; last_message: { role: string; preview: string; status: string; created_at: string } | null; pending_approvals: Approval[] }
 export interface ModelOption { id: string; name: string; is_default: boolean }
-export interface Device { id: string; label: string; platform: 'linux' | 'darwin'; online: boolean; revoked_at: string | null; last_seen_at: string | null }
+export interface Device { id: string; label: string; platform: 'linux' | 'darwin' | 'win32'; online: boolean; revoked_at: string | null; last_seen_at: string | null }
 export interface MessagePage { messages: Message[]; has_more: boolean }
 
 export type Connection = 'signed_out' | 'connecting' | 'online' | 'offline' | 'revoked';

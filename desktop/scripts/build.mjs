@@ -4,6 +4,10 @@ import { mkdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { workspace, buildService } from './build-service.mjs';
 import { resolve } from 'node:path';
+if (process.platform === 'win32') {
+  const helper = spawnSync(process.execPath, ['scripts/build-windows-helper.mjs'], { stdio: 'inherit' });
+  if (helper.status !== 0) process.exit(helper.status ?? 1);
+}
 const icon = spawnSync(process.execPath, ['--import', 'tsx', 'scripts/build-icon.ts'], { stdio: 'inherit' });
 if (icon.status !== 0) process.exit(icon.status ?? 1);
 if (process.platform === 'darwin') {

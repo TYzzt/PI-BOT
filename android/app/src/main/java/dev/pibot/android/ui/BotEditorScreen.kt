@@ -147,7 +147,7 @@ fun BotEditorScreen(repository: PiBotRepository, botId: String?, onDone: (String
             Section("执行电脑")
             for (d in devices.filter { it.revokedAt == null || it.id == executionDeviceId }) {
                 TextButton(onClick = { executionDeviceId = d.id }, enabled = d.revokedAt == null) {
-                    Text("${if (d.id == executionDeviceId) "✓ " else ""}${d.label} · ${if (d.platform == "linux") "Linux" else "macOS"} · ${if (d.revokedAt != null) "已解绑" else if (d.online) "在线" else "离线"}")
+                    Text("${if (d.id == executionDeviceId) "✓ " else ""}${d.label} · ${when (d.platform) { "linux" -> "Linux"; "darwin" -> "macOS"; "win32" -> "Windows"; else -> "未知平台" }} · ${if (d.revokedAt != null) "已解绑" else if (d.online) "在线" else "离线"}")
                 }
             }
             TextButton(onClick = { executionDeviceId = null }) { Text(if (executionDeviceId == null) "✓ 未绑定 · 仅云端聊天" else "未绑定 · 仅云端聊天") }

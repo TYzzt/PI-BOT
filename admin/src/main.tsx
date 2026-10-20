@@ -228,7 +228,7 @@ function UsersPage({ me }: { me: User }) {
               <td>{u.role === "admin" ? <span className="badge accent">管理员</span> : "用户"}</td>
               <td>{u.bot_count ?? 0}</td>
               <td>
-                {u.devices?.filter(d=>!d.revoked_at).length ? u.devices.filter(d=>!d.revoked_at).map(d=><div key={d.id} className="device"><i className={d.online ? 'dot on' : 'dot'}/>{d.label} · {d.platform === 'linux' ? 'Linux' : 'macOS'} · {d.online ? '在线' : '离线'}</div>) : <span className="muted">未绑定</span>}
+                {u.devices?.filter(d=>!d.revoked_at).length ? u.devices.filter(d=>!d.revoked_at).map(d=><div key={d.id} className="device"><i className={d.online ? 'dot on' : 'dot'}/>{d.label} · {d.platform === 'linux' ? 'Linux' : d.platform === 'darwin' ? 'macOS' : d.platform === 'win32' ? 'Windows' : '未知平台'} · {d.online ? '在线' : '离线'}</div>) : <span className="muted">未绑定</span>}
               </td>
               <td>{u.disabled ? <span className="badge">已禁用</span> : <span className="badge ok">正常</span>}</td>
               <td className="actions">
@@ -408,7 +408,7 @@ function DevicesPage() {
               <td>
                 <span className="device">
                   <i className={d.online ? "dot on" : "dot"} />
-                  {d.label} · {d.platform === 'linux' ? 'Linux' : 'macOS'}
+                  {d.label} · {d.platform === 'linux' ? 'Linux' : d.platform === 'darwin' ? 'macOS' : d.platform === 'win32' ? 'Windows' : '未知平台'}
                 </span>
               </td>
               <td>{d.username}</td>

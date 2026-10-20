@@ -287,7 +287,7 @@ export const routes: Route[] = [
   },
   {
     method: "POST", path: "/devices/register", auth: "user", tag: "device", summary: "注册或更新当前用户的一台执行电脑",
-    body: z.object({ public_key: z.string(), label: z.string().trim().min(1).max(80), platform: z.enum(["darwin","linux"]).default("darwin") }),
+    body: z.object({ public_key: z.string(), label: z.string().trim().min(1).max(80), platform: z.enum(["darwin","linux","win32"]).default("darwin") }),
     handler: async ({ tx, hub, user, body, after }) => {
       try {
         decodeBase64(body.public_key, 32);
