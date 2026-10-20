@@ -32,8 +32,11 @@ export function libraryFolder(slug: string, platform = process.platform) {
 export function powerShellArgs(command: string) {
   const script = `$ErrorActionPreference = 'Stop'\n[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)\n$OutputEncoding = [Console]::OutputEncoding\n$global:LASTEXITCODE = 0\ntry {\n${command}\nif (-not $?) { if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; exit 1 }\nexit $LASTEXITCODE\n} catch { [Console]::Error.WriteLine($_.ToString()); exit 1 }`;
   if (Buffer.byteLength(script, 'utf16le') * 4 / 3 > 28000) throw new Error('Windows PowerShell 命令过长，请把脚本写入资料库文件后调用');
-  // EncodedCommand otherwise selects CLIXML for redirected PowerShell streams,
-  // including host/progress records on stderr. Select text at the source instead
-  // of stripping XML-looking content from legitimate user output.
-  return ['-NoLogo', '-NoProfile', '-NonInteractive', '-OutputFormat', 'Text', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')];
+  // Windows PowerShell 5.1 serializes redirected host/progress records on
+  // stderr for -EncodedCommand even with -OutputFormat Text. Use a fixed
+  // -Command bootstrap with a base64 payload instead: user code still never
+  // enters the command-line quoting layer, and both streams remain plain text.
+  const encoded = Buffer.from(script, 'utf16le').toString('base64');
+  return ['-NoLogo', '-NoProfile', '-NonInteractive', '-OutputFormat', 'Text', '-Command',
+    `& ([ScriptBlock]::Create([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${encoded}'))))`];
 }

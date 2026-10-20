@@ -35,8 +35,10 @@ test('Windows file policy rejects namespaces, alternate streams, drive-relative 
 test('PowerShell transport preserves quotes, newlines and Unicode without cmd interpolation', () => {
   const command = `Write-Output '中文 " x';\nWrite-Output \`\"$env:PI_BOT_LIBRARY\`\"`;
   const args = powerShellArgs(command);
-  assert.deepEqual(args.slice(0, 6), ['-NoLogo', '-NoProfile', '-NonInteractive', '-OutputFormat', 'Text', '-EncodedCommand']);
-  assert.ok(Buffer.from(args[6], 'base64').toString('utf16le').includes(command));
+  assert.deepEqual(args.slice(0, 6), ['-NoLogo', '-NoProfile', '-NonInteractive', '-OutputFormat', 'Text', '-Command']);
+  const payload = args[6].match(/FromBase64String\('([A-Za-z0-9+/=]+)'\)/)?.[1];
+  assert.ok(payload);
+  assert.ok(Buffer.from(payload, 'base64').toString('utf16le').includes(command));
   assert.ok(!args.includes('-ExecutionPolicy'));
   assert.throws(() => powerShellArgs('a'.repeat(20000)), /命令过长/);
 });
@@ -84,7 +86,7 @@ test('PowerShell text transport preserves stdout/stderr and literal XML-like use
 `), { cwd, encoding: 'utf8', timeout: 10000, windowsHide: true });
   assert.equal(result.stdout.replaceAll('\r\n', '\n'), literal + '\n');
   assert.equal(result.stderr.replaceAll('\r\n', '\n'), 'stderr 中文 & _x0041_\n');
-  const host = await run(shell, powerShellArgs("Write-Host 'host 中文'; Write-Warning 'warning 中文'; Write-Output 'done'"), { cwd, encoding: 'utf8', timeout: 10000, windowsHide: true });
+  const host = await run(shell, powerShellArgs("Write-Progress -Activity 'progress' -Status 'working' -PercentComplete 50; Write-Host 'host 中文'; Write-Warning 'warning 中文'; Write-Output 'done'"), { cwd, encoding: 'utf8', timeout: 10000, windowsHide: true });
   assert.match(host.stdout + host.stderr, /host 中文/);
   assert.match(host.stdout + host.stderr, /warning 中文/);
   assert.match(host.stdout, /done/);
