@@ -32,5 +32,8 @@ export function libraryFolder(slug: string, platform = process.platform) {
 export function powerShellArgs(command: string) {
   const script = `$ErrorActionPreference = 'Stop'\n[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)\n$OutputEncoding = [Console]::OutputEncoding\n$global:LASTEXITCODE = 0\ntry {\n${command}\nif (-not $?) { if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; exit 1 }\nexit $LASTEXITCODE\n} catch { [Console]::Error.WriteLine($_.ToString()); exit 1 }`;
   if (Buffer.byteLength(script, 'utf16le') * 4 / 3 > 28000) throw new Error('Windows PowerShell 命令过长，请把脚本写入资料库文件后调用');
-  return ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')];
+  // EncodedCommand otherwise selects CLIXML for redirected PowerShell streams,
+  // including host/progress records on stderr. Select text at the source instead
+  // of stripping XML-looking content from legitimate user output.
+  return ['-NoLogo', '-NoProfile', '-NonInteractive', '-OutputFormat', 'Text', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')];
 }

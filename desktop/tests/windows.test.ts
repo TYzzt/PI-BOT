@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import { join, resolve, win32 } from 'node:path';
 import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync, mkdirSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { spawn } from 'node:child_process';
-import { defaultDataDir } from '../packages/service/src/platform.js';
+import { execFile, spawn } from 'node:child_process';
+import { promisify } from 'node:util';
+import { commandShell, defaultDataDir } from '../packages/service/src/platform.js';
 import { libraryFolder, nativeWindows, powerShellArgs, protectWindowsDirectory, validateWindowsPath } from '../packages/service/src/windows.js';
 import { FileCredentials } from '../packages/service/src/keychain.js';
 import { libraryDir, runCommand, Sandbox, OutsideError } from '../packages/service/src/library.js';
@@ -34,8 +35,8 @@ test('Windows file policy rejects namespaces, alternate streams, drive-relative 
 test('PowerShell transport preserves quotes, newlines and Unicode without cmd interpolation', () => {
   const command = `Write-Output '中文 " x';\nWrite-Output \`\"$env:PI_BOT_LIBRARY\`\"`;
   const args = powerShellArgs(command);
-  assert.deepEqual(args.slice(0, 4), ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand']);
-  assert.ok(Buffer.from(args[4], 'base64').toString('utf16le').includes(command));
+  assert.deepEqual(args.slice(0, 6), ['-NoLogo', '-NoProfile', '-NonInteractive', '-OutputFormat', 'Text', '-EncodedCommand']);
+  assert.ok(Buffer.from(args[6], 'base64').toString('utf16le').includes(command));
   assert.ok(!args.includes('-ExecutionPolicy'));
   assert.throws(() => powerShellArgs('a'.repeat(20000)), /命令过长/);
 });
@@ -68,6 +69,34 @@ test('PowerShell handles UTF-8, paths, exit codes and script exceptions', native
   assert.equal(result.exit_code, 7); assert.match(result.output, /中文 "引号"/); assert.ok(result.output.includes(cwd));
   assert.equal((await runCommand("throw 'expected-error'", cwd, 10000)).exit_code, 1);
   assert.equal((await runCommand('Write-Output OK', cwd, 10000)).exit_code, 0);
+});
+test('PowerShell text transport preserves stdout/stderr and literal XML-like user output', native, async t => {
+  const cwd = join(temp(t), '中文 空格'); mkdirSync(cwd);
+  const shell = commandShell();
+  const run = promisify(execFile);
+  // Check the real redirected streams separately, before runCommand combines
+  // them. No filtering may discard a user's literal CLIXML marker or escapes.
+  const literal = '#< CLIXML\n<Objs>中文 & _x0041_</Objs>';
+  const result = await run(shell, powerShellArgs(`
+[Console]::WriteLine('#< CLIXML')
+[Console]::WriteLine('<Objs>中文 & _x0041_</Objs>')
+[Console]::Error.WriteLine('stderr 中文 & _x0041_')
+`), { cwd, encoding: 'utf8', timeout: 10000, windowsHide: true });
+  assert.equal(result.stdout.replaceAll('\r\n', '\n'), literal + '\n');
+  assert.equal(result.stderr.replaceAll('\r\n', '\n'), 'stderr 中文 & _x0041_\n');
+  const host = await run(shell, powerShellArgs("Write-Host 'host 中文'; Write-Warning 'warning 中文'; Write-Output 'done'"), { cwd, encoding: 'utf8', timeout: 10000, windowsHide: true });
+  assert.match(host.stdout + host.stderr, /host 中文/);
+  assert.match(host.stdout + host.stderr, /warning 中文/);
+  assert.match(host.stdout, /done/);
+  assert.doesNotMatch(host.stdout + host.stderr, /#< CLIXML|<Objs/);
+  const failed = await runCommand("[Console]::Error.WriteLine('stderr 中文'); throw 'expected-error 中文'", cwd, 10000);
+  assert.equal(failed.exit_code, 1);
+  assert.match(failed.output, /stderr 中文/);
+  assert.match(failed.output, /expected-error 中文/);
+  assert.doesNotMatch(failed.output, /#< CLIXML|<Objs/);
+  const combined = await runCommand("[Console]::WriteLine('#< CLIXML'); [Console]::WriteLine('<Objs>中文 & _x0041_</Objs>'); exit 9", cwd, 10000);
+  assert.equal(combined.exit_code, 9);
+  assert.equal(combined.output.replaceAll('\r\n', '\n'), literal + '\n');
 });
 test('Windows Job Object kills descendants on timeout and explicit cancellation', native, async t => {
   const dir = temp(t); const marker = join(dir, 'leaked.txt');
