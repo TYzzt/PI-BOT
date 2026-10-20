@@ -74,11 +74,21 @@ static void protectDirectory(const std::wstring& name, bool directory = true) {
     }
     DWORD finalAttrs = GetFileAttributesW(name.c_str());
     check(finalAttrs != INVALID_FILE_ATTRIBUTES && !(finalAttrs & FILE_ATTRIBUTE_REPARSE_POINT) && (!!(finalAttrs & FILE_ATTRIBUTE_DIRECTORY) == directory));
-    // Do not seize another account's directory: owner must be this token's SID.
+    // Never accept an arbitrary account's owner SID. Elevated Windows tokens may
+    // create Node-written files with TokenOwner (e.g. BUILTIN\Administrators),
+    // rather than TokenUser. Accept only this token's exact default owner for
+    // files; helper-created private directories must still belong to TokenUser.
     PSID owner = nullptr; PSECURITY_DESCRIPTOR existing = nullptr;
     DWORD err = GetNamedSecurityInfoW(name.c_str(), SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION, &owner, nullptr, nullptr, nullptr, &existing);
     check(err == ERROR_SUCCESS);
-    bool ours = EqualSid(sid, owner); LocalFree(existing);
+    bool ours = EqualSid(sid, owner);
+    if (!ours && !directory) {
+      DWORD ownerSize = 0; GetTokenInformation(token.h, TokenOwner, nullptr, 0, &ownerSize);
+      std::vector<BYTE> tokenOwner(ownerSize);
+      if (!GetTokenInformation(token.h, TokenOwner, tokenOwner.data(), ownerSize, &ownerSize)) { LocalFree(existing); check(false); }
+      ours = EqualSid(reinterpret_cast<TOKEN_OWNER*>(tokenOwner.data())->Owner, owner);
+    }
+    LocalFree(existing);
     if (!ours) throw std::runtime_error("Private directory is owned by a different account");
     PACL dacl = nullptr; BOOL present, defaulted;
     check(GetSecurityDescriptorDacl(sd, &present, &dacl, &defaulted));

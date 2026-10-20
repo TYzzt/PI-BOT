@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { join, resolve, win32 } from 'node:path';
-import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync, mkdirSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
 import { defaultDataDir } from '../packages/service/src/platform.js';
@@ -14,7 +14,7 @@ const windows = process.platform === 'win32';
 const native = { skip: windows ? false : 'Requires Windows APIs and compiled MSVC helper' };
 if (windows) process.env.PI_BOT_WINDOWS_HELPER ||= resolve('native/dist/pi-bot-windows.exe');
 function temp(t: { after(fn: () => void): void }) {
-  const dir = mkdtempSync(join(tmpdir(), 'pi-bot-win-'));
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pi-bot-win-')));
   t.after(() => rmSync(dir, { recursive: true, force: true })); return dir;
 }
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
