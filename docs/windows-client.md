@@ -14,7 +14,7 @@
 - 非交互 PowerShell EncodedCommand，UTF-8 输出，错误/退出码处理；不添加 ExecutionPolicy Bypass。受 Windows 进程命令行长度限制，过长命令明确失败，请先写脚本文件再调用。旧原生程序可能输出 OEM/GBK，不保证自动识别。
 - 窄 Win32 helper：DPAPI CurrentUser 加密凭据；当前用户与 SYSTEM 的私有 DACL；Job Object 挂起创建/入 Job/恢复进程，关闭 Job 清理子孙进程。命令取消、超时、服务崩溃，通过继承 stdin 的 EOF 租约结束 Job。禁止把租约句柄继承给任务。
 - Electron 随包 `node.exe`、helper，隐藏控制台，显示服务启动错误，只关闭自己启动的服务。正常退出先释放服务租约并等待关停。
-- Forge Squirrel 用户级测试安装器与 ZIP（构建输出使用短目录 `.w/`、临时目录 `.t-*`，规避旧版 NuGet 的 MAX_PATH 限制）；独立 runtime 依赖锁；打包前原生测试和离开仓库目录的独立运行时 smoke gate；生成 SHA256SUMS。
+- Forge Squirrel 用户级测试安装器与 ZIP（构建输出使用短目录 `.w/`、NuGet/Squirrel 临时目录 `.t-*`，缓解旧版 NuGet/Squirrel 的 MAX_PATH 限制；Windows runtime 去除非执行用类型声明与源码映射后再做独立 smoke 测试）；独立 runtime 依赖锁；打包前原生测试和离开仓库目录的独立运行时 smoke gate；生成 SHA256SUMS。
 
 **上列 Windows 原生实现尚未编译/执行验证，不能把源码存在当成能力已验收。** Android 仅修改平台文案，尚未 Android 构建验证。
 
