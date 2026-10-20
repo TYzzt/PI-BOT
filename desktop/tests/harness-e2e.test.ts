@@ -52,8 +52,8 @@ async function scriptedProvider(outside: string) {
     else if (user.startsWith('补充任务:')) reply = toolDone ? { text: '补充已送达。' } : { tool: { name: 'task_message', args: { task_id: user.slice('补充任务:'.length), text: '改为蓝色' } } };
     else if (user === '改为蓝色') reply = { text: '已根据补充改为蓝色。' };
     else if (user === '长任务') reply = toolDone ? { text: '长任务已完成。' } : { tool: { name: 'run_command', args: { command: 'sleep 2; echo completed' } } };
-    else if (user === '沉淀方法') reply = toolDone ? { text: '方法已记住。' } : { tool: { name: 'skill_manage', args: { action: 'create', name: 'mac-report', description: '整理报告时使用', instructions: 'PRIVATE-MAC-WORKFLOW：先核实来源，再整理。' } } };
-    else if (user === '复用方法') reply = toolDone ? { text: '报告已整理。' } : { tool: { name: 'skill_load', args: { name: 'mac-report' } } };
+    else if (user === '沉淀方法') reply = toolDone ? { text: '方法已记住。' } : { tool: { name: 'skill_manage', args: { action: 'create', name: 'computer-report', description: '整理报告时使用', instructions: 'PRIVATE-MAC-WORKFLOW：先核实来源，再整理。' } } };
+    else if (user === '复用方法') reply = toolDone ? { text: '报告已整理。' } : { tool: { name: 'skill_load', args: { name: 'computer-report' } } };
     else if (user.includes('写文件')) reply = toolDone ? { text: `完成：${results.at(-1)}` } : { tool: { name: 'write_file', args: { path: 'notes/hello.md', content: '# Hello from Pi Bot' } } };
     else if (user.includes('桌面')) {
       if (!toolDone) reply = { tool: { name: 'request_outside_access', args: { path: outside, reason: '需要看看桌面上的文件' } } };
@@ -128,7 +128,7 @@ test('the Mac harness logs in, binds itself and runs bots against its library', 
     return !!last.task_id && last.status !== 'running' && last;
   }, 20000);
   assert.equal(reply.status, 'completed', JSON.stringify(reply));
-  assert.equal(reply.executor, 'mac');
+  assert.equal(reply.executor, 'device');
   assert.match(reply.content, /完成：已写入 notes\/hello.md/);
   assert.deepEqual(reply.tools, [], 'worker tools stay off the public result');
   const workerTools = await serverDb.tx(tx => tx.one("SELECT m.tools FROM agent_tasks t JOIN bot_runs r ON r.run_id=t.child_run_id JOIN bot_messages m ON m.message_id=r.assistant_message_id WHERE t.task_id=$1", [reply.task_id]));
@@ -221,11 +221,11 @@ test('the Mac manages its own skills privately and stores them for cloud reuse',
   // from the same bot to verify that Mac skills need no file synchronization.
   const bobToken = (await http('POST', '/auth/login', { username: 'bob', password: 'bob-password' }, '')).json.access_token;
   const files = await http('GET', `/bots/${bot.id}/files?path=`, undefined, bobToken);
-  assert.ok(!files.json.entries.some((entry: any) => /skill|mac-report/.test(entry.name)));
+  assert.ok(!files.json.entries.some((entry: any) => /skill|computer-report/.test(entry.name)));
   const messages = await http('GET', `/bots/${bot.id}/messages`, undefined, bobToken);
   const runId = messages.json.messages.at(-1).run_id;
   const context = await serverDb.tx(async tx => buildContext(tx, settings({ PI_BOT_DATABASE_URL: TEST_DB, PI_BOT_JWT_SECRET: 'j'.repeat(40) }), { ...await tx.get('bot_runs', runId), executor: 'cloud' }));
-  assert.ok(context.skills.some(skill => skill.name === 'mac-report'));
+  assert.ok(context.skills.some(skill => skill.name === 'computer-report'));
 });
 
 test('natural-language commission runs on the real Mac agent with durable writes, checkpoints and one public report', { skip }, async () => {
@@ -281,5 +281,5 @@ test('logout unbinds the Mac and the server falls back to the cloud', { skip }, 
   assert.equal(app.state().connection, 'signed_out');
   const bobToken = (await http('POST', '/auth/login', { username: 'bob', password: 'bob-password' }, '')).json.access_token;
   const me = await http('GET', '/me', undefined, bobToken);
-  assert.equal(me.json.mac.online, false);
+  assert.equal(me.json.computer.online, false);
 });

@@ -22,7 +22,7 @@ const requestSchema = z.object({
     task_id:z.string().uuid().optional(),checkpoint_version:z.number().int().min(0).optional(),
     observation_enabled:z.boolean().default(false),
     lane: z.enum(["conversation", "task"]).default("task"),
-    execution_policy: z.enum(["any", "mac_only"]).default("any"),
+    execution_policy: z.enum(["any", "device_only"]).default("any"),
     automation_readonly: z.boolean().default(false),
     deadline_at: z.string().optional(),
     automation: z.unknown().optional(),
@@ -46,7 +46,7 @@ const requestSchema = z.object({
 });
 
 /**
- * Cloud execution for bots whose Mac is offline: conversation, optional web
+ * Cloud execution for bots whose computer is offline: conversation, optional web
  * search and delegation to other bots only. It has no file system or shell
  * tools and never sees provider keys.
  */
@@ -101,7 +101,7 @@ export async function createRunner(options: { token: string; dir: string; factor
     const parsed = requestSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(422).send({ error: "运行参数无效" });
     const p = parsed.data;
-    if (p.run.execution_policy === "mac_only" || p.run.automation) return reply.code(403).send({ error: "自动工作仅允许 Mac 执行" });
+    if (p.run.execution_policy === "device_only" || p.run.automation) return reply.code(403).send({ error: "自动工作仅允许电脑执行" });
     if (active.has(p.run.run_id)) return reply.code(409).send({ error: "运行已存在" });
     const state: Running = { cancelled: (cancelledBeforeStart.get(p.run.run_id) ?? 0) > Date.now(), prompted: false,
       received: new Set(p.run.instructions.map(i => i.id)), pending: [...p.run.instructions] };

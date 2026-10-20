@@ -1,0 +1,17 @@
+[Unit]
+Description=Pi Bot execution service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/lib/pi-bot/pi-bot serve
+EnvironmentFile=-%h/.config/pi-bot/environment
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=12
+KillMode=control-group
+UMask=0077
+
+[Install]
+WantedBy=default.target

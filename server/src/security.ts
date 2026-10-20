@@ -37,7 +37,7 @@ export const issueToken = (u: Row, s: Settings) =>
     .sign(secret(s));
 export interface LlmClaims {
   sub: string;
-  src: "mac" | "cloud" | "memory" | "test";
+  src: "device" | "cloud" | "memory" | "test";
   bot?: string;
   did?: string;
 }
@@ -79,6 +79,8 @@ export async function llmCaller(tx: Tx, headers: Row, s: Settings) {
   if (!token) fail(401, "需要认证");
   const payload = await verifyToken(token!, s, "llm");
   const u = await activeUser(tx, payload.sub!);
+  if (!["device","cloud","memory","test"].includes(String(payload.src))) fail(401,"请升级执行端并重新登录");
+  if (payload.src === "device" && !await tx.one("SELECT 1 FROM devices WHERE device_id=$1 AND user_id=$2 AND revoked_at IS NULL",[payload.did,payload.sub])) fail(401,"设备已解绑");
   return { user: u, claims: payload as unknown as LlmClaims };
 }
 export function decodeBase64(value: string, size?: number) {

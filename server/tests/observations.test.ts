@@ -231,6 +231,7 @@ test(
         {
           run_id: run,
           kind: "background",
+          execution: "cloud",
           wait: false,
           task: "后台检查",
           request_id: id,
@@ -351,7 +352,7 @@ test(
       return nativeFetch(input, init);
     };
     try {
-      for (const executor of ["cloud", "mac"] as const) {
+      for (const executor of ["cloud", "device"] as const) {
         const id = (
           await api(`/bots/${bot}/messages`, {
             text: "创建能力链路测试",
@@ -359,7 +360,7 @@ test(
           })
         ).data.run.id;
         let deviceId: string | undefined;
-        if (executor === "mac") {
+        if (executor === "device") {
           deviceId = randomUUID();
           await db.tx(async (tx) => {
             await tx.insert("devices", {
@@ -369,7 +370,7 @@ test(
               label: "test Mac",
             });
             await tx.rows(
-              "UPDATE bot_runs SET executor='mac',device_id=$2 WHERE run_id=$1",
+              "UPDATE bot_runs SET executor='device',device_id=$2 WHERE run_id=$1",
               [id, deviceId],
             );
           });
@@ -410,7 +411,7 @@ test(
         } else {
           let delivery = Promise.resolve();
           const hub = new Hub();
-          const mac = new Executor({
+          const computer = new Executor({
             libraryRoot: dir.path,
             agentDir: dir.path,
             proxyUrl: `${base}/llm/v1`,
@@ -428,7 +429,7 @@ test(
               );
             },
           });
-          await mac.start(context);
+          await computer.start(context);
           await delivery;
           const finished = await db.tx((tx) => tx.get("bot_runs", id));
           assert.equal(finished.status, "completed", finished.error);

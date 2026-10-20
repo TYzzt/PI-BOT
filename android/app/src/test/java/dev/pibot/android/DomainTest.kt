@@ -82,7 +82,7 @@ class DomainTest {
         val now = Instant.parse("2026-10-11T08:00:00Z").toEpochMilli()
         val base = Bot(id = "b", name = "研究助理", slug = "research", lastActiveAt = "2026-10-11T07:59:00Z")
         assertEquals("还没有对话，打个招呼吧", base.statusLine(now))
-        val running = base.copy(latestRun = Run("r", "b", "running", "mac", createdAt = "2026-10-11T07:59:00Z"))
+        val running = base.copy(latestRun = Run("r", "b", "running", "device", createdAt = "2026-10-11T07:59:00Z"))
         assertEquals("工作中…", running.statusLine(now))
         assertEquals("在云端思考…", running.copy(latestRun = running.latestRun!!.copy(executor = "cloud")).statusLine(now))
         val waiting = base.copy(pendingApprovals = listOf(Approval("a", "r", "b", path = "/Users/x/Desktop", expiresAt = "2026-10-11T08:10:00Z")))

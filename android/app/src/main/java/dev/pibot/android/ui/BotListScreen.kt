@@ -77,7 +77,7 @@ fun BotListScreen(
     expanded: Boolean = false,
 ) {
     val bots by repository.bots.collectAsStateWithLifecycle()
-    val mac by repository.mac.collectAsStateWithLifecycle()
+    val computer by repository.computer.collectAsStateWithLifecycle()
     val session by repository.session.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     var refreshing by remember { mutableStateOf(false) }
@@ -132,7 +132,7 @@ fun BotListScreen(
             ) {
                 AccountAvatar(username, onSettings)
                 Text(username, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(horizontal = 10.dp))
-                MacChip(mac.online)
+                ComputerChip(computer.online)
             }
         },
         containerColor = Paper,
@@ -176,11 +176,11 @@ fun BotListScreen(
                     Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(if (searching) "搜索结果" else "我的 Bot", color = Muted, fontSize = 13.sp, lineHeight = 18.sp, fontWeight = FontWeight.Medium)
                         Spacer(Modifier.weight(1f))
-                        if (!expanded) MacChip(mac.online)
+                        if (!expanded) ComputerChip(computer.online)
                     }
                 }
-                if (!mac.online && all != null) item(key = "offline") {
-                    Text("Mac 离线 · 仍可聊天和联网搜索，资料库暂不可用", color = Muted, fontSize = 12.sp, lineHeight = 18.sp, modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp))
+                if (!computer.online && all != null) item(key = "offline") {
+                    Text("电脑离线 · 仍可聊天和联网搜索，资料库暂不可用", color = Muted, fontSize = 12.sp, lineHeight = 18.sp, modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp))
                 }
                 error?.let { message -> item(key = "error") {
                     Column(Modifier.padding(8.dp)) {

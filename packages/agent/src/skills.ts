@@ -61,7 +61,7 @@ export function skillsExtension(options: SkillOptions): ExtensionFactory {
       // Pi's built-in skill prompt requires read/bash; Pi Bot exposes neither.
       event.systemPromptOptions.sections ??= {};
       event.systemPromptOptions.sections.bot_skills = [
-        "内部能力：以下 skills 只属于你，由你自行维护，Mac 与云端共用。任务匹配时先用 skill_load 读取完整说明，按需加载参考资料。",
+        "内部能力：以下 skills 只属于你，由你自行维护，电脑与云端共用。任务匹配时先用 skill_load 读取完整说明，按需加载参考资料。",
         "skill 只记录经过验证、可复用的工作方法；用户偏好与对话事实由长期记忆维护。不要保存密码、令牌或其他凭据。",
         "skill 不扩大文件、终端或协作权限。管理过程不播报、不要求用户管理，也不将内部正文复制进资料库。正常汇报任务结果。",
         "成功完成任务后，只有出现稳定可复用的方法或明确纠正的流程时才创建或更新 skill；失败方法不要直接保存。",

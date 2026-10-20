@@ -30,15 +30,17 @@ data class LoginResponse(@SerialName("access_token") val accessToken: String, @S
 data class Device(
     val id: String,
     val label: String,
+    val platform: String = "darwin",
+    @SerialName("revoked_at") val revokedAt: String? = null,
     @SerialName("last_seen_at") val lastSeenAt: String? = null,
     val online: Boolean = false,
 )
 
 @Serializable
-data class MacStatus(val online: Boolean = false, val device: Device? = null)
+data class ComputerStatus(val online: Boolean = false, val device: Device? = null)
 
 @Serializable
-data class Me(val user: User, val mac: MacStatus = MacStatus())
+data class Me(val user: User, val computer: ComputerStatus = ComputerStatus(), val devices: List<Device> = emptyList())
 
 @Serializable
 data class Model(val id: String, val name: String, @SerialName("is_default") val isDefault: Boolean = false)
@@ -89,6 +91,7 @@ data class Bot(
     @SerialName("active_tasks") val activeTasks: List<AgentTaskRef> = emptyList(),
     val activity: BotActivity? = null,
     @SerialName("pending_approvals") val pendingApprovals: List<Approval> = emptyList(),
+    @SerialName("execution_device_id") val executionDeviceId: String? = null,
 )
 
 @Serializable
@@ -101,7 +104,7 @@ data class BotActivity(
 )
 
 @Serializable
-data class BotList(val bots: List<Bot>, val mac: MacStatus = MacStatus())
+data class BotList(val bots: List<Bot>, val computer: ComputerStatus = ComputerStatus(), val devices: List<Device> = emptyList())
 
 @Serializable
 data class ToolEntry(val id: String, val name: String, val state: String, val summary: String? = null)
@@ -172,6 +175,7 @@ data class BotInput(
     val persona: String,
     @SerialName("model_id") val modelId: String? = null,
     val avatar: Avatar,
+    @SerialName("execution_device_id") val executionDeviceId: String? = null,
 )
 
 @Serializable
@@ -202,6 +206,10 @@ class PiBotApi(private val http: OkHttpClient, private val json: Json = API_JSON
         call(url, "POST", "/auth/password", token, PasswordBody(old, new))
 
     fun me(url: ServerUrl, token: String): Me = call(url, "GET", "/me", token)
+
+    fun devices(url: ServerUrl, token: String): List<Device> = call(url, "GET", "/devices", token)
+
+    fun revokeDevice(url: ServerUrl, token: String, id: String): Device = call(url, "POST", "/devices/$id/revoke", token, EmptyBody())
 
     fun models(url: ServerUrl, token: String): List<Model> = call(url, "GET", "/models", token)
 
@@ -272,7 +280,7 @@ fun errorMessage(status: Int, body: String): String {
     }.getOrNull()
     return detail?.takeIf { it.isNotBlank() } ?: when (status) {
         401 -> "登录已过期，请重新登录"
-        503 -> "Mac 离线，资料库不可用"
+        503 -> "电脑离线，资料库不可用"
         else -> "请求失败（$status）"
     }
 }

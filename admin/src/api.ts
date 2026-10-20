@@ -55,7 +55,8 @@ export interface User {
   disabled: boolean;
   created_at: string;
   bot_count?: number;
-  mac?: { label: string; last_seen_at: string | null; online: boolean } | null;
+  devices?: Device[];
+  computer?: { label: string; last_seen_at: string | null; online: boolean } | null;
 }
 export interface Model {
   id: string;
@@ -71,6 +72,7 @@ export interface Model {
 export interface Device {
   id: string;
   username: string;
+  platform: "linux" | "darwin";
   label: string;
   created_at: string;
   last_seen_at: string | null;
@@ -83,7 +85,7 @@ export interface Overview {
   models: number;
   runs_today: number;
   tokens_today: number;
-  macs_online: number;
+  devices_online: number;
 }
 export interface UsageRow {
   calls: number;

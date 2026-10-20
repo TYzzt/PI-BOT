@@ -46,7 +46,7 @@ class PiBotRepository(
     private val socketClient = http.newBuilder().pingInterval(25, TimeUnit.SECONDS).readTimeout(0, TimeUnit.MILLISECONDS).build()
     private val _session = MutableStateFlow(storage.load())
     private val _bots = MutableStateFlow<List<Bot>?>(null)
-    private val _mac = MutableStateFlow(MacStatus())
+    private val _computer = MutableStateFlow(ComputerStatus())
     private val _live = MutableStateFlow(false)
     private val _timelines = MutableStateFlow<Map<String, Timeline>>(emptyMap())
     private val dirty = ConcurrentHashMap<String, AtomicBoolean>()
@@ -58,7 +58,9 @@ class PiBotRepository(
     val session: StateFlow<Session?> = _session.asStateFlow()
     /** null until the first load finishes. */
     val bots: StateFlow<List<Bot>?> = _bots.asStateFlow()
-    val mac: StateFlow<MacStatus> = _mac.asStateFlow()
+    private val _devices = MutableStateFlow<List<Device>>(emptyList())
+    val devices: StateFlow<List<Device>> = _devices.asStateFlow()
+    val computer: StateFlow<ComputerStatus> = _computer.asStateFlow()
     /** Whether the live events socket is connected. */
     val live: StateFlow<Boolean> = _live.asStateFlow()
 
@@ -82,7 +84,8 @@ class PiBotRepository(
         _session.value = null
         _bots.value = null
         _timelines.value = emptyMap()
-        _mac.value = MacStatus()
+        _computer.value = ComputerStatus()
+        _devices.value = emptyList()
     }
 
     private suspend fun <T> authed(block: (ServerUrl, String) -> T): T {
@@ -98,10 +101,13 @@ class PiBotRepository(
     suspend fun refreshBots() {
         val list = authed { u, t -> api.bots(u, t) }
         _bots.value = list.bots
-        _mac.value = list.mac
+        _computer.value = list.computer
+        _devices.value = list.devices
     }
 
-    suspend fun refreshMe(): Me = authed { u, t -> api.me(u, t) }.also { _mac.value = it.mac }
+    suspend fun refreshMe(): Me = authed { u, t -> api.me(u, t) }.also { _computer.value = it.computer; _devices.value = it.devices }
+
+    suspend fun revokeDevice(id: String) { authed { u,t -> api.revokeDevice(u,t,id) }; refreshMe() }
 
     suspend fun refreshBot(id: String) {
         try {
@@ -210,7 +216,7 @@ class PiBotRepository(
             }
             "bot" -> event["bot_id"]?.jsonPrimitive?.contentOrNull?.let(::requestBotRefresh)
             "presence" -> {
-                _mac.update { it.copy(online = event["online"]?.jsonPrimitive?.booleanOrNull ?: it.online) }
+                _computer.update { it.copy(online = event["online"]?.jsonPrimitive?.booleanOrNull ?: it.online) }
                 scope.launch { runCatching { refreshMe() } }
             }
             "bots" -> scope.launch { runCatching { refreshBots() } }
@@ -259,7 +265,7 @@ class PiBotRepository(
                 "hello" -> {
                     attempts = 0
                     _live.value = true
-                    _mac.update { it.copy(online = message["mac_online"]?.jsonPrimitive?.booleanOrNull ?: it.online) }
+                    _computer.update { it.copy(online = message["device_online"]?.jsonPrimitive?.booleanOrNull ?: it.online) }
                     scope.launch {
                         runCatching {
                             refreshBots()

@@ -250,24 +250,24 @@ test(
       label: "UI test Mac",
     });
     keys.setId(reg.json.device.id);
-    const mac = socket(
+    const computer = socket(
       base.replace("http", "ws") + "/ws/device",
       keys.headers("GET", "/ws/device"),
     );
-    await mac.next((m) => m.type === "hello");
+    await computer.next((m) => m.type === "hello");
     try {
       const sent = await api("POST", `/bots/${botId}/messages`, {
         text: "Mac UI",
         request_id: randomUUID(),
       });
-      assert.equal(sent.json.run.executor, "mac");
-      const job = (await mac.next((m) => m.type === "run")).run;
-      mac.send({
+      assert.equal(sent.json.run.executor, "device");
+      const job = (await computer.next((m) => m.type === "run")).run;
+      computer.send({
         type: "run_event",
         run_id: job.run_id,
         event: { kind: "started" },
       });
-      mac.send({
+      computer.send({
         type: "run_event",
         run_id: job.run_id,
         event: { kind: "ui", messages: EXAMPLE },
@@ -301,7 +301,7 @@ test(
         ).status,
         409,
       );
-      mac.send({
+      computer.send({
         type: "run_event",
         run_id: job.run_id,
         event: { kind: "done", state: "completed", text: "已展示" },
@@ -314,7 +314,7 @@ test(
         );
       });
     } finally {
-      mac.close();
+      computer.close();
     }
   },
 );
