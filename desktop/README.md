@@ -1,4 +1,4 @@
-# Pi Bot for Mac / Linux
+# Pi Bot 电脑端
 
 Pi Bot 的电脑端是 Bot 们的 **harness**：登录后这台电脑注册到你的账号，Bot 在这里读写资料库、执行命令。支持文件与命令工具，以及通过 Server 提供的联网搜索；支持 Bot 私有 skills，没有浏览器自动化或 MCP。
 
@@ -8,6 +8,10 @@ Pi Bot 的电脑端是 Bot 们的 **harness**：登录后这台电脑注册到�
 - 绑定电脑离线时，发给 Bot 的消息会在云端运行（只能对话和联网搜索，看不到资料库）。
 
 ## 启动
+
+安装包入口：[GitHub Releases](https://github.com/lhx692135353/PI-BOT/releases)。桌面 beta 发布流程提供 Windows x64 未签名测试安装器、ZIP、Linux x64 桌面/服务压缩包和 SHA256 校验和；维护者发布版本后才会出现在该页。尚未发布的提交可从 `Desktop platforms` 的 Actions artifacts 下载，属于有保留期限的测试产物。macOS 目前按下文从源码构建。
+
+Windows beta 的安装与验收说明见 [Windows 指南](../docs/windows-client.md)。
 
 Linux 安装、后台服务与 systemd 请看 [Linux 指南](LINUX.md)。
 

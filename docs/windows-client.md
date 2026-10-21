@@ -55,6 +55,8 @@ npm run pack:win --workspace=pi-bot-desktop
 
 GitHub Actions `Desktop platforms` 包含 `windows-2022` 作业，产物名 `pi-bot-windows-x64-UNSIGNED-TEST`。上述 CI 已生成未签名安装器、ZIP 和校验和，并通过 Ubuntu/macOS 作业。测试产物可从对应 workflow run 下载，使用前核对提交与校验和。
 
+用户安装包的固定入口为 [GitHub Releases](https://github.com/lhx692135353/PI-BOT/releases)。维护者按 [发布步骤](MAINTAINING.md#桌面-beta-发布) 推送与桌面版本一致的 `desktop-v<版本>-beta.<序号>` 标签后，`Desktop beta release` 会重新执行项目检查和各平台构建，通过后发布带校验和的预发布版。普通分支推送和 PR 不发布 Release；Actions artifacts 仅用于提交级测试下载。Release 中的校验和按附件文件名生成，可以与下载文件放在同一目录验证。
+
 服务端必须先部署包含 `0011` 的兼容版本，否则旧后端会拒绝 Windows 设备注册。迁移测试覆盖历史升级、重复 migrate、三平台插入和非法平台拒绝；没有测试数据库时明确跳过，不视为通过。数据库升级、重复迁移与平台约束已通过 [Project checks，提交 f3a4a6a](https://github.com/TYzzt/PI-BOT/actions/runs/39426662153) 的 PostgreSQL 测试。这里不自动部署服务器或执行生产数据库迁移。
 
 ## 实机验证步骤
