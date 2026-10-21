@@ -18,7 +18,9 @@ export function protectWindowsDirectory(path: string) {
 
 /** Explicitly narrow MVP file-name policy: no UNC, device namespace, ADS or ambiguous Win32 names. */
 export function validateWindowsPath(input: string) {
-  if (input.startsWith('\\\\') || input.startsWith('//') || /^[a-z]:[^\\/]/i.test(input) || /^[a-z]:$/i.test(input) || /^[\\/](?![\\/])/.test(input)) throw new Error('不支持 UNC、设备路径或盘符相对路径');
+  // Win32 also treats mixed leading separators (\\/ and /\\) as UNC paths.
+  // Reject every rooted path without a drive before realpath can touch a share.
+  if (/^[\\/]/.test(input) || /^[a-z]:(?:[^\\/]|$)/i.test(input)) throw new Error('不支持 UNC、设备路径或盘符相对路径');
   const withoutDrive = input.replace(/^[a-z]:[\\/]/i, '');
   if (withoutDrive.includes(':') || /[<>"|?*\x00-\x1f]/.test(withoutDrive)) throw new Error('Windows 路径包含不支持的字符或数据流');
   for (const segment of withoutDrive.split(/[\\/]/)) {

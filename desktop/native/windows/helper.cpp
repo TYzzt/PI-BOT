@@ -46,7 +46,7 @@ static std::wstring utf16(const std::string& s) {
 static void protectDirectory(const std::wstring& name, bool directory = true) {
   namespace fs = std::filesystem;
   fs::path path(name);
-  if (!path.is_absolute() || name.rfind(L"\\\\", 0) == 0 || name.find(L':', 2) != std::wstring::npos || path == path.root_path()) throw std::runtime_error("Expected a local, non-root absolute directory");
+  if (!path.is_absolute() || name[0] == L'\\' || name[0] == L'/' || name.find(L':', 2) != std::wstring::npos || path == path.root_path()) throw std::runtime_error("Expected a local, non-root absolute directory");
   // Reject all existing reparse-point ancestors, not just the final component.
   for (fs::path p = path; !p.empty(); p = p.parent_path()) {
     DWORD attrs = GetFileAttributesW(p.c_str());

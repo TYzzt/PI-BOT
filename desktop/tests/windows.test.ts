@@ -32,6 +32,15 @@ test('Windows file policy rejects namespaces, alternate streams, drive-relative 
   for (const slug of ['con', 'nul', 'aux', 'prn', 'com1', 'lpt9']) assert.equal(libraryFolder(slug, 'win32'), `_bot_${slug}`);
   assert.equal(libraryFolder('console', 'win32'), 'console'); assert.equal(libraryFolder('con', 'linux'), 'con');
 });
+test('Windows file policy rejects mixed-separator UNC paths before filesystem access', () => {
+  for (const prefix of ['\\\\', '//', '\\/', '/\\']) {
+    for (const suffix of ['server/share/file.txt', 'server\\share\\file.txt']) {
+      const path = prefix + suffix;
+      assert.ok(win32.isAbsolute(path));
+      assert.throws(() => validateWindowsPath(path), /UNC/, path);
+    }
+  }
+});
 test('PowerShell transport preserves quotes, newlines and Unicode without cmd interpolation', () => {
   const command = `Write-Output '中文 " x';\nWrite-Output \`\"$env:PI_BOT_LIBRARY\`\"`;
   const args = powerShellArgs(command);
@@ -52,6 +61,13 @@ test('DPAPI encrypts at rest, round-trips and fails closed on corrupted data', n
   const ciphertext = readFileSync(file); ciphertext.fill(42, 0, 16); writeFileSync(file, ciphertext);
   await assert.rejects(creds.get('device'));
   assert.throws(() => nativeWindows('decrypt', Buffer.from('not a DPAPI blob')));
+});
+test('Windows native ACL helper rejects UNC paths before inspecting their ancestors', native, () => {
+  for (const prefix of ['\\\\', '//', '\\/', '/\\']) {
+    for (const operation of ['protect-directory', 'protect-file'] as const) {
+      assert.throws(() => nativeWindows(operation, prefix + 'server/share/private'), /Expected a local/);
+    }
+  }
 });
 test('Windows paths reject junction escapes, volume-root approval and preserve reserved bot slugs', native, async t => {
   const dir = temp(t), root = await libraryDir(dir, 'con');

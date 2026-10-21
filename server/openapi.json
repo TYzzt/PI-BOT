@@ -414,7 +414,8 @@
                     "type": "string",
                     "enum": [
                       "darwin",
-                      "linux"
+                      "linux",
+                      "win32"
                     ]
                   }
                 },

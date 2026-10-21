@@ -1,8 +1,8 @@
 # Windows x64 客户端开发与测试
 
-## 当前状态（2026-10-20）
+## 当前状态（2026-10-21）
 
-此分支是 **Windows 首轮实现，尚未通过 Windows 原生 CI、安装器或实机验收**。不要据此宣布项目已正式支持 Windows。Linux 构建成功不代表 Windows 安装包可用。
+此分支是 **Windows x64 beta，已通过 Windows 原生 CI 和未签名安装包构建，尚未完成实机验收**。不要据此宣布项目已正式支持 Windows。交互安装、升级、卸载和第二普通用户权限仍需按下文验证。
 
 目标为 Windows 11 x64，系统 PowerShell 5.1，用户级安装。Windows 10、ARM64、自动更新、Windows Service、后台常驻和签名公开发行不在本轮支持承诺内。客户端退出后本机执行端离线。
 
@@ -11,12 +11,12 @@
 - 服务端注册接受 `win32`；新增 `0011-windows-devices.sql`，不修改历史迁移。桌面、Admin、Android 展示 Windows，未知平台不误标 macOS。
 - `%LOCALAPPDATA%\Pi Bot` 私有数据目录；资料库仍为 `%USERPROFILE%\pi-bot\<slug>`。`con/prn/aux/nul/com1…/lpt1…` Bot slug 映射为 `_bot_<slug>`，不修改云端 slug。
 - Windows 本地磁盘路径策略：拒绝 UNC、设备命名空间、ADS、盘符相对路径、保留文件名及尾部点/空格。路径工具继续检查已有祖先的 realpath；junction 越界默认拒绝。手机/搜索返回的资料库相对路径统一 `/`。
-- 非交互 PowerShell EncodedCommand，UTF-8 输出，错误/退出码处理；不添加 ExecutionPolicy Bypass。受 Windows 进程命令行长度限制，过长命令明确失败，请先写脚本文件再调用。旧原生程序可能输出 OEM/GBK，不保证自动识别。
+- 非交互 PowerShell，以 Base64 传递脚本并由固定 `-Command` 引导解码，UTF-8 输出，错误/退出码处理；不添加 ExecutionPolicy Bypass。受 Windows 进程命令行长度限制，过长命令明确失败，请先写脚本文件再调用。旧原生程序可能输出 OEM/GBK，不保证自动识别。
 - 窄 Win32 helper：DPAPI CurrentUser 加密凭据；当前用户与 SYSTEM 的私有 DACL；Job Object 挂起创建/入 Job/恢复进程，关闭 Job 清理子孙进程。命令取消、超时、服务崩溃，通过继承 stdin 的 EOF 租约结束 Job。禁止把租约句柄继承给任务。
 - Electron 随包 `node.exe`、helper，隐藏控制台，显示服务启动错误，只关闭自己启动的服务。正常退出先释放服务租约并等待关停。
 - Forge Squirrel 用户级测试安装器与 ZIP（构建输出使用短目录 `.w/`、NuGet/Squirrel 临时目录 `.t-*`，缓解旧版 NuGet/Squirrel 的 MAX_PATH 限制；Windows runtime 去除非执行用类型声明与源码映射后再做独立 smoke 测试）；独立 runtime 依赖锁；打包前原生测试和离开仓库目录的独立运行时 smoke gate；生成 SHA256SUMS。
 
-**上列 Windows 原生实现尚未编译/执行验证，不能把源码存在当成能力已验收。** Android 仅修改平台文案，尚未 Android 构建验证。
+Windows 原生 helper、DPAPI 往返与损坏拒绝、路径/junction、Job Object 清理、PowerShell 和 IPC 自动测试已通过，独立 runtime smoke、Squirrel 安装器与 ZIP 构建也已通过：[Desktop platforms，提交 f3a4a6a](https://github.com/TYzzt/PI-BOT/actions/runs/39426661925)。这些自动检查不替代实机验收。Android 仅修改平台文案，尚未 Android 构建验证。
 
 ## ADR：Windows beta IPC 使用 loopback TCP
 
@@ -29,7 +29,7 @@
 5. 端口被占用时直接失败，不清理/接管对方服务、不换用未认证端点。客户端只把认证成功的服务视为已有实例。
 6. 不保护同用户恶意进程、管理员或被攻陷系统；本地其他用户可能占用端口造成拒绝服务，但不可仅凭端口调用 RPC。若本地策略禁止 loopback 通信，应显示失败，不默默放宽监听地址。
 
-这是 Windows beta 的设计变更，不是“已实现安全命名管道”的声明。仍需 Windows CI 和第二普通用户测试确认 ACL、认证及端口占位行为。数据目录的大小写/分隔符会规范化，但不同盘符映射或短文件名别名不作为多 profile 同时运行的支持范围。
+这是 Windows beta 的设计变更，不是“已实现安全命名管道”的声明。Windows CI 已覆盖 helper、认证和父进程 EOF 关停；第二普通用户 ACL 隔离与端口占位行为仍需验收。数据目录的大小写/分隔符会规范化，但不同盘符映射或短文件名别名不作为多 profile 同时运行的支持范围。
 
 参考：[Node net](https://nodejs.org/api/net.html)、[Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)、[CryptProtectData](https://learn.microsoft.com/en-us/windows/win32/api/dpapi/nf-dpapi-cryptprotectdata)。
 
@@ -53,9 +53,9 @@ npm run pack:win --workspace=pi-bot-desktop
 .w/make/SHA256SUMS.txt
 ```
 
-GitHub Actions `Desktop platforms` 新增 `windows-2022` 作业，产物名 `pi-bot-windows-x64-UNSIGNED-TEST`。它同时保留 Ubuntu/macOS 作业。当前未推送/触发该工作流，也未生成以上 exe。
+GitHub Actions `Desktop platforms` 包含 `windows-2022` 作业，产物名 `pi-bot-windows-x64-UNSIGNED-TEST`。上述 CI 已生成未签名安装器、ZIP 和校验和，并通过 Ubuntu/macOS 作业。测试产物可从对应 workflow run 下载，使用前核对提交与校验和。
 
-服务端必须先部署包含 `0011` 的兼容版本，否则旧后端会拒绝 Windows 设备注册。迁移测试覆盖历史升级、重复 migrate、三平台插入和非法平台拒绝；没有测试数据库时明确跳过，不视为通过。这里不自动部署服务器或执行生产数据库迁移。
+服务端必须先部署包含 `0011` 的兼容版本，否则旧后端会拒绝 Windows 设备注册。迁移测试覆盖历史升级、重复 migrate、三平台插入和非法平台拒绝；没有测试数据库时明确跳过，不视为通过。数据库升级、重复迁移与平台约束已通过 [Project checks，提交 f3a4a6a](https://github.com/TYzzt/PI-BOT/actions/runs/39426662153) 的 PostgreSQL 测试。这里不自动部署服务器或执行生产数据库迁移。
 
 ## 实机验证步骤
 
@@ -73,9 +73,8 @@ GitHub Actions `Desktop platforms` 新增 `windows-2022` 作业，产物名 `pi-
 
 ## 尚未通过的门槛
 
-- MSVC 编译、DPAPI/DACL、Job Object/PowerShell、原生路径与 IPC 自动测试。
 - Windows 安装/升级/卸载、GUI、Defender/企业策略、第二用户权限及真实服务端注册。
-- 数据库测试（本地未配置测试数据库；CI Ubuntu PostgreSQL 作业负责）。
+- Android 平台文案变更的 Android 构建验证。
 - Windows 10 兼容性、正式签名和可信公开发布流程。
 
 以上门槛通过前不作完成交付声明、不发布正式版、不承诺未验证的平台。
