@@ -121,6 +121,7 @@ private fun Signed(repository: PiBotRepository) {
                         onBack = { nav.popBackStack() },
                         onEdit = { nav.navigate("editor/$id") },
                         onFiles = { nav.navigate("files/$id") },
+                        onPhone = { nav.navigate("phone/bot/$id") },
                         onOpenBot = { other -> if (other != id) {
                             if (expanded) openBot(other) else nav.navigate("bot/$other")
                         } },
@@ -132,7 +133,13 @@ private fun Signed(repository: PiBotRepository) {
                 composable("files/{id}") { filesEntry ->
                     FilesScreen(repository, filesEntry.arguments?.getString("id").orEmpty(), onBack = { nav.popBackStack() })
                 }
-                composable("settings") { SettingsScreen(repository, onBack = { nav.popBackStack() }) }
+                composable("phone/bot/{botId}") { phoneEntry ->
+                    PhoneControlScreen(repository, botId = phoneEntry.arguments?.getString("botId"), fixedDeviceId = null, onBack = { nav.popBackStack() })
+                }
+                composable("phone/device/{deviceId}") { phoneEntry ->
+                    PhoneControlScreen(repository, botId = null, fixedDeviceId = phoneEntry.arguments?.getString("deviceId"), onBack = { nav.popBackStack() })
+                }
+                composable("settings") { SettingsScreen(repository, onBack = { nav.popBackStack() }, onPhone = { nav.navigate("phone/device/$it") }) }
             }
         }
     }

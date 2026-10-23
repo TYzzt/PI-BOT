@@ -52,6 +52,7 @@ label, .field { display: grid; gap: 6px; font-size: 13px; font-weight: 500; colo
 .login-card .small { text-align: center; }
 
 .shell { display: grid; grid-template-columns: 272px 1fr; height: 100vh; }
+.shell.with-phone { grid-template-columns: 272px minmax(0, 1fr) minmax(280px, 380px); position: relative; }
 aside { background: var(--side); display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); }
 .titlebar { height: 52px; padding: 0 14px 0 82px; display: flex; align-items: center; justify-content: space-between; -webkit-app-region: drag; flex-shrink: 0; }
 .brand { font-weight: 700; font-size: 15px; }
@@ -168,3 +169,24 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; backg
 .task-activity { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; padding: 8px 2px 14px; }
 
 .device-row { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 0; border-bottom:1px solid var(--line,#ddd); }
+.device-row > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.device-actions { display: flex; flex-shrink: 0; gap: 2px; align-items: center; }
+.backdrop.phone-backdrop { z-index: 30; }
+.phone-dock { min-width: 0; min-height: 0; overflow: auto; border-left: 1px solid var(--line); background: var(--bg); }
+.phone-panel { width: 100%; max-height: none; overflow: visible; padding: 16px; display: grid; gap: 10px; align-content: start; }
+.phone-device { display: grid; gap: 4px; font-size: 13px; }
+.phone-device select, .phone-actions { width: 100%; }
+.phone-actions { display: flex; }
+@media (max-width: 860px) {
+  .shell.with-phone { grid-template-columns: 272px minmax(0, 1fr); }
+  .phone-dock { position: absolute; top: 0; right: 0; bottom: 0; width: min(380px, 100%); z-index: 6; box-shadow: -8px 0 24px rgba(0, 0, 0, 0.08); }
+}
+.phone-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.phone-head h2 { font-size: 18px; }
+.phone-screen { display: grid; place-items: center; min-height: 180px; padding: 12px; border-radius: 16px; background: #141518; }
+.phone-screen img { height: min(520px, 56vh); width: auto; max-width: 100%; border-radius: 8px; background: #000; touch-action: none; cursor: default; }
+.phone-screen.live img { cursor: crosshair; }
+.phone-keys, .phone-compose { display: flex; gap: 6px; }
+.phone-keys { flex-wrap: wrap; }
+.phone-keys button { flex: 1; }
+.phone-compose input { flex: 1; }

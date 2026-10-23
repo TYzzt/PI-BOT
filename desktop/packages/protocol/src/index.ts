@@ -4,9 +4,23 @@ import { COLORS, SCHEMES, SHAPES, type Avatar, type Mood } from '@pi-bot/bot-fac
 
 export const avatarSchema = z.object({ shape: z.enum(SHAPES), color: z.enum(COLORS), scheme: z.enum(SCHEMES) });
 const id = z.string().uuid();
+const phoneSession = { deviceId: id, sessionId: id };
+const phoneInputEvent = z.discriminatedUnion('type', [
+ z.object({type:z.literal('tap'),x:z.number().int().min(0).max(719),y:z.number().int().min(0).max(1279)}).strict(),
+ z.object({type:z.literal('swipe'),x1:z.number().int().min(0).max(719),y1:z.number().int().min(0).max(1279),x2:z.number().int().min(0).max(719),y2:z.number().int().min(0).max(1279),duration:z.number().int().min(50).max(2000)}).strict(),
+ z.object({type:z.literal('text'),text:z.string().min(1).max(1000).regex(/^[\x20-\x7e]+$/)}).strict(),
+ z.object({type:z.literal('key'),code:z.union([z.literal(3),z.literal(4),z.literal(67),z.literal(66),z.literal(187)])}).strict(),
+]);
 
 /** Local service methods the Electron UI may call. Every cloud call is signed by the service. */
 export const schemas = {
+  phoneStatus: z.object({deviceId:id}).strict(),
+  // Read-only preview: same JPEG result as phoneFrame, but no session and no lease renewal.
+  phonePreview: z.object({deviceId:id}).strict(),
+  phoneAcquire: z.object({deviceId:id}).strict(),
+  phoneFrame: z.object(phoneSession).strict(),
+  phoneInput: z.object({...phoneSession,event:phoneInputEvent}).strict(),
+  phoneRelease: z.object(phoneSession).strict(),
   status: z.object({}),
   login: z.object({ serverUrl: z.string().url(), username: z.string().trim().min(1).max(64), password: z.string().min(1).max(200), label: z.string().trim().min(1).max(80) }),
   logout: z.object({}),

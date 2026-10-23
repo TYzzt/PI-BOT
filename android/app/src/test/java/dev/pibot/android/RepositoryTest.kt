@@ -220,4 +220,38 @@ class RepositoryTest {
         assertEquals("请求失败（500）", errorMessage(500, "<html>"))
         assertEquals("Bot 不存在", errorMessage(404, """{"detail":"Bot 不存在"}"""))
     }
+
+    @Test
+    fun phoneRpcCallsDeviceEndpointWithStrictBearerAuth() = runBlocking {
+        login()
+        val deviceId = "00000000-0000-4000-8000-000000000001"
+        respond(200, """{"available":true,"phoneId":"google-play-validation"}""")
+        val status = repo.phone(deviceId, "status")
+        val statusReq = server.takeRequest()
+        assertEquals("POST", statusReq.method)
+        assertEquals("/pibot/devices/$deviceId/phone/status", statusReq.requestUrl!!.encodedPath)
+        assertEquals("Bearer tok", statusReq.getHeader("Authorization"))
+        assertEquals("true", status["available"]!!.jsonPrimitive.content)
+
+        respond(200, """{"sessionId":"00000000-0000-4000-8000-000000000002","expiresAt":12345}""")
+        val acquire = repo.phone(deviceId, "acquire")
+        val acqReq = server.takeRequest()
+        assertEquals("/pibot/devices/$deviceId/phone/acquire", acqReq.requestUrl!!.encodedPath)
+        assertEquals("00000000-0000-4000-8000-000000000002", acquire["sessionId"]!!.jsonPrimitive.content)
+
+        respond(200, """{"ok":true}""")
+        val inputBody = Json.parseToJsonElement("""{"sessionId":"00000000-0000-4000-8000-000000000002","event":{"type":"tap","x":100,"y":200}}""").jsonObject
+        repo.phone(deviceId, "input", inputBody)
+        val inReq = server.takeRequest()
+        assertEquals("/pibot/devices/$deviceId/phone/input", inReq.requestUrl!!.encodedPath)
+        assertEquals("""{"sessionId":"00000000-0000-4000-8000-000000000002","event":{"type":"tap","x":100,"y":200}}""", inReq.body.readUtf8())
+
+        respond(200, """{"mime":"image/jpeg","width":720,"height":1280,"data":"/9j/aaaaaaaaaaaa"}""")
+        repo.phone(deviceId, "preview")
+        val previewReq = server.takeRequest()
+        assertEquals("POST", previewReq.method)
+        assertEquals("/pibot/devices/$deviceId/phone/preview", previewReq.requestUrl!!.encodedPath)
+        assertEquals("{}", previewReq.body.readUtf8())
+        assertEquals("Bearer tok", previewReq.getHeader("Authorization"))
+    }
 }

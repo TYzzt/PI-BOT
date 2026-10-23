@@ -45,7 +45,7 @@ import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(repository: PiBotRepository, onBack: () -> Unit) {
+fun SettingsScreen(repository: PiBotRepository, onBack: () -> Unit, onPhone: (String) -> Unit = {}) {
     val session by repository.session.collectAsStateWithLifecycle()
     val computer by repository.computer.collectAsStateWithLifecycle()
     val live by repository.live.collectAsStateWithLifecycle()
@@ -76,6 +76,7 @@ fun SettingsScreen(repository: PiBotRepository, onBack: () -> Unit) {
                 if (devices.none { it.revokedAt == null }) Text("在 Mac 或 Linux 上安装 Pi Bot，并用同一个账号登录，即可添加执行电脑。", color = Muted, fontSize = 14.sp)
                 for (d in devices.filter { it.revokedAt == null }) {
                     Item(d.label, "${when (d.platform) { "linux" -> "Linux"; "darwin" -> "macOS"; "win32" -> "Windows"; else -> "未知平台" }} · ${if (d.online) "在线" else "离线"}")
+                    TextButton(onClick = { onPhone(d.id) }) { Text("手机画面与控制") }
                     TextButton(onClick = { removing = d }) { Text("解绑", color = Danger) }
                 }
                 Text("每个 Bot 可选择一台执行电脑；文件各自保存，离线时本地任务等待。", color = Muted, fontSize = 12.sp)
