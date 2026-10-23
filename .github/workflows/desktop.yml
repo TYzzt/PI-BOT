@@ -2,8 +2,9 @@ name: Desktop platforms
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, feat/windows-client]
   workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
 jobs:
@@ -21,7 +22,7 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run build --workspace=pi-bot-desktop
-      - run: node --import tsx --test desktop/tests/platform.test.ts desktop/tests/library.test.ts desktop/tests/cloud.test.ts
+      - run: node --import tsx --test desktop/tests/platform.test.ts desktop/tests/library.test.ts desktop/tests/cloud.test.ts desktop/tests/windows.test.ts
       - if: runner.os == 'Linux'
         run: npm rebuild electron
       - if: runner.os == 'Linux'
@@ -45,3 +46,36 @@ jobs:
         with:
           name: pi-bot-linux-x64
           path: desktop/out/linux/*.tar.gz
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      PI_BOT_WINDOWS_HELPER: ${{ github.workspace }}\desktop\native\dist\pi-bot-windows.exe
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm rebuild electron
+      - name: Typecheck desktop and platform callers
+        run: |
+          npx tsc --noEmit
+          npm run typecheck --workspace=pi-bot-desktop
+          npm run typecheck --workspace=@pi-bot/admin
+      - name: Build, native security tests and unsigned x64 installer
+        run: npm run pack:win --workspace=pi-bot-desktop
+      - name: File-tool regression on native Windows
+        run: node --import tsx --test --test-timeout=120000 desktop/tests/library.test.ts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pi-bot-windows-x64-UNSIGNED-TEST
+          if-no-files-found: error
+          path: |
+            .w/make/**/*.exe
+            .w/make/**/*.zip
+            .w/make/SHA256SUMS.txt

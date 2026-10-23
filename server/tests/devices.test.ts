@@ -46,7 +46,20 @@ test('multi-device upgrade preserves the original binding, history, memory and q
     }
     assert.equal((await tx.one('SELECT source FROM usage_logs'))!.source,'device');
     await tx.insert('devices',{device_id:randomUUID(),user_id:user,public_key:'linux',label:'Linux',platform:'linux'});
-    assert.equal((await tx.one('SELECT count(*) AS n FROM devices WHERE user_id=$1 AND revoked_at IS NULL',[user]))!.n,2);
+    await tx.insert('devices',{device_id:randomUUID(),user_id:user,public_key:'windows',label:'Windows',platform:'win32'});
+    assert.equal((await tx.one('SELECT count(*) AS n FROM devices WHERE user_id=$1 AND revoked_at IS NULL',[user]))!.n,3);
     assert.equal((await tx.get('bots',bot)).execution_device_id,device);
   });
+});
+
+test('Windows migration accepts win32 but rejects invalid platform', {skip:!TEST_DB}, async t => {
+  await resetDatabase(TEST_DB!);
+  const db = new Database(TEST_DB!); t.after(() => db.close());
+  await migrate(db);
+  const user = randomUUID();
+  await db.tx(async tx => { await tx.insert('users', {user_id:user,username:'windows-migration',role:'user',password_hash:'unused'}); });
+  for (const platform of ['darwin','linux','win32']) await db.tx(async tx => {
+    await tx.insert('devices', {device_id:randomUUID(),user_id:user,public_key:platform,label:platform,platform});
+  });
+  await assert.rejects(db.tx(async tx => { await tx.insert('devices', {device_id:randomUUID(),user_id:user,public_key:'bad',label:'bad',platform:'unknown'}); }), /devices_platform_check/);
 });

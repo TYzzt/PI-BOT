@@ -56,6 +56,14 @@ const TOKEN_REFRESH_MS = 10 * 60 * 1000;
 
 export class Executor {
   private active = new Map<string, Active>();
+  private commandsSuspended = false;
+  private commands = new Set<{ controller: AbortController; done: Promise<void> }>();
+  async suspendCommands() {
+    this.commandsSuspended = true;
+    for (const item of this.commands) item.controller.abort();
+    await Promise.all([...this.commands].map(item => item.done));
+  }
+  resumeCommands() { this.commandsSuspended = false; }
   constructor(private deps: ExecutorDeps) {}
   get running() { return [...this.active.keys()]; }
 
@@ -91,6 +99,19 @@ export class Executor {
         }),
       });
       if (run.automation_readonly) tools = tools.filter(t => ['list_files', 'read_file', 'search_files'].includes(t.name));
+      tools = tools.map(tool => tool.name !== 'run_command' ? tool : {
+        ...tool, execute: async (id, args, signal, update, ctx) => {
+          if (this.commandsSuspended) throw new Error('手机正在人工接管，此节点命令执行已暂停');
+          const controller = new AbortController();
+          const abort = () => controller.abort();
+          if (signal?.aborted) controller.abort(); else signal?.addEventListener('abort', abort, {once:true});
+          let finish!: () => void;
+          const item = {controller, done:new Promise<void>(resolve => {finish=resolve;})};
+          this.commands.add(item);
+          try { return await tool.execute(id, args, controller.signal, update, ctx); }
+          finally { signal?.removeEventListener('abort', abort); this.commands.delete(item); finish(); }
+        },
+      });
       const api = this.deps.proxyUrl.replace(/\/llm\/v1\/?$/, '');
       if (run.execution_policy === 'device_only' && !run.automation_readonly) tools = tools.map(tool => {
         if (!['write_file', 'edit_file', 'run_command'].includes(tool.name)) return tool;
@@ -132,7 +153,7 @@ export class Executor {
         readonly: run.automation_readonly,
         cwd: sandbox.root,
         agentDir: join(this.deps.agentDir, 'bots', run.bot.id),
-        systemPrompt: `${run.system}\n实际执行环境：${process.platform}；shell：${commandShell()}；资料库绝对路径：${sandbox.root}。`,
+        systemPrompt: `${run.system}\n实际执行环境：${process.platform}；shell：${commandShell()}；资料库绝对路径：${sandbox.root}。${process.platform === 'win32' ? ' 使用非交互 PowerShell 语法，不使用 bash/cmd 语法；含空格路径必须加引号，调用带引号的程序路径使用 &。输出为 UTF-8（旧程序可能使用其他代码页）。' : ''}`,
         history: run.history,
         tools,
         skills: { baseUrl: api, token: () => token, runId: run.run_id, catalog: run.skills ?? [] },

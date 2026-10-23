@@ -1,7 +1,8 @@
+import { protectWindowsDirectory } from '../../../packages/service/src/windows.js';
 import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage } from 'electron';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { join } from 'node:path';
-import { mkdirSync } from 'node:fs';
+import { join, basename, dirname } from 'node:path';
+import { mkdirSync, existsSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { dataDir, libraryRoot } from '../../../packages/service/src/paths.js';
 import { libraryDir } from '../../../packages/service/src/library.js';
@@ -9,10 +10,16 @@ import { ServiceClient, serviceRunning } from './service-client.js';
 import { computerName } from '../../../packages/service/src/platform.js';
 import { parseInput, type Method } from '../../../packages/protocol/src/index.js';
 
+if (process.platform === 'win32') {
+  if (app.isPackaged) process.env.PI_BOT_WINDOWS_HELPER = join(process.resourcesPath, 'runtime', 'pi-bot-windows.exe');
+  if (!existsSync(process.env.PI_BOT_WINDOWS_HELPER || '')) { dialog.showErrorBox('安装不完整', '缺少 Windows 安全 helper，请重新安装完整测试包。'); app.exit(1); }
+  protectWindowsDirectory(dataDir);
+}
 mkdirSync(join(dataDir, 'electron'), { recursive: true, mode: 0o700 });
 app.setPath('userData', join(dataDir, 'electron'));
 let window: BrowserWindow | null = null;
 let serviceProcess: ChildProcess | undefined;
+let quitting = false;
 const page = pathToFileURL(join(__dirname, '../ui-dist/index.html')).href;
 const iconPath = join(__dirname, '../assets/pi-bot.png');
 const client = new ServiceClient(event => window?.webContents.send('agent:event', event));
@@ -22,14 +29,20 @@ async function startBundledService() {
   if (!app.isPackaged || serviceProcess) return;
   if (await serviceRunning()) return;
   const root = join(process.resourcesPath, 'runtime');
-  serviceProcess = spawn(join(root, 'bin', 'node'), [join(root, 'server.mjs')], {
+  serviceProcess = spawn(join(root, 'bin', process.platform === 'win32' ? 'node.exe' : 'node'), [join(root, 'server.mjs')], {
     cwd: root,
-    detached: true,
-    env: { ...process.env, ...(process.platform === 'darwin' ? { PI_BOT_KEYCHAIN_HELPER: join(root, 'keychain') } : {}) },
-    stdio: 'ignore',
+    detached: false,
+    windowsHide: true,
+    env: { ...process.env, PI_BOT_PARENT_LEASE: '1', ...(process.platform === 'darwin' ? { PI_BOT_KEYCHAIN_HELPER: join(root, 'keychain') } : {}) },
+    stdio: ['pipe', 'ignore', 'pipe'],
   });
-  serviceProcess.unref();
-  serviceProcess.on('error', () => {});
+  serviceProcess.stdin?.on('error', () => {});
+  let diagnostic = '';
+  serviceProcess.stderr?.on('data', b => { diagnostic = (diagnostic + b.toString()).slice(-2000); });
+  serviceProcess.on('error', () => { dialog.showErrorBox('本地服务启动失败', '无法启动随包 Node 运行时，请检查安装是否完整。'); });
+  serviceProcess.on('exit', code => {
+    if (!quitting && code !== 0) dialog.showErrorBox('本地服务已停止', diagnostic || `服务退出码：${code}`);
+  });
 }
 function present(target: BrowserWindow) {
   if (target.isMinimized()) target.restore();
@@ -37,7 +50,15 @@ function present(target: BrowserWindow) {
   target.focus();
   app.focus({ steal: true });
 }
-if (!app.requestSingleInstanceLock()) app.quit();
+const squirrelEvent = process.argv[1];
+if (process.platform === 'win32' && ['--squirrel-install', '--squirrel-updated', '--squirrel-uninstall', '--squirrel-obsolete'].includes(squirrelEvent)) {
+  if (squirrelEvent === '--squirrel-obsolete') app.quit();
+  else {
+    const updater = spawn(join(dirname(process.execPath), '..', 'Update.exe'), [squirrelEvent === '--squirrel-uninstall' ? '--removeShortcut' : '--createShortcut', basename(process.execPath)], { windowsHide: true });
+    updater.once('error', () => app.quit()); updater.once('exit', () => app.quit());
+    setTimeout(() => app.quit(), 10000).unref();
+  }
+} else if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.setName('Pi Bot');
   if (process.platform === 'darwin') app.setActivationPolicy('regular');
@@ -67,6 +88,15 @@ else {
     createWindow(); client.start(); void startBundledService();
     app.on('activate', () => { if (!window) createWindow(); else present(window); });
   }).catch(() => { dialog.showErrorBox('启动失败', '无法启动 Pi Bot，请查看开发终端'); app.quit(); });
-  app.on('before-quit', () => { client.stop(); serviceProcess?.kill('SIGTERM'); });
+  app.on('before-quit', event => {
+    if (quitting) return;
+    quitting = true; client.stop();
+    if (serviceProcess && serviceProcess.exitCode === null) {
+      event.preventDefault();
+      const deadline = setTimeout(() => { serviceProcess?.kill(); app.quit(); }, 10000);
+      serviceProcess.once('exit', () => { clearTimeout(deadline); app.quit(); });
+      serviceProcess.stdin?.end();
+    }
+  });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 }

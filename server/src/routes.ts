@@ -1,3 +1,4 @@
+import { phoneRoutes } from './phone-routes.js';
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -144,6 +145,7 @@ async function deviceFiles(ctx: Context, method: "list" | "read") {
 }
 
 export const routes: Route[] = [
+  ...phoneRoutes,
   {method:"POST",path:"/agent/automations/effect",auth:"llm",tag:"agents",summary:"自动工作操作日志",internal:true,
     body:z.object({run_id:uuid,tool_call_id:z.string().min(1).max(200),phase:z.enum(["start","end"]),confirmed:z.boolean().optional(),tool_name:z.enum(["write_file","edit_file","run_command"]).optional(),summary:z.string().max(2000).optional(),result:z.string().max(4000).optional()}).strict(),
     handler:async({tx,user,llm,body})=>recordAutomationEffect(tx,user.user_id,llm!,body)},
@@ -290,7 +292,7 @@ export const routes: Route[] = [
   },
   {
     method: "POST", path: "/devices/register", auth: "user", tag: "device", summary: "注册或更新当前用户的一台执行电脑",
-    body: z.object({ public_key: z.string(), label: z.string().trim().min(1).max(80), platform: z.enum(["darwin","linux"]).default("darwin") }),
+    body: z.object({ public_key: z.string(), label: z.string().trim().min(1).max(80), platform: z.enum(["darwin","linux","win32"]).default("darwin") }),
     handler: async ({ tx, hub, user, body, after }) => {
       try {
         decodeBase64(body.public_key, 32);

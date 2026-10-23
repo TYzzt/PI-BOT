@@ -5,10 +5,24 @@ import { COLORS, SCHEMES, SHAPES, type Avatar, type Mood } from '@pi-bot/bot-fac
 
 export const avatarSchema = z.object({ shape: z.enum(SHAPES), color: z.enum(COLORS), scheme: z.enum(SCHEMES) });
 const id = z.string().uuid();
+const phoneSession = { deviceId: id, sessionId: id };
+const phoneInputEvent = z.discriminatedUnion('type', [
+ z.object({type:z.literal('tap'),x:z.number().int().min(0).max(719),y:z.number().int().min(0).max(1279)}).strict(),
+ z.object({type:z.literal('swipe'),x1:z.number().int().min(0).max(719),y1:z.number().int().min(0).max(1279),x2:z.number().int().min(0).max(719),y2:z.number().int().min(0).max(1279),duration:z.number().int().min(50).max(2000)}).strict(),
+ z.object({type:z.literal('text'),text:z.string().min(1).max(1000).regex(/^[\x20-\x7e]+$/)}).strict(),
+ z.object({type:z.literal('key'),code:z.union([z.literal(3),z.literal(4),z.literal(67),z.literal(66),z.literal(187)])}).strict(),
+]);
 const imagesSchema = z.array(z.object({ name: z.string().trim().min(1).max(255), mime_type: z.enum(IMAGE_TYPES), data: z.string().min(1).max(Math.ceil(MAX_IMAGE_BYTES / 3) * 4) })).max(MAX_IMAGES).refine(validImages, IMAGE_LIMIT_HINT);
 
 /** Local service methods the Electron UI may call. Every cloud call is signed by the service. */
 export const schemas = {
+  phoneStatus: z.object({deviceId:id}).strict(),
+  // Read-only preview: same JPEG result as phoneFrame, but no session and no lease renewal.
+  phonePreview: z.object({deviceId:id}).strict(),
+  phoneAcquire: z.object({deviceId:id}).strict(),
+  phoneFrame: z.object(phoneSession).strict(),
+  phoneInput: z.object({...phoneSession,event:phoneInputEvent}).strict(),
+  phoneRelease: z.object(phoneSession).strict(),
   status: z.object({}),
   login: z.object({ serverUrl: z.string().url(), username: z.string().trim().min(1).max(64), password: z.string().min(1).max(200), label: z.string().trim().min(1).max(80) }),
   logout: z.object({}),
@@ -48,7 +62,7 @@ export interface Message { task_id?: string | null; id: string; bot_id: string; 
 export interface Approval { id: string; run_id: string; bot_id: string; kind: 'outside_access'; path: string; reason: string; status: string; expires_at: string }
 export interface Bot { execution_device_id?: string | null; active_tasks?: AgentTaskRef[]; activity?: { status: RunStatus | null; tool: string | null; summary: string | null; running_count: number; queued_count: number }; id: string; name: string; slug: string; persona: string; model_id: string | null; avatar: Avatar; is_main?: boolean; created_at: string; last_active_at: string; latest_run: Run | null; last_message: { role: string; preview: string; status: string; created_at: string } | null; pending_approvals: Approval[] }
 export interface ModelOption { id: string; name: string; is_default: boolean }
-export interface Device { id: string; label: string; platform: 'linux' | 'darwin'; online: boolean; revoked_at: string | null; last_seen_at: string | null }
+export interface Device { id: string; label: string; platform: 'linux' | 'darwin' | 'win32'; online: boolean; revoked_at: string | null; last_seen_at: string | null }
 export interface MessagePage { messages: Message[]; has_more: boolean }
 
 export type Connection = 'signed_out' | 'connecting' | 'online' | 'offline' | 'revoked';

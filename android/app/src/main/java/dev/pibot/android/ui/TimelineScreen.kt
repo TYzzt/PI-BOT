@@ -96,6 +96,7 @@ fun TimelineScreen(
     onBack: () -> Unit,
     onEdit: () -> Unit,
     onFiles: () -> Unit,
+    onPhone: () -> Unit,
     onOpenBot: (String) -> Unit,
     expanded: Boolean = false,
     draft: String,
@@ -174,6 +175,7 @@ fun TimelineScreen(
                         Text("${target?.label ?: "未绑定电脑"} · ${if (targetOnline) "在线" else "云端聊天 · 本地任务等待"}", fontSize = 11.sp, lineHeight = 14.sp, color = Muted)
                     }
                 }
+                CircleAction("手机", onPhone) { Text("手机", fontSize = 12.sp) }
                 Box {
                     CircleAction("更多选项", { menuOpen = true }) { Icon(Icons.Filled.MoreVert, null) }
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {

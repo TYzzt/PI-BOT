@@ -7,6 +7,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -17,8 +18,11 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -163,6 +167,21 @@ class PiBotRepository(
     private fun remove(id: String) {
         _bots.update { list -> list?.filterNot { it.id == id } }
         _timelines.update { it - id }
+    }
+
+    suspend fun phone(deviceId: String, action: String, body: JsonObject = JsonObject(emptyMap())): JsonObject = authed { u, t -> api.phone(u, t, deviceId, action, body) }
+
+    fun releasePhoneSessionAsync(deviceId: String, sessionId: String) {
+        if (deviceId.isBlank() || sessionId.isBlank()) return
+        scope.launch(NonCancellable + io) {
+            withTimeoutOrNull(15_000) {
+                runCatching {
+                    phone(deviceId, "release", buildJsonObject {
+                        put("sessionId", JsonPrimitive(sessionId))
+                    })
+                }
+            }
+        }
     }
 
     suspend fun models(): List<Model> = authed { u, t -> api.models(u, t) }

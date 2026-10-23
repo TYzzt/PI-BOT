@@ -7,6 +7,7 @@ import { bridge, call, errorText } from './bridge.js';
 import { BotEditor } from './editor.js';
 import { Timeline } from './timeline.js';
 import { BotListItem } from './bot-list-item.js';
+import { DevicePhoneButton, PhoneDock } from './phone-control.js';
 import './style.css';
 
 const ORANGE = DEFAULT_AVATAR;
@@ -70,7 +71,7 @@ function statusLine(bot: Bot, mood: Mood, now: number) {
   return bot.last_message?.preview || '还没有对话';
 }
 
-function Settings({ state, onClose }: { state: AccountState; onClose(): void }) {
+function Settings({ state, onClose, onOpenPhone }: { state: AccountState; onClose(): void; onOpenPhone(device: Device): void }) {
   const [devices,setDevices] = useState<Device[]>([]);
   const [error,setError] = useState('');
   const refresh = () => call<Device[]>('devices').then(setDevices).catch(e => setError(errorText(e)));
@@ -84,25 +85,33 @@ function Settings({ state, onClose }: { state: AccountState; onClose(): void }) 
     catch(e) { setError(errorText(e)); }
   };
   return (
-    <div className="backdrop" onMouseDown={e => e.target === e.currentTarget && onClose()}>
-      <div className="modal settings">
-        <h2>设置</h2>
-        <dl>
-          <dt>账号</dt><dd>{state.user?.display_name}（{state.user?.username}）</dd>
-          <dt>这台电脑</dt><dd>{state.deviceLabel}</dd>
-          <dt>服务器</dt><dd className="mono">{state.serverUrl}</dd>
-          <dt>资料库</dt><dd className="mono">{state.libraryRoot}</dd>
-        </dl>
-        <p className="muted small">Bot 在各自绑定的电脑上读写资料库、执行命令，访问资料库以外的文件前会先征得你同意。绑定电脑离线时，Bot 在云端聊天和搜索，本地任务等待原电脑上线。</p>
-        <h3>执行电脑</h3>
-        {devices.filter(d=>!d.revoked_at).map(d=><div key={d.id} className="device-row"><span>{d.label} · {d.platform === 'linux' ? 'Linux' : 'macOS'} · {d.online ? '在线' : '离线'}{d.id === state.deviceId ? ' · 本机' : ''}</span><button className="ghost danger small" onClick={()=>void revoke(d)}>解绑</button></div>)}
-        {error && <p className="error">{error}</p>}
-        <footer>
-          <button className="ghost danger" onClick={() => { if (confirm('退出登录并解绑这台电脑？资料库文件会保留。')) void call('logout').then(onClose).catch(e => setError(errorText(e))); }}>退出登录</button>
-          <button className="primary" onClick={onClose}>完成</button>
-        </footer>
+      <div className="backdrop" onMouseDown={e => e.target === e.currentTarget && onClose()}>
+        <div className="modal settings">
+          <h2>设置</h2>
+          <dl>
+            <dt>账号</dt><dd>{state.user?.display_name}（{state.user?.username}）</dd>
+            <dt>这台电脑</dt><dd>{state.deviceLabel}</dd>
+            <dt>服务器</dt><dd className="mono">{state.serverUrl}</dd>
+            <dt>资料库</dt><dd className="mono">{state.libraryRoot}</dd>
+          </dl>
+          <p className="muted small">Bot 在各自绑定的电脑上读写资料库、执行命令，访问资料库以外的文件前会先征得你同意。绑定电脑离线时，Bot 在云端聊天和搜索，本地任务等待原电脑上线。</p>
+          <h3>执行电脑</h3>
+          {devices.filter(d=>!d.revoked_at).map(d=>(
+            <div key={d.id} className="device-row">
+              <span>{d.label} · {d.platform === 'linux' ? 'Linux' : d.platform === 'darwin' ? 'macOS' : d.platform === 'win32' ? 'Windows' : '未知平台'} · {d.online ? '在线' : '离线'}{d.id === state.deviceId ? ' · 本机' : ''}</span>
+              <span className="device-actions">
+                <DevicePhoneButton device={d} onOpen={() => onOpenPhone(d)} />
+                <button type="button" className="ghost danger small" onClick={()=>void revoke(d)}>解绑</button>
+              </span>
+            </div>
+          ))}
+          {error && <p className="error">{error}</p>}
+          <footer>
+            <button className="ghost danger" onClick={() => { if (confirm('退出登录并解绑这台电脑？资料库文件会保留。')) void call('logout').then(onClose).catch(e => setError(errorText(e))); }}>退出登录</button>
+            <button className="primary" onClick={onClose}>完成</button>
+          </footer>
+        </div>
       </div>
-    </div>
   );
 }
 
@@ -117,6 +126,7 @@ function App() {
   const [activities, setActivities] = useState<Record<string, LocalActivity>>({});
   const [editor, setEditor] = useState<Bot | 'new' | null>(null);
   const [settings, setSettings] = useState(false);
+  const [phoneTarget, setPhoneTarget] = useState<{ botId: string | null; deviceId: string | null } | null>(null);
   const [now, setNow] = useState(Date.now());
   const [loadError, setLoadError] = useState('');
   const selectedRef = useRef(selected);
@@ -186,7 +196,7 @@ function App() {
   const bot = bots.find(b => b.id === selected) ?? null;
   const page = bot ? pages[bot.id] : undefined;
   return (
-    <div className="shell">
+    <div className={phoneTarget ? 'shell with-phone' : 'shell'}>
       <aside>
         <div className="titlebar">
           <span className="brand">Pi Bot</span>
@@ -228,6 +238,7 @@ function App() {
               </div>
               <button className="ghost" disabled={bot.execution_device_id !== account.deviceId} onClick={() => bridge.openLibrary(bot.id).catch(e => alert(errorText(e)))}>在文件管理器中打开资料库</button>
               <button className="ghost" disabled={!online} onClick={() => setEditor(bot)}>编辑</button>
+              <button type="button" className="ghost" aria-label="打开手机预览" onClick={() => setPhoneTarget({ botId: bot.id, deviceId: null })}>手机</button>
             </header>
             <Timeline bot={bot} messages={page?.messages ?? []} hasMore={page?.hasMore ?? false} mood={botMood(bot, activities[bot.id], now)} online={online} onLoadMore={() => loadMore(bot.id)} onOpenBot={id => { if (bots.some(b => b.id === id)) setSelected(id); }} onSent={sent => {
               setPages(p => {
@@ -256,8 +267,9 @@ function App() {
           </div>
         )}
       </main>
+      {phoneTarget && <PhoneDock botId={phoneTarget.botId ? bot?.id ?? phoneTarget.botId : null} pinnedDeviceId={phoneTarget.deviceId} devices={devices} executionDeviceId={phoneTarget.botId ? bot?.execution_device_id ?? null : null} onClose={() => setPhoneTarget(null)} />}
       {editor && <BotEditor bot={editor === 'new' ? undefined : editor} models={models} devices={devices} currentDeviceId={account.deviceId ?? null} onClose={() => setEditor(null)} onSaved={b => { setEditor(null); setSelected(b.id); void loadBots(); }} />}
-      {settings && <Settings state={account} onClose={() => setSettings(false)} />}
+      {settings && <Settings state={account} onClose={() => setSettings(false)} onOpenPhone={device => { setSettings(false); setPhoneTarget({ botId: null, deviceId: device.id }); }} />}
     </div>
   );
 }

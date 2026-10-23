@@ -1,3 +1,4 @@
+import { PhoneController } from './phone.js';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -38,7 +39,8 @@ export class Application {
   private connection: Connection = 'signed_out';
   private activities = new Map<string, LocalActivity>();
   private afterglow = new Map<string, NodeJS.Timeout>();
-  constructor(private o: ApplicationOptions) {}
+  private phone: PhoneController;
+  constructor(private o: ApplicationOptions) { this.phone = new PhoneController(join(o.dataDir, 'phone.json'), { acquired: async () => { await this.executor?.suspendCommands(); }, released: () => { this.executor?.resumeCommands(); } }); }
   private get accountFile() { return join(this.o.dataDir, 'account.json'); }
 
   async start() {
@@ -77,6 +79,7 @@ export class Application {
       open: () => { this.o.log?.('cloud.online'); this.setConnection('online'); this.o.emit({ type: 'bots' }); },
       close: authFailed => {
         this.o.log?.(authFailed ? 'cloud.revoked' : 'cloud.offline');
+        this.phone.release();
         this.executor?.stopAll();
         if (authFailed) { this.socket?.stop(); this.setConnection('revoked'); }
         else this.setConnection('offline');
@@ -121,7 +124,8 @@ export class Application {
       case 'rpc': {
         try {
           const p = m.params ?? {};
-          const result = m.method === 'files.list' ? await previewList(this.o.libraryRoot, String(p.slug), String(p.path ?? ''))
+          const result = typeof m.method === 'string' && m.method.startsWith('phone.') ? await this.phone.call(m.method, p)
+            : m.method === 'files.list' ? await previewList(this.o.libraryRoot, String(p.slug), String(p.path ?? ''))
             : m.method === 'files.read' ? await previewRead(this.o.libraryRoot, String(p.slug), String(p.path ?? ''))
             : (() => { throw new Error('不支持的请求'); })();
           this.socket?.send({ type: 'rpc_result', id: m.id, ok: true, result });
@@ -169,6 +173,7 @@ export class Application {
       try { await this.cloud('POST', `/devices/${this.account.deviceId}/revoke`); }
       catch (error) { if (!(error instanceof CloudHttpError && error.status === 401)) throw error; }
     }
+    this.phone.release();
     this.executor?.stopAll();
     this.socket?.stop();
     if (this.account) await this.o.credentials.delete(this.account.deviceId).catch(() => {});
@@ -182,6 +187,12 @@ export class Application {
   }
   async call(method: Method, input: any): Promise<unknown> {
     switch (method) {
+      case 'phoneStatus': return this.cloud('POST', `/devices/${input.deviceId}/phone/status`, {});
+      case 'phonePreview': return this.cloud('POST', `/devices/${input.deviceId}/phone/preview`, {});
+      case 'phoneAcquire': return this.cloud('POST', `/devices/${input.deviceId}/phone/acquire`, {});
+      case 'phoneFrame': return this.cloud('POST', `/devices/${input.deviceId}/phone/frame`, {sessionId:input.sessionId});
+      case 'phoneInput': return this.cloud('POST', `/devices/${input.deviceId}/phone/input`, {sessionId:input.sessionId,event:input.event});
+      case 'phoneRelease': return this.cloud('POST', `/devices/${input.deviceId}/phone/release`, {sessionId:input.sessionId});
       case 'status': return { ...this.state(), activities: [...this.activities.values()] };
       case 'login': return this.login(input);
       case 'logout': return this.logout();
@@ -208,5 +219,5 @@ export class Application {
     }
     throw new Error('未知方法');
   }
-  async shutdown() { this.executor?.stopAll(); this.socket?.stop(); for (const timer of this.afterglow.values()) clearTimeout(timer); this.afterglow.clear(); }
+  async shutdown() { this.phone.close(); this.executor?.stopAll(); this.socket?.stop(); for (const timer of this.afterglow.values()) clearTimeout(timer); this.afterglow.clear(); }
 }

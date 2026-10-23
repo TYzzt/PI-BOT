@@ -218,6 +218,12 @@ class PiBotApi(private val http: OkHttpClient, private val json: Json = API_JSON
 
     fun revokeDevice(url: ServerUrl, token: String, id: String): Device = call(url, "POST", "/devices/$id/revoke", token, EmptyBody())
 
+    fun phone(url: ServerUrl, token: String, deviceId: String, action: String, body: JsonObject): JsonObject {
+        require(action in setOf("status", "preview", "acquire", "frame", "input", "release"))
+        require(runCatching { java.util.UUID.fromString(deviceId) }.isSuccess)
+        return call(url, "POST", "/devices/$deviceId/phone/$action", token, body)
+    }
+
     fun models(url: ServerUrl, token: String): List<Model> = call(url, "GET", "/models", token)
 
     fun bots(url: ServerUrl, token: String): BotList = call(url, "GET", "/bots", token)
