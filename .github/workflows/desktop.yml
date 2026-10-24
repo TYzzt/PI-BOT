@@ -1,8 +1,26 @@
 name: Desktop platforms
+# 只在桌面端、它打进安装包的共享包，或本工作流有改动时构建并上传。
+# 桌面 beta 通过 workflow_call 调用，推送标签时不受下面的路径限制。
 on:
   pull_request:
+    paths:
+      - "desktop/**"
+      - "packages/**"
+      - "extras/virtual-phone/**"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.json"
+      - ".github/workflows/desktop.yml"
   push:
     branches: [main, feat/windows-client]
+    paths:
+      - "desktop/**"
+      - "packages/**"
+      - "extras/virtual-phone/**"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.json"
+      - ".github/workflows/desktop.yml"
   workflow_dispatch:
   workflow_call:
 permissions:
@@ -10,10 +28,11 @@ permissions:
 jobs:
   desktop:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-24.04, macos-14]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -23,10 +42,12 @@ jobs:
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run build --workspace=pi-bot-desktop
       - run: node --import tsx --test desktop/tests/platform.test.ts desktop/tests/library.test.ts desktop/tests/cloud.test.ts desktop/tests/windows.test.ts
-      - if: runner.os == 'Linux'
+      - if: runner.os == 'Linux' || runner.os == 'macOS'
         run: npm rebuild electron
       - if: runner.os == 'Linux'
         run: npm run pack:linux --workspace=pi-bot-desktop
+      - if: runner.os == 'macOS'
+        run: npm run pack:mac --workspace=pi-bot-desktop
       - if: runner.os == 'Linux'
         name: Smoke test packaged service
         env:
@@ -46,6 +67,12 @@ jobs:
         with:
           name: pi-bot-linux-x64
           path: desktop/out/linux/*.tar.gz
+      - if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pi-bot-macos-arm64-UNSIGNED-TEST
+          if-no-files-found: error
+          path: desktop/apps/desktop/out/make/*.dmg
   windows:
     runs-on: windows-2022
     timeout-minutes: 45
