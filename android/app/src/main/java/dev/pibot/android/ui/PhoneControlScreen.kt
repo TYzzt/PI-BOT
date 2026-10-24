@@ -95,7 +95,7 @@ fun PhoneControlScreen(repository: PiBotRepository, botId: String?, fixedDeviceI
     val owner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
     val sessionState by repository.session.collectAsStateWithLifecycle()
-    val accountKey = remember(sessionState?.user?.id) { phoneAssociationKey(sessionState?.user?.id) }
+    val accountKey = remember(sessionState?.user?.id, sessionState?.serverUrl) { phoneAssociationKey(sessionState?.user?.id, sessionState?.serverUrl) }
     val devices by repository.devices.collectAsStateWithLifecycle()
     val bots by repository.bots.collectAsStateWithLifecycle()
     val executionId = bots?.firstOrNull { it.id == botId }?.executionDeviceId
@@ -194,7 +194,7 @@ fun PhoneControlScreen(repository: PiBotRepository, botId: String?, fixedDeviceI
         }
     }
 
-    LaunchedEffect(botId, fixedDeviceId, devices, executionId, accountKey) {
+    LaunchedEffect(botId, fixedDeviceId, devices, executionId, accountKey, sessionState?.token) {
         // Never retain a prior account's selection, preview or lease.
         if (selectionAccount != accountKey) {
             selectionAccount = accountKey
@@ -204,9 +204,6 @@ fun PhoneControlScreen(repository: PiBotRepository, botId: String?, fixedDeviceI
             if (deviceId != fixedDeviceId) selectDevice(fixedDeviceId, saveMapping = false)
             return@LaunchedEffect
         }
-        val current = deviceId
-        val live = devices.filter { it.revokedAt == null }.map { it.id }.toSet()
-        if (current != null && current in live && current != fixedDeviceId) return@LaunchedEffect
         val saved = botId?.let {
             readPhoneMap(context.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE).getString(accountKey, null))[it]
         }
@@ -216,7 +213,7 @@ fun PhoneControlScreen(repository: PiBotRepository, botId: String?, fixedDeviceI
         }
     }
 
-    LaunchedEffect(deviceId, foreground, retry) {
+    LaunchedEffect(deviceId, foreground, retry, accountKey, sessionState?.token) {
         if (!foreground) return@LaunchedEffect
         val id = deviceId ?: return@LaunchedEffect
         while (isActive) {
@@ -239,7 +236,7 @@ fun PhoneControlScreen(repository: PiBotRepository, botId: String?, fixedDeviceI
         }
     }
 
-    LaunchedEffect(deviceId, foreground, controlling, retry) {
+    LaunchedEffect(deviceId, foreground, controlling, retry, accountKey, sessionState?.token) {
         val id = deviceId
         if (!foreground || id.isNullOrBlank()) return@LaunchedEffect
         if (!controlling) {

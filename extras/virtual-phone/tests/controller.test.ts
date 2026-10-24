@@ -128,3 +128,64 @@ test('closed controller cannot reacquire a lease without an expiry timer', async
  await assert.rejects(phone.call('phone.acquire', {}), /已关闭/);
  await assert.rejects(phone.call('phone.preview', {}), /已关闭/);
 });
+
+test('ADB always pins the explicit local host, configured port and serial without discovery or fallback', async () => {
+ const root=mkdtempSync(join(tmpdir(),'phone-target-')),cfg=join(root,'phone.json');
+ const fake=join(root,'adb.cjs'),log=join(root,'argv.jsonl');
+ writeFileSync(fake,`#!${process.execPath}
+require('node:fs').appendFileSync(${JSON.stringify(log)},JSON.stringify(process.argv.slice(2))+'\\n');
+process.stdin.resume();process.stdout.write('device');
+`,{mode:0o700});
+ const config={enabled:true,adbPath:fake,ffmpegPath:'/bin/true',lockPath:join(root,'lock'),serial:'test-device-42',adbPort:15039};
+ const save=()=>writeFileSync(cfg,JSON.stringify(config),{mode:0o600});
+ save(); const phone=new PhoneController(cfg);
+ try {
+  const status=await phone.call('phone.status',{}) as any;
+  assert.equal(status.available,true);
+  assert.match(status.label,/test-device-42.*15039/);
+  const {sessionId}=await phone.call('phone.acquire',{}) as any;
+  await phone.call('phone.input',{sessionId,event:{type:'key',code:4}});
+  const {readFileSync}=await import('node:fs');
+  const calls=readFileSync(log,'utf8').trim().split('\n').map(line=>JSON.parse(line));
+  assert.equal(calls.length,3);
+  for(const args of calls) assert.deepEqual(args.slice(0,6),['-H','127.0.0.1','-P','15039','-s','test-device-42']);
+  config.serial=''; save();
+  await assert.rejects(phone.call('phone.input',{sessionId,event:{type:'key',code:4}}),/显式启用/);
+  assert.equal((phone as any).lease,undefined);
+  assert.equal(readFileSync(log,'utf8').trim().split('\n').length,3);
+ } finally {phone.close();await new Promise(r=>setTimeout(r,100));rmSync(root,{recursive:true,force:true});}
+});
+
+test('configuration changes invalidate a lease before preview, frame or input can target another device', async () => {
+ for(const method of ['phone.preview','phone.frame','phone.input']) {
+  const root=mkdtempSync(join(tmpdir(),'phone-config-')),cfg=join(root,'phone.json');
+  const config={enabled:true,adbPath:'/bin/true',ffmpegPath:'/bin/true',lockPath:join(root,'lock'),serial:'device-a',adbPort:15039};
+  const save=()=>writeFileSync(cfg,JSON.stringify(config),{mode:0o600});
+  save(); const phone=new PhoneController(cfg);
+  try {
+   const {sessionId}=await phone.call('phone.acquire',{}) as any;
+   config.serial='device-b';config.adbPort=15040;config.lockPath=join(root,'other-lock');save();
+   await assert.rejects(phone.call(method,method==='phone.preview'?{}:{sessionId,event:{type:'key',code:4}}),/配置已变更/);
+   assert.equal((phone as any).lease,undefined);
+   await assert.rejects(phone.call('phone.input',{sessionId,event:{type:'key',code:4}}),/失效/);
+   assert.ok((await phone.call('phone.acquire',{}) as any).sessionId);
+  } finally {phone.close();await new Promise(r=>setTimeout(r,100));rmSync(root,{recursive:true,force:true});}
+ }
+});
+
+test('release works after disabling configuration; changes during acquisition fail closed', async () => {
+ const root=mkdtempSync(join(tmpdir(),'phone-disable-')),cfg=join(root,'phone.json');
+ const config={enabled:true,adbPath:'/bin/true',ffmpegPath:'/bin/true',lockPath:join(root,'lock'),serial:'device-a',adbPort:15039};
+ const save=()=>writeFileSync(cfg,JSON.stringify(config),{mode:0o600});
+ save();const phone=new PhoneController(cfg);
+ try {
+  const {sessionId}=await phone.call('phone.acquire',{}) as any;
+  rmSync(cfg);
+  assert.deepEqual(await phone.call('phone.release',{sessionId}),{released:true});
+ } finally {phone.close();}
+ save();const changing=new PhoneController(cfg,{acquired:async()=>{config.serial='device-b';save();},released:()=>{}});
+ try {
+  await assert.rejects(changing.call('phone.acquire',{}),/配置已变更/);
+  assert.equal((changing as any).lease,undefined);
+ } finally {changing.close();await new Promise(r=>setTimeout(r,100));rmSync(root,{recursive:true,force:true});}
+});

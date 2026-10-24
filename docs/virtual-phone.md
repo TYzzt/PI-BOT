@@ -3,7 +3,7 @@
 在 Bot 内查看一台已授权电脑上的 Android 手机，需要时手动接管。
 不启用此能力不影响文字聊天、资料库或管理端的语音模型配置。
 
-> 当前是受限的单机验证集成，不是通用云手机平台：Linux 执行节点、指定的一台 Android 设备、竖屏 720×1280。不会自动创建实例、登录账号或接入任意 ADB 设备。vphone 附加组件的独立发布准备不代表已经公开发布。
+> 当前是受限的单机验证集成，不是通用云手机平台：Linux 执行节点、指定的一台 Android 设备、竖屏 720×1280。不会自动创建实例、登录账号或接入任意 ADB 设备。独立源码仓库：[pi-bot-virtual-phone](https://github.com/TYzzt/pi-bot-virtual-phone)；尚未发布 npm 包。
 
 ## 给使用者
 
@@ -17,7 +17,7 @@
 
 直接输入仅支持最多 1000 个可打印 ASCII 字符，中文使用虚拟手机内的软键盘。输入框遮罩并不代表可安全分享凭据，请勿在聊天或本面板发送密码、验证码。
 
-当前每台电脑只使用节点显式启用的一台手机。Android 按账号、按 Bot 在本应用保存选择，不上传、不跨手机同步。
+当前每台电脑只使用节点显式启用的一台手机。Android 和桌面按服务器、账号、Bot 在本机保存选择，不上传、不跨设备同步。旧版无法确认服务器归属的关联不自动迁移；首次需重新选择。失效/撤销绑定不会静默切到另一台电脑，无绑定时也不自动选择唯一电脑；只有有效的 Bot 执行电脑绑定或用户明确选择才能确定目标。
 
 ## 架构与边界
 
@@ -50,7 +50,7 @@ RPC 仅有 `phone.status`、`phone.preview`、`phone.acquire`、`phone.frame`、
 - API、执行节点和客户端都包含相匹配的手机协议，尤其是 `phone.preview`。
 - Linux 执行电脑已有正常运行的 Pi Bot、Android SDK ADB、FFmpeg 和 `/usr/bin/flock`。
 - 自行安装并启动合法取得的 Android 镜像；Google Play / Google 服务的条款与授权不随本项目开源。
-- 当前控制器**硬性校验**设备序列号 `emulator-5556`、独立 ADB 端口 `5038`、720×1280 竖屏，以及内部手机标识 `google-play-validation`。不是可任意改端口和序列号的通用适配器，也不要拿旧 Redroid 链路代替。
+- 管理员必须显式配置 `serial` 和 `adbPort`，无默认值；ADB 固定连接本机 `127.0.0.1`，不扫描、不回退。屏幕仍限制 720×1280 竖屏。内部 `google-play-validation` 仅是兼容客户端的单手机逻辑槽位，不代表已核验 Android 版本或设备身份。不要拿旧 Redroid 链路代替。
 
 ### 节点配置
 
@@ -63,11 +63,13 @@ RPC 仅有 `phone.status`、`phone.preview`、`phone.acquire`、`phone.frame`、
   "enabled": true,
   "adbPath": "/absolute/path/to/android-sdk/platform-tools/adb",
   "lockPath": "/absolute/path/to/private-runtime/phone.lock",
-  "serial": "emulator-5556",
+  "serial": "your-device-serial",
   "adbPort": 5038,
   "ffmpegPath": "/absolute/path/to/ffmpeg"
 }
 ```
+
+示例中的 `5038` 只是示例端口，必须替换为节点实际配置；不要把本机验证值当通用默认。
 
 文件必须属于运行节点的用户，权限为 `0600`，不能是符号链接。锁文件目录使用该用户可写的私有目录；若有其他桥接或受控 ADB 工具，必须共用同一个锁。不要复制生产认证材料到配置示例。
 
@@ -80,6 +82,8 @@ RPC 仅有 `phone.status`、`phone.preview`、`phone.acquire`、`phone.frame`、
 3. 未确认接管时不发送 `acquire/input`；明确确认后取得互斥锁。
 4. 主动结束、离开页面、进入后台及节点超时均能释放，失败请求不续活。
 5. 非所属账号、撤销设备、失效会话、非法坐标和非白名单事件必须拒绝。
+6. 会话绑定配置快照，变更端口/设备/锁路径或删除配置后旧会话不得继续输入；重新核验目标后再接管。
+7. 操作代理和运维工具必须读取同一份有效配置，显式传入 host、端口和 serial，再只读核验指纹/AVD 名称。组件不保存设备指纹，外部复用同 serial 不在其身份校验能力内。
 
 自动化单测不能替代安卓真机上的小屏、大字体、网络断开和触摸坐标验收。
 
