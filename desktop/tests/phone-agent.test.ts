@@ -5,6 +5,7 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Executor, type RunContext } from '../packages/service/src/executor.js';
+import { PhoneController } from '../packages/service/src/phone.js';
 import { ResponseStream, realToolOutputs } from '../../packages/agent/tests/responses.js';
 const skip=process.platform!=='linux'&&'Configured phone requires Linux/flock';
 const jpeg='/9j/4AAQSkZJRgABAgAAAQABAAD//gAQTGF2YzYyLjExLjEwMAD/2wBDAAgEBAQEBAUFBQUFBQYGBgYGBgYGBgYGBgYHBwcICAgHBwcGBgcHCAgICAkJCQgICAgJCQoKCgwMCwsODg4RERT/xABMAAEBAAAAAAAAAAAAAAAAAAAABwEBAQAAAAAAAAAAAAAAAAAABQcQAQAAAAAAAAAAAAAAAAAAAAARAQAAAAAAAAAAAAAAAAAAAAD/wAARCAAQABADASIAAhEAAxEA/9oADAMBAAIRAxEAPwCOAL+Kf//Z';
@@ -15,7 +16,7 @@ function fixture() {
 const fs=require('node:fs'),args=process.argv.slice(2);fs.appendFileSync(${JSON.stringify(log)},JSON.stringify(args)+'\\n');
 if(args.includes('get-state'))process.stdout.write('device');
 else if(args.includes('screencap')){const b=Buffer.alloc(24);b.writeUInt32BE(720,16);b.writeUInt32BE(1280,20);process.stdout.write(b);}
-else if(args.includes('slow'))setTimeout(()=>{},30000);
+else if(args.some(arg=>arg.includes('slow')))setTimeout(()=>{},30000);
 else process.stdout.write('ok');
 `,{mode:0o700});
  writeFileSync(ffmpeg,`#!${process.execPath}
@@ -63,11 +64,36 @@ test('real agent command loop sends screenshot image to Responses, operates the 
   assert.ok(requests[0].tools.some((t:any)=>t.name==='run_command'));
   assert.ok(!requests[0].tools.some((t:any)=>t.name.startsWith('phone_')));
   const calls=readFileSync(f.log,'utf8').trim().split('\n').map(l=>JSON.parse(l));
-  assert.ok(calls.some(args=>args.slice(6).join(' ')==='shell input keyevent 3'));
+  assert.ok(calls.some(args=>args.slice(6).join(' ')==="shell -T 'input' 'keyevent' '3'"));
   for(const args of calls)assert.deepEqual(args.slice(0,6),['-H','127.0.0.1','-P','15039','-s','assigned-phone']);
   assert.equal(JSON.stringify(events).includes(jpeg),false,'screenshot leaked into events');
   assert.ok(JSON.stringify(events).includes('omitted'));
  }finally{executor.stopAll();await new Promise<void>(r=>server.close(()=>r()));f.cleanup();}
+});
+
+test('manual takeover cancels an agent holding the phone lock, then resumes commands on release', {skip},async()=>{
+ const f=fixture();let command:any,ready!:()=>void,finish!:()=>void;
+ const loaded=new Promise<void>(r=>ready=r),end=new Promise<void>(r=>finish=r);
+ const executor=new Executor({libraryRoot:f.root,agentDir:join(f.root,'agent'),phoneConfigPath:f.path,proxyUrl:'http://127.0.0.1/llm/v1',llmToken:async()=> 'test',send(){},activity(){},factory:async o=>{
+  command=o.tools.find(t=>t.name==='run_command');ready();return {tools:[],prompt:async()=>{await end;return 'done';},setApiKey:async()=>{},abort:async()=>{},dispose(){}};
+ }});
+ const phone=new PhoneController(f.path,{acquired:()=>executor.suspendCommands(),released:()=>executor.resumeCommands()});
+ const run=executor.start(f.run());
+ try {
+  await loaded;
+  const pending=command.execute('slow',{command:'phone-adb shell slow'},undefined,()=>{},{});
+  const outcome=pending.then(()=> 'completed',(e:Error)=>e.message);
+  for(let i=0;i<100&&(!existsSync(f.log)||!readFileSync(f.log,'utf8').includes('slow'));i++)await new Promise(r=>setTimeout(r,20));
+  assert.match(readFileSync(f.log,'utf8'),/slow/);
+  const {sessionId}=await phone.call('phone.acquire',{}) as any;
+  assert.equal(await outcome,'CANCELLED');
+  await assert.rejects(command.execute('blocked',{command:'phone-adb get-state'},undefined,()=>{},{}),/人工接管/);
+  await phone.call('phone.release',{sessionId});
+  await new Promise(r=>setTimeout(r,100));
+  assert.equal(JSON.parse((await command.execute('resumed',{command:'phone-adb get-state'},undefined,()=>{},{})).content[0].text).exit_code,0);
+ }finally{
+  await executor.suspendCommands();phone.close();finish();await run;executor.stopAll();f.cleanup();
+ }
 });
 test('manual suspension aborts in-flight phone commands and rejects further commands until released', {skip},async()=>{
  const f=fixture();let command:any,ready!:()=>void,finish!:()=>void;

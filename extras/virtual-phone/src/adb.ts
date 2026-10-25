@@ -5,6 +5,7 @@ export const isPhoneAdbCommand = (command: string) => /^\s*phone-adb(?:\s|$)/.te
 
 /** Literal argv only. This built-in command is never evaluated by a host shell. */
 function words(command: string): string[] {
+  if (/[\r\n]/.test(command)) throw new Error('phone-adb 只接受一条命令');
   const result: string[] = []; let word = '', quote = '', started = false;
   for (let i = 0; i < command.length; i++) {
     const c = command[i];
@@ -47,6 +48,7 @@ function execute(file: string, args: string[], timeout: number, signal?: AbortSi
   });
 }
 const resultText = (value: unknown) => ({ type: 'text' as const, text: JSON.stringify(value) });
+const androidQuote = (arg: string) => "'" + arg.replace(/'/g, "'\\''") + "'";
 
 /** A run pins one administrator-configured phone. It cannot discover or retarget devices. */
 export class PhoneAdb {
@@ -81,8 +83,13 @@ export class PhoneAdb {
     if (!(args.length === 1 && args[0] === 'get-state') && !(args[0] === 'shell' && args.length > 1) && !screenshot)
       throw new Error('phone-adb 只允许 get-state、shell 和 exec-out screencap -p；不允许扫描、连接或切换设备');
     this.check();
+    // ADB joins shell arguments into one Android-shell command, without escaping.
+    // Quote every literal argument again so spaces/metacharacters survive that hop.
+    const adbArgs = args[0] === 'shell'
+      ? ['shell', '-T', args.slice(1).map(androidQuote).join(' ')]
+      : args;
     // -F keeps flock and ADB in the same process group so cancellation releases both.
-    const r = await execute('/usr/bin/flock', ['-n', '-E', '75', '-F', this.target.lockPath, this.target.adbPath, ...this.pinned(args)], Math.min(120000, Math.max(1000, timeout)), signal);
+    const r = await execute('/usr/bin/flock', ['-n', '-E', '75', '-F', this.target.lockPath, this.target.adbPath, ...this.pinned(adbArgs)], Math.min(120000, Math.max(1000, timeout)), signal);
     this.check();
     if (r.code === 75) throw new Error('手机正在被占用，请等待人工接管或其他操作释放');
     if (screenshot && r.code === 0 && !r.timedOut) {

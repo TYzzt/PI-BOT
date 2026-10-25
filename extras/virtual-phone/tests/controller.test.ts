@@ -55,6 +55,26 @@ test('expired idle session releases lock and rejects further input',async()=>{
  }finally{Date.now=now;phone.close();await new Promise(r=>setTimeout(r,100));rmSync(root,{recursive:true,force:true});}
 });
 
+test('failed takeover restores commands after external lock contention or suspension failure',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'phone-acquire-failure-')),cfg=join(root,'phone.json');
+ writeFileSync(cfg,JSON.stringify({enabled:true,adbPath:'/bin/true',ffmpegPath:'/bin/true',lockPath:join(root,'lock'),serial:'assigned-phone',adbPort:15039}),{mode:0o600});
+ let suspended=false,acquired=0,released=0,fail=false;
+ const owner=new PhoneController(cfg),phone=new PhoneController(cfg,{
+  acquired:async()=>{suspended=true;acquired++;if(fail)throw Error('suspension failed');},
+  released:()=>{suspended=false;released++;},
+ });
+ try {
+  const {sessionId}=await owner.call('phone.acquire',{}) as any;
+  await assert.rejects(phone.call('phone.acquire',{}),/占用/);
+  assert.equal(acquired,1);assert.equal(released,1);assert.equal(suspended,false);
+  await owner.call('phone.release',{sessionId});
+  fail=true;
+  await assert.rejects(phone.call('phone.acquire',{}),/无法暂停/);
+  assert.equal(acquired,2);assert.equal(released,2);assert.equal(suspended,false);
+  assert.equal((phone as any).lease,undefined);
+ }finally{owner.close();phone.close();await new Promise(r=>setTimeout(r,100));rmSync(root,{recursive:true,force:true});}
+});
+
 
 test('read-only preview does not take lock, suspend automation or keep a control lease alive',async()=>{
  const root=mkdtempSync(join(tmpdir(),'phone-preview-')),cfg=join(root,'phone.json');

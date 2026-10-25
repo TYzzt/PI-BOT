@@ -37,7 +37,9 @@ phone-adb shell am start -a android.intent.action.VIEW -d https://example.com
 
 截图经 FFmpeg 转为 JPEG，直接作为工具图片交给当前 Bot 的模型，以支持“看图—操作—再看图”，不是只返回一个文件名。节点不将截图写入文件、聊天消息或工具诊断事件；模型服务商会收到图片。ADB `shell` 可执行 Android 原生命令，能力范围比人工面板的输入白名单更广；文字输入仍受 Android `input text` 的字符支持限制，含空格用 `%s`。
 
-每个任务固定使用启动时的配置快照，每次命令检查配置是否改变，并显式附带本机 host、端口和 serial。每条 ADB 命令持有同一把 `flock`；不允许 `devices/connect` 或覆盖目标参数。人工接管期间暂停节点命令；取消/超时终止命令进程组并释放锁。只读目标检查不获得命令执行能力。外部裸 ADB 不受合作锁约束。
+含 `&` 等字符的 URL 或带空格的参数需要加引号，例如 `phone-adb shell am start -a android.intent.action.VIEW -d 'https://example.com/?a=1&b=2'`。引号中的内容按字面参数传给 Android，不执行变量或命令展开。
+
+每个任务固定使用启动时的配置快照，每次命令检查配置是否改变，并显式附带本机 host、端口和 serial。每条 ADB 命令持有同一把 `flock`；不允许 `devices/connect` 或覆盖目标参数。人工接管先暂停并取消本节点正在执行的命令，再取得锁；接管失败也会恢复命令能力。取消/超时终止命令进程组并释放锁。只读目标检查不获得命令执行能力。外部裸 ADB 不受合作锁约束。
 
 ## 架构与边界
 

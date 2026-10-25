@@ -26,7 +26,7 @@ function exec(file: string, args: string[], input?: Buffer | string, max = 4_000
 }
 const quote = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'";
 export class PhoneController {
-  private lease?: { id: string; expires: number; idle: number; lock: ChildProcess; config: Config };
+  private lease?: { id: string; expires: number; idle: number; lock?: ChildProcess; config: Config };
   private queue = Promise.resolve();
   private timer = setInterval(() => { if (this.lease && (this.lease.expires < Date.now() || this.lease.idle < Date.now())) this.release(); }, 1000).unref();
   private generation = 0;
@@ -34,7 +34,7 @@ export class PhoneController {
   private closed = false;
   constructor(private configPath: string, private hooks?: { acquired(): Promise<void>; released(): void }) {}
   private config(): Config { return readPhoneConfig(this.configPath); }
-  release() { this.generation++; const old = this.lease; this.lease = undefined; old?.lock.stdin?.end(); old?.lock.kill(); if (old) this.hooks?.released(); }
+  release() { this.generation++; const old = this.lease; this.lease = undefined; old?.lock?.stdin?.end(); old?.lock?.kill(); if (old) this.hooks?.released(); }
   close() { this.closed = true; this.release(); clearInterval(this.timer); }
   call(method: string, raw: unknown): Promise<unknown> {
     if (this.closed) return Promise.reject(new Error('手机控制器已关闭'));
@@ -101,26 +101,31 @@ export class PhoneController {
     if (method === 'phone.acquire') {
       if (this.lease) throw new Error('手机正在被人工控制');
       await this.adb(c, ['get-state']);
-      // Share the exact flock with the existing remote bridge and guarded ADB.
-      const lock = spawn('/usr/bin/flock', ['-n', '-E', '75', c.lockPath, '/bin/sh', '-c', 'printf ready; cat >/dev/null'], { stdio: ['pipe', 'pipe', 'ignore'] });
-      try { await new Promise<void>((resolve, reject) => {
-        const t = setTimeout(() => { lock.kill(); reject(new Error('接管超时')); }, 3000);
-        lock.once('error', () => { clearTimeout(t); reject(new Error('手机锁不可用')); });
-        lock.once('exit', () => { clearTimeout(t); reject(new Error('手机已被占用')); });
-        lock.stdout.once('data', () => { clearTimeout(t); resolve(); });
-      }); } catch (e) { lock.stdin.end(); lock.kill(); throw e; }
-      if (generation !== this.generation) { lock.stdin.end(); lock.kill(); throw new Error('手机连接已断开'); }
-      const lease = { id: randomUUID(), expires: Date.now() + 600000, idle: Date.now() + 45000, lock, config: c };
-      this.lease = lease; lock.on('exit', () => { if (this.lease === lease) this.release(); });
-      try { await this.hooks?.acquired(); } catch { this.release(); throw new Error('无法暂停自动化，未授予人工控制'); }
-      if (this.lease !== lease) throw new Error('人工控制会话已结束');
+      if (generation !== this.generation) throw new Error('手机连接已断开');
+      const lease: NonNullable<PhoneController['lease']> = { id: randomUUID(), expires: Date.now() + 600000, idle: Date.now() + 45000, config: c };
+      this.lease = lease;
       try {
-        if (JSON.stringify(this.config()) !== JSON.stringify(c)) throw new Error();
-      } catch {
-        this.release();
-        throw new Error('手机配置已变更，请重新确认设备并接管');
+        // Stop this executor's commands before taking the lock they may hold.
+        // The provisional lease also restores commands on every failed acquisition.
+        try { await this.hooks?.acquired(); } catch { throw new Error('无法暂停自动化，未授予人工控制'); }
+        if (this.lease !== lease) throw new Error('人工控制会话已结束');
+        const lock = spawn('/usr/bin/flock', ['-n', '-E', '75', c.lockPath, '/bin/sh', '-c', 'printf ready; cat >/dev/null'], { stdio: ['pipe', 'pipe', 'ignore'] });
+        lease.lock = lock;
+        lock.on('exit', () => { if (this.lease === lease) this.release(); });
+        await new Promise<void>((resolve, reject) => {
+          const t = setTimeout(() => { lock.kill(); reject(new Error('接管超时')); }, 3000);
+          lock.once('error', () => { clearTimeout(t); reject(new Error('手机锁不可用')); });
+          lock.once('exit', () => { clearTimeout(t); reject(new Error('手机已被占用')); });
+          lock.stdout!.once('data', () => { clearTimeout(t); resolve(); });
+        });
+        if (this.lease !== lease || generation !== this.generation) throw new Error('手机连接已断开');
+        try { if (JSON.stringify(this.config()) !== JSON.stringify(c)) throw new Error(); }
+        catch { throw new Error('手机配置已变更，请重新确认设备并接管'); }
+        return { sessionId: lease.id, expiresAt: lease.expires };
+      } catch (e) {
+        if (this.lease === lease) this.release();
+        throw e;
       }
-      return { sessionId: lease.id, expiresAt: lease.expires };
     }
     const lease = this.lease;
     if (!lease || p.sessionId !== lease.id || lease.expires <= Date.now() || lease.idle <= Date.now()) throw new Error('人工控制会话已失效');
