@@ -7,14 +7,27 @@ import { createApp } from "../src/app.js";
 import { settings, type Settings } from "../src/config.js";
 import { Database } from "../src/db.js";
 import { Worker } from "../src/worker.js";
-import { voiceEndpoint } from "../src/voice.js";
+import { pcm24kTo16k, voiceEndpoint } from "../src/voice.js";
 import { eventually, resetDatabase, TEST_DB, tempDir, vaultFile } from "./helpers.js";
 
-test("voice endpoint follows xAI and a same-host override", () => {
-  assert.equal(voiceEndpoint("https://api.x.ai/v1"), "wss://api.x.ai/v1/realtime?model=grok-voice-latest");
-  assert.equal(voiceEndpoint("https://example.com/v1"), null);
-  assert.equal(voiceEndpoint("http://127.0.0.1:9/v1", "ws://127.0.0.1:9/v1/realtime"), "ws://127.0.0.1:9/v1/realtime?model=grok-voice-latest");
-  assert.equal(voiceEndpoint("https://example.com/v1", "ws://127.0.0.1:9/v1/realtime"), null);
+test("voice endpoint follows the selected model and stays off when none is chosen", () => {
+  assert.equal(voiceEndpoint({ base_url: "https://api.x.ai/v1", provider: "xai", voice_model: "grok-voice-3.0" }), "wss://api.x.ai/v1/realtime?model=grok-voice-3.0");
+  assert.equal(voiceEndpoint({ base_url: "https://api.x.ai/v1", provider: "xai" }), null);
+  assert.equal(voiceEndpoint({ base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", provider: "bailian", voice_model: "qwen3.5-omni-flash-realtime" }), "wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=qwen3.5-omni-flash-realtime");
+  assert.equal(voiceEndpoint({ base_url: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", provider: "bailian", voice_model: "qwen-audio-3.0-realtime-plus" }), "wss://token-plan.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime?model=qwen-audio-3.0-realtime-plus");
+  const pcm = Buffer.alloc(8);
+  pcm.writeInt16LE(0, 0);
+  pcm.writeInt16LE(300, 2);
+  pcm.writeInt16LE(900, 4);
+  pcm.writeInt16LE(10, 6);
+  const converted = pcm24kTo16k(pcm);
+  assert.equal(converted.audio.length, 4);
+  assert.equal(converted.audio.readInt16LE(0), 0);
+  assert.equal(converted.audio.readInt16LE(2), 600);
+  assert.equal(converted.pending.length, 2);
+  assert.equal(converted.pending.readInt16LE(0), 10);
+  assert.equal(voiceEndpoint({ base_url: "http://127.0.0.1:9/v1", voice_model: "grok-voice-latest" }, "ws://127.0.0.1:9/v1/realtime"), "ws://127.0.0.1:9/v1/realtime?model=grok-voice-latest");
+  assert.equal(voiceEndpoint({ base_url: "https://example.com/v1", voice_model: "grok-voice-latest" }, "ws://127.0.0.1:9/v1/realtime"), null);
 });
 
 const skip = !TEST_DB && "需要 PI_BOT_TEST_DATABASE_URL";
@@ -72,8 +85,11 @@ function clientSocket(url: string) {
 }
 
 async function mockRealtime() {
+  const connections: Array<{ authorization?: string }> = [];
+  const summaryAuth: Array<string | undefined> = [];
   const http = createServer((req, res) => {
     if ((req.url ?? "").startsWith("/v1/responses")) {
+      summaryAuth.push(req.headers.authorization);
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "通话总结：打过招呼。" }] }], usage: { input_tokens: 3, output_tokens: 5 } }));
       return;
@@ -94,6 +110,7 @@ async function mockRealtime() {
   http.on("upgrade", (req: IncomingMessage, socket, head) => {
     if (!(req.url ?? "").startsWith("/v1/realtime")) return socket.destroy();
     wss.handleUpgrade(req, socket, head, (ws) => {
+      connections.push({ authorization: req.headers.authorization });
       upstream = ws;
       ws.on("message", (raw, isBinary) => {
         if (isBinary) return;
@@ -109,6 +126,7 @@ async function mockRealtime() {
   await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve));
   const port = (http.address() as { port: number }).port;
   return {
+    connections, summaryAuth,
     baseUrl: `http://127.0.0.1:${port}/v1`,
     realtimeUrl: `ws://127.0.0.1:${port}/v1/realtime`,
     send: (frame: object) => upstream?.send(JSON.stringify(frame)),
@@ -161,7 +179,7 @@ test("a voice call replaces the text turn, speaks task results, and falls back t
   const token = user.json.access_token as string;
   const model = await api("POST", "/admin/api/models", {
     token: admin.json.access_token,
-    body: { name: "语音模型", base_url: realtime.baseUrl, provider_model: "grok-voice-latest", api_key: "sk-voice", context_window: 32000, max_tokens: 1000 },
+    body: { name: "语音模型", base_url: realtime.baseUrl, provider_model: "grok-voice-latest", voice_model: "grok-voice-latest", api_key: "sk-voice", context_window: 32000, max_tokens: 1000 },
   });
   const other = await api("POST", "/admin/api/models", {
     token: admin.json.access_token,
@@ -175,7 +193,7 @@ test("a voice call replaces the text turn, speaks task results, and falls back t
   const denied = clientSocket(`${base.replace(/^http/, "ws")}/ws/voice?token=${token}&bot=${botId}`);
   await denied.opened;
   const denial = await denied.next((frame) => frame.type === "error");
-  assert.match(denial.detail, /不支持语音通话/);
+  assert.match(denial.detail, /未开通语音/);
   assert.equal(await denied.closed, 4403);
   assert.equal((await api("PATCH", `/bots/${botId}`, { token, body: { model_id: model.json.id } })).status, 200);
 
@@ -304,7 +322,7 @@ test("a dropped call ends after the grace period and an expired voice lease is a
 });
 
 
-test("OpenAI voice uses a dedicated model, 24k base64 upstream and 16k PCM client", { skip }, async () => {
+test("dedicated OpenAI voice ignores the text provider, keeps separate credentials and converts PCM", { skip }, async () => {
   const rt = await mockRealtime();
   const previous = { voiceProtocol: s.voiceProtocol, voiceRealtimeUrl: s.voiceRealtimeUrl, voiceModelId: s.voiceModelId };
   let call: ReturnType<typeof clientSocket> | undefined;
@@ -320,6 +338,9 @@ test("OpenAI voice uses a dedicated model, 24k base64 upstream and 16k PCM clien
     assert.equal(voice.status, 200);
     const bot = await api("POST", "/bots", { token, body: { name: "OpenAI phone", model_id: text.json.id } });
     assert.equal(bot.status, 200);
+    // Use the mock endpoint with a different stored text provider to catch accidental
+    // protocol selection from the summary model rather than the dedicated voice row.
+    await db.tx(tx => tx.rows("UPDATE models SET provider='bailian' WHERE model_id=$1", [text.json.id]));
     s.voiceProtocol = "openai";
     s.voiceModelId = voice.json.id;
     s.voiceRealtimeUrl = rt.realtimeUrl + "?model=gpt-realtime";
@@ -328,6 +349,7 @@ test("OpenAI voice uses a dedicated model, 24k base64 upstream and 16k PCM clien
     const hello = await call.next(f => f.type === "hello");
     assert.equal(hello.sample_rate, 16000);
     const update = await rt.next(f => f.type === "session.update");
+    assert.equal(rt.connections[0]?.authorization, "Bearer sk-realtime");
     assert.equal(update.session.type, "realtime");
     assert.equal(update.session.model, "gpt-realtime");
     assert.equal(update.session.audio.input.format.rate, 24000);
@@ -339,6 +361,7 @@ test("OpenAI voice uses a dedicated model, 24k base64 upstream and 16k PCM clien
     rt.send({ type: "response.output_audio.delta", delta: Buffer.alloc(4800).toString("base64") });
     await eventually(async () => call!.audio.length > 0);
     assert.equal(call.audio.reduce((n,b) => n+b.length, 0), 3200);
+    rt.send({ type: "conversation.item.input_audio_transcription.completed", transcript: "Summarize with the text model" });
     const unchanged = await db.tx(tx => tx.get("bots", bot.json.id));
     assert.equal(unchanged.model_id, text.json.id);
     call.send({ type: "hangup" });
@@ -348,6 +371,7 @@ test("OpenAI voice uses a dedicated model, 24k base64 upstream and 16k PCM clien
       const run = await db.tx(tx => tx.get("bot_runs", hello.call_id));
       return run.status === "completed";
     });
+    assert.deepEqual(rt.summaryAuth, ["Bearer sk-summary"]);
   } finally {
     call?.ws.close();
     Object.assign(s, previous);

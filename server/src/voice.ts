@@ -12,6 +12,7 @@ import { forgottenContext, maskForgotten } from "./memory.js";
 import { complete } from "./llm.js";
 import { cancelRun, dispatchDevice } from "./runs.js";
 import { readVoiceTicket, user, Vault, type LlmClaims } from "./security.js";
+import { inferProvider } from "./providers.js";
 
 import { PcmResampler } from "./voice-audio.js";
 
@@ -19,17 +20,28 @@ const SAMPLE_RATE = 16000;
 const MAX_CALL_MS = 120 * 60 * 1000;
 const PLAYBACK_WAIT_MS = 8000;
 
-/** Grok speech-to-speech only. A same-host override exists so tests can stand in for xAI. */
-export function voiceEndpoint(baseUrl: string, override?: string): string | null {
-  let base: URL;
-  try { base = new URL(baseUrl); } catch { return null; }
-  const host = base.hostname.toLowerCase();
-  if (host === "api.x.ai" || host.endsWith(".x.ai")) return "wss://api.x.ai/v1/realtime?model=grok-voice-latest";
+/** Voice stays off until a voice model is chosen. A same-host override lets tests stand in for the provider. */
+export function voiceEndpoint(model: { base_url: string; provider?: string | null; voice_model?: string | null }, override?: string): string | null {
+  const voice = model.voice_model?.trim();
+  if (!voice) return null;
+  const provider = model.provider || inferProvider(model.base_url);
+  if (provider === "xai") return `wss://api.x.ai/v1/realtime?model=${encodeURIComponent(voice)}`;
+  if (provider === "bailian") {
+    let host = "token-plan.cn-beijing.maas.aliyuncs.com";
+    try {
+      const name = new URL(model.base_url).hostname.toLowerCase();
+      if (name === "dashscope-intl.aliyuncs.com" || (name.endsWith(".dashscope.aliyuncs.com") && (name.includes("intl") || name.includes("ap-southeast")))) host = "dashscope-intl.aliyuncs.com";
+      else if (name === "dashscope.aliyuncs.com" || name.endsWith(".dashscope.aliyuncs.com")) host = "dashscope.aliyuncs.com";
+      else if (name) host = name;
+    } catch { /* Token Plan in Beijing */ }
+    return `wss://${host}/api-ws/v1/realtime?model=${encodeURIComponent(voice)}`;
+  }
   if (!override) return null;
+  let base: URL;
   let target: URL;
-  try { target = new URL(override); } catch { return null; }
+  try { base = new URL(model.base_url); target = new URL(override); } catch { return null; }
   if (target.host !== base.host) return null;
-  if (!target.searchParams.has("model")) target.searchParams.set("model", "grok-voice-latest");
+  target.searchParams.set("model", voice);
   return target.toString();
 }
 
@@ -145,8 +157,13 @@ export class VoiceHub implements VoiceAnnouncer {
       if (!model) throw new HttpError(503, "管理员尚未配置可用模型");
       const voiceModel = this.s.voiceModelId ? await tx.get("models", this.s.voiceModelId) : model;
       if (!voiceModel?.enabled) throw new HttpError(503, "语音模型尚未启用");
-      const endpoint = voiceEndpoint(voiceModel.base_url, this.s.voiceRealtimeUrl);
-      if (!endpoint) throw new HttpError(422, "当前模型不支持语音通话");
+      // A dedicated administrator-selected row opts into voice without changing the Bot's text model.
+      const endpoint = voiceEndpoint({
+        base_url: voiceModel.base_url, provider: voiceModel.provider,
+        voice_model: voiceModel.voice_model?.trim() || (this.s.voiceModelId ? voiceModel.provider_model : null),
+      }, this.s.voiceRealtimeUrl);
+      if (!endpoint) throw new HttpError(422, "当前模型未开通语音");
+      const voiceProvider = String(voiceModel.provider || inferProvider(voiceModel.base_url));
       const aborts = await cancelTextTurns(tx, this.hub, userId, botId);
       const orphans = await tx.rows("SELECT * FROM bot_runs WHERE bot_id=$1 AND origin='voice' AND status = ANY($2)", [botId, ACTIVE]);
       for (const run of orphans) {
@@ -183,7 +200,7 @@ export class VoiceHub implements VoiceAnnouncer {
       const vault = new Vault(this.s.vaultFile);
       const key = vault.open(voiceModel.secret, voiceModel.model_id);
       const summaryKey = vault.open(model.secret, model.model_id);
-      return { runId, assistantMessageId, endpoint, instructions, key, summaryKey, model, aborts };
+      return { runId, assistantMessageId, endpoint, instructions, key, summaryKey, model, voiceProvider, aborts };
     });
     for (const abort of opened.aborts) {
       if (abort.kind === "device") abort.send({ type: "cancel", run_id: abort.runId });
@@ -195,7 +212,7 @@ export class VoiceHub implements VoiceAnnouncer {
     }
     const session = new VoiceSession(this.db, this.s, this.hub, this.dispatcher, {
       userId, botId, runId: opened.runId, assistantMessageId: opened.assistantMessageId,
-      endpoint: opened.endpoint, instructions: opened.instructions, key: opened.key, summaryKey: opened.summaryKey, model: opened.model,
+      endpoint: opened.endpoint, instructions: opened.instructions, key: opened.key, summaryKey: opened.summaryKey, model: opened.model, voiceProvider: opened.voiceProvider,
     }, () => {
       this.byBot.delete(botId);
       this.byRun.delete(opened.runId);
@@ -218,6 +235,25 @@ async function cancelTextTurns(tx: Tx, hub: Hub, userId: string, botId: string) 
     if (current && ACTIVE.includes(current.status)) await finishRun(tx, run.run_id, "cancelled", null);
   }
   return aborts;
+}
+
+/** Keep groups of 3 samples so a later chunk can finish an incomplete 24 kHz frame. */
+export function pcm24kTo16k(input: Buffer): { audio: Buffer; pending: Buffer } {
+  const even = input.length - (input.length % 2);
+  const groups = Math.floor(even / 2 / 3);
+  const used = groups * 3 * 2;
+  const audio = Buffer.alloc(groups * 4);
+  for (let group = 0; group < groups; group++) {
+    const offset = group * 6;
+    const first = input.readInt16LE(offset);
+    const second = input.readInt16LE(offset + 2);
+    const third = input.readInt16LE(offset + 4);
+    audio.writeInt16LE(first, group * 4);
+    audio.writeInt16LE(Math.round((second + third) / 2), group * 4 + 2);
+  }
+  const pending = Buffer.alloc(input.length - used);
+  input.copy(pending, 0, used);
+  return { audio, pending };
 }
 
 function closeWith(ws: WebSocket, error: unknown) {
@@ -250,6 +286,7 @@ class VoiceSession {
   private transcript: string[] = [];
   private assistant = "";
   private earlyAudio: Buffer[] = [];
+  private pcmPending: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   private replacing = false;
   private inputPcm = new PcmResampler(16000, 24000);
   private outputPcm = new PcmResampler(24000, 16000);
@@ -260,7 +297,7 @@ class VoiceSession {
     private dispatcher: AgentDispatcher,
     private call: {
       userId: string; botId: string; runId: string; assistantMessageId: string;
-      endpoint: string; instructions: string; key: string; summaryKey: string; model: Row;
+      endpoint: string; instructions: string; key: string; summaryKey: string; model: Row; voiceProvider: string;
     },
     private onGone: () => void,
   ) {
@@ -293,12 +330,24 @@ class VoiceSession {
     });
   }
   openUpstream() {
-    const url = this.conversationId ? `${this.call.endpoint}&conversation_id=${encodeURIComponent(this.conversationId)}` : this.call.endpoint;
+    const bailian = this.provider() === "bailian";
+    const url = !bailian && this.conversationId ? `${this.call.endpoint}&conversation_id=${encodeURIComponent(this.conversationId)}` : this.call.endpoint;
     const upstream = new WebSocket(url, { headers: { Authorization: `Bearer ${this.call.key}` } });
     this.upstream = upstream;
     upstream.on("open", () => {
       this.resumeTried = false;
-      upstream.send(JSON.stringify({
+      upstream.send(JSON.stringify(bailian ? {
+        type: "session.update",
+        session: {
+          modalities: ["text", "audio"],
+          voice: "longanqian",
+          instructions: this.call.instructions,
+          input_audio_format: "pcm",
+          output_audio_format: "pcm",
+          turn_detection: { type: "server_vad", threshold: 0.5, silence_duration_ms: 800 },
+          tools: VOICE_TOOLS,
+        },
+      } : {
         type: "session.update",
         session: this.s.voiceProtocol === "openai" ? {
           type: "realtime",
@@ -323,7 +372,7 @@ class VoiceSession {
           },
         },
       }));
-      for (const chunk of this.earlyAudio) if (upstream.readyState === 1) this.sendAudio(upstream, chunk);
+      for (const chunk of this.earlyAudio) this.sendAudio(upstream, chunk);
       this.earlyAudio = [];
     });
     upstream.on("message", (data, isBinary) => this.onUpstream(data, isBinary));
@@ -331,7 +380,7 @@ class VoiceSession {
     upstream.on("close", () => {
       if (this.upstream !== upstream || this.ending) return;
       this.upstream = undefined;
-      if (this.resumeTried || this.s.voiceProtocol === "openai") void this.finish("failed", "upstream");
+      if (this.resumeTried || (!bailian && this.s.voiceProtocol === "openai")) void this.finish("failed", "upstream");
       else { this.resumeTried = true; this.openUpstream(); }
     });
   }
@@ -347,10 +396,31 @@ class VoiceSession {
     this.pump();
     return true;
   }
+  private provider() {
+    return this.call.voiceProvider;
+  }
+  /** Provider audio rates differ; desktop and Android always play 16 kHz PCM. */
+  private playPcm(pcm: Buffer) {
+    if (!pcm.length || this.client?.readyState !== 1) return;
+    let audio = pcm;
+    if (this.provider() === "bailian") {
+      const converted = pcm24kTo16k(Buffer.concat([this.pcmPending, pcm]));
+      this.pcmPending = converted.pending;
+      audio = converted.audio;
+    } else if (this.s.voiceProtocol === "openai") audio = this.outputPcm.convert(pcm);
+    if (!audio.length) return;
+    this.client.send(audio);
+    this.playbackIdle = false;
+    this.setPhase("speaking");
+  }
   private sendAudio(upstream: WebSocket, chunk: Buffer) {
-    if (this.s.voiceProtocol === "grok") { upstream.send(chunk); return; }
-    const pcm = this.inputPcm.convert(chunk);
-    if (pcm.length) upstream.send(JSON.stringify({ type: "input_audio_buffer.append", audio: pcm.toString("base64") }));
+    if (upstream.readyState !== 1 || !chunk.length) return;
+    if (this.provider() === "bailian") {
+      upstream.send(JSON.stringify({ type: "input_audio_buffer.append", audio: chunk.toString("base64") }));
+    } else if (this.s.voiceProtocol === "openai") {
+      const pcm = this.inputPcm.convert(chunk);
+      if (pcm.length) upstream.send(JSON.stringify({ type: "input_audio_buffer.append", audio: pcm.toString("base64") }));
+    } else upstream.send(chunk);
   }
   private audioFromClient(chunk: Buffer) {
     if (this.muted || !chunk.length) return;
@@ -374,12 +444,7 @@ class VoiceSession {
   private onUpstream(data: RawData, isBinary: boolean) {
     if (this.ending) return;
     if (isBinary) {
-      const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
-      if (this.client?.readyState === 1) {
-        this.client.send(chunk);
-        this.playbackIdle = false;
-        this.setPhase("speaking");
-      }
+      this.playPcm(Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer));
       return;
     }
     let event: Row;
@@ -390,13 +455,10 @@ class VoiceSession {
     else if (type === "input_audio_buffer.speech_started") this.barge();
     else if (type === "conversation.item.input_audio_transcription.completed" && event.transcript) this.transcript.push(`用户：${String(event.transcript).slice(0, 2000)}`);
     else if (type === "response.created") { this.responseOpen = true; this.setPhase(this.tools.length ? "thinking" : "speaking"); }
-    else if ((type === "response.output_text.delta" || type === "response.output_audio_transcript.delta") && event.delta) this.assistant = (this.assistant + String(event.delta)).slice(0, 8000);
-    else if (type === "response.output_audio.delta" && typeof event.delta === "string" && this.client?.readyState === 1) {
-      const raw = Buffer.from(event.delta, "base64");
-      const chunk = this.s.voiceProtocol === "openai" ? this.outputPcm.convert(raw) : raw;
-      if (chunk.length) this.client.send(chunk);
-      this.playbackIdle = false;
-      this.setPhase("speaking");
+    else if ((type === "response.output_text.delta" || type === "response.text.delta" || type === "response.output_audio_transcript.delta" || type === "response.audio_transcript.delta") && event.delta) this.assistant = (this.assistant + String(event.delta)).slice(0, 8000);
+    else if ((type === "response.output_audio_transcript.done" || type === "response.audio_transcript.done") && !this.assistant.trim() && event.transcript) this.assistant = String(event.transcript).slice(0, 8000);
+    else if ((type === "response.output_audio.delta" || type === "response.audio.delta") && typeof event.delta === "string") {
+      this.playPcm(Buffer.from(event.delta, "base64"));
     } else if (type === "response.function_call_arguments.done") {
       this.tools.push({ call_id: String(event.call_id ?? ""), name: String(event.name ?? ""), arguments: String(event.arguments ?? "{}") });
       this.setPhase("thinking");
