@@ -75,7 +75,7 @@ export function DevicePhoneButton({ device, onOpen }: { device: Device; onOpen()
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [device.id]);
   const title = !status.available
-    ? '打开后先看只读预览。这台电脑当前可能没有可显示的手机'
+    ? status.reason ?? '打开后先看只读预览。这台电脑当前可能没有可显示的手机'
     : status.occupied ? '手机正在被接管，仍可打开只读预览' : status.label ?? '只读预览这台电脑上的手机';
   return (
     <span className="device-phone" title={title}>
@@ -498,6 +498,7 @@ export function PhoneDock({
         </form>
         <p className="muted small">接管最长 10 分钟，只有成功取到画面或输入才会把空闲时限重置为 45 秒。文字不进聊天、不写日志。关闭、切换 Bot 或电脑、进入后台都会释放接管。</p>
         {(actionNotice || frameNotice) && <p className="error">{actionNotice || frameNotice}</p>}
+        {!status.available && status.reason && <p className="error">{status.reason}</p>}
         {occupiedByOther && <p className="muted small">手机正在被占用，只读预览仍可尝试，接管要等对方释放。</p>}
       </section>
     </aside>

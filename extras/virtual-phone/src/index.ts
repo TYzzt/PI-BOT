@@ -90,8 +90,13 @@ export class PhoneController {
       throw new Error('手机配置已变更，请重新确认设备并接管');
     }
     if (method === 'phone.status') {
-      try { await this.adb(c, ['get-state']); return { available: true, occupied: !!this.lease, phoneId: 'google-play-validation', label: `Android · ${c.serial} · ADB ${c.adbPort}` }; }
-      catch { return { available: false, occupied: false }; }
+      const target = { phoneId: 'google-play-validation', label: `Android · ${c.serial} · ADB ${c.adbPort}` };
+      try { await this.adb(c, ['get-state']); return { available: true, occupied: !!this.lease, ...target }; }
+      catch {
+        // A disconnected target must not retain a hidden lease or suspend automation.
+        if (this.lease) this.release();
+        return { available: false, occupied: false, ...target, reason: '已配置的手机无法连接，请检查手机是否启动及 ADB 连接' };
+      }
     }
     if (method === 'phone.preview') {
       // Owner-authenticated observation only: no flock, automation hook or lease renewal.

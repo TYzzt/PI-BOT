@@ -50,6 +50,7 @@ RPC 仅有 `phone.status`、`phone.preview`、`phone.acquire`、`phone.frame`、
 - API、执行节点和客户端都包含相匹配的手机协议，尤其是 `phone.preview`。
 - Linux 执行电脑已有正常运行的 Pi Bot、Android SDK ADB、FFmpeg 和 `/usr/bin/flock`。
 - 自行安装并启动合法取得的 Android 镜像；Google Play / Google 服务的条款与授权不随本项目开源。
+- 若使用需要 KVM 的模拟器，节点运行用户必须可读写 `/dev/kvm`。仅有 ADB 或其他 Redroid 实例在线不能证明目标模拟器正常。把模拟器作为独立的持久服务启用，并核实开机启动及运行状态；Pi Bot 客户端本身不会自动启动它。
 - 管理员必须显式配置 `serial` 和 `adbPort`，无默认值；ADB 固定连接本机 `127.0.0.1`，不扫描、不回退。屏幕仍限制 720×1280 竖屏。内部 `google-play-validation` 仅是兼容客户端的单手机逻辑槽位，不代表已核验 Android 版本或设备身份。不要拿旧 Redroid 链路代替。
 
 ### 节点配置
@@ -77,7 +78,7 @@ RPC 仅有 `phone.status`、`phone.preview`、`phone.acquire`、`phone.frame`、
 
 ### 验收
 
-1. 手机状态正常，电脑属于当前账号且未撤销。
+1. 手机状态正常，电脑属于当前账号且未撤销。已配置目标无法连接时，状态返回目标标签和连接检查提示；检测到断线会释放已有接管，不自动选择其他 ADB 设备。
 2. 未接管时 `preview` 返回可解码 JPEG，720×1280，预览前后不占控制锁。
 3. 未确认接管时不发送 `acquire/input`；明确确认后取得互斥锁。
 4. 主动结束、离开页面、进入后台及节点超时均能释放，失败请求不续活。

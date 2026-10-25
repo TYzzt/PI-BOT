@@ -14,7 +14,7 @@ const PRINTABLE_ASCII = /^[\x20-\x7e]+$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export interface PhoneDeviceRef { id: string; revoked_at?: string | null }
-export interface PhoneStatus { available: boolean; occupied: boolean; label?: string; phoneId?: string }
+export interface PhoneStatus { available: boolean; occupied: boolean; label?: string; phoneId?: string; reason?: string }
 export interface PhoneFrame { src: string; width: number; height: number }
 
 export function readPhoneMap(raw: string | null): Record<string, string> {
@@ -123,6 +123,7 @@ export function readStatus(value: unknown): PhoneStatus {
   return {
     available,
     occupied,
+    reason: typeof record.reason === 'string' && record.reason.trim() ? record.reason : undefined,
     label: typeof record.label === 'string' && record.label ? record.label : undefined,
     phoneId: typeof record.phoneId === 'string' && record.phoneId ? record.phoneId : undefined,
   };

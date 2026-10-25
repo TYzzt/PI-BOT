@@ -189,3 +189,36 @@ test('release works after disabling configuration; changes during acquisition fa
   assert.equal((changing as any).lease,undefined);
  } finally {changing.close();await new Promise(r=>setTimeout(r,100));rmSync(root,{recursive:true,force:true});}
 });
+
+test('unavailable configured target is diagnosed and releases takeover without selecting another device', async () => {
+ const root=mkdtempSync(join(tmpdir(),'phone-disconnect-')),cfg=join(root,'phone.json');
+ const fake=join(root,'adb.cjs'),flag=join(root,'offline'),log=join(root,'argv.jsonl');
+ writeFileSync(fake,`#!${process.execPath}
+const fs=require('node:fs');
+fs.appendFileSync(${JSON.stringify(log)},JSON.stringify(process.argv.slice(2))+'\\n');
+if(fs.existsSync(${JSON.stringify(flag)}))process.exit(1);
+process.stdin.resume();process.stdout.write('device');
+`,{mode:0o700});
+ writeFileSync(cfg,JSON.stringify({enabled:true,adbPath:fake,ffmpegPath:'/bin/true',lockPath:join(root,'lock'),serial:'assigned-device',adbPort:15039}),{mode:0o600});
+ let released=0;
+ const phone=new PhoneController(cfg,{acquired:async()=>{},released:()=>{released++;}}),other=new PhoneController(cfg);
+ try {
+  const {sessionId}=await phone.call('phone.acquire',{}) as any;
+  writeFileSync(flag,'offline');
+  const status=await phone.call('phone.status',{}) as any;
+  assert.equal(status.available,false);assert.equal(status.occupied,false);
+  assert.match(status.label,/assigned-device.*15039/);assert.match(status.reason,/无法连接/);
+  assert.equal(released,1);
+  // Recovery never resurrects an old session, and frees the shared lock.
+  rmSync(flag);
+  await assert.rejects(phone.call('phone.input',{sessionId,event:{type:'key',code:4}}),/失效/);
+  await new Promise(r=>setTimeout(r,150));
+  const recovered=await phone.call('phone.status',{}) as any;
+  assert.equal(recovered.available,true);assert.equal(recovered.reason,undefined);
+  assert.ok((await other.call('phone.acquire',{}) as any).sessionId);
+  const {readFileSync}=await import('node:fs');
+  const calls=readFileSync(log,'utf8').trim().split('\n').map(line=>JSON.parse(line));
+  assert.equal(calls.length,4);
+  for(const args of calls) assert.deepEqual(args,['-H','127.0.0.1','-P','15039','-s','assigned-device','get-state']);
+ } finally {phone.close();other.close();await new Promise(r=>setTimeout(r,100));rmSync(root,{recursive:true,force:true});}
+});

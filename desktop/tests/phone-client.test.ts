@@ -83,3 +83,13 @@ test('switching bot or device invalidates old preview, acquire and frames', () =
   const second = '00000000-0000-4000-8000-0000000000bb';
   assert.deepEqual(writePhoneMap(writePhoneMap({}, bot, device), second, other), { [bot]: device, [second]: other });
 });
+
+test('unavailable phone retains its target and actionable connection reason', () => {
+  const reason = '已配置的手机无法连接，请检查手机是否启动及 ADB 连接';
+  const status = readStatus({ available: false, occupied: false, label: 'Android · emulator-5556 · ADB 5038', reason });
+  assert.equal(status.available, false);
+  assert.match(status.label!, /emulator-5556/);
+  assert.equal(status.reason, reason);
+  assert.equal(readStatus({ reason: 42 }).reason, undefined);
+  assert.equal(readStatus({ reason: '  ' }).reason, undefined);
+});
