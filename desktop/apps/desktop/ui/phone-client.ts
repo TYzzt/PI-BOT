@@ -1,6 +1,9 @@
 /** Client-only phone association and frame checks. This does not talk to a device. */
 
-export const PHONE_ASSOC_KEY = 'pi-bot.phone.device.v1';
+export const PHONE_ASSOC_KEY = 'pi-bot.phone.device.v2';
+export function phoneAssociationKey(serverUrl: string | null, userId: string | null) {
+  return `${PHONE_ASSOC_KEY}.${JSON.stringify([serverUrl?.replace(/\/+$/, '') ?? '', userId ?? ''])}`;
+}
 export const TAKEOVER_ABSOLUTE_MS = 10 * 60 * 1000;
 export const TAKEOVER_IDLE_MS = 45 * 1000;
 export const FRAME_WIDTH = 720;
@@ -11,7 +14,7 @@ const PRINTABLE_ASCII = /^[\x20-\x7e]+$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export interface PhoneDeviceRef { id: string; revoked_at?: string | null }
-export interface PhoneStatus { available: boolean; occupied: boolean; label?: string; phoneId?: string }
+export interface PhoneStatus { available: boolean; occupied: boolean; label?: string; phoneId?: string; reason?: string }
 export interface PhoneFrame { src: string; width: number; height: number }
 
 export function readPhoneMap(raw: string | null): Record<string, string> {
@@ -38,12 +41,13 @@ export function resolvePhoneDevice(input: {
   savedDeviceId?: string | null;
   executionDeviceId?: string | null;
   devices: PhoneDeviceRef[];
-}): { deviceId: string | null; source: 'saved' | 'execution' | 'only' | 'none' } {
+}): { deviceId: string | null; source: 'saved' | 'execution' | 'missing' | 'none' } {
   const live = input.devices.filter(device => !device.revoked_at);
   const has = (id?: string | null) => !!id && live.some(device => device.id === id);
-  if (has(input.savedDeviceId)) return { deviceId: input.savedDeviceId ?? null, source: 'saved' };
-  if (has(input.executionDeviceId)) return { deviceId: input.executionDeviceId ?? null, source: 'execution' };
-  if (live.length === 1) return { deviceId: live[0].id, source: 'only' };
+  if (input.savedDeviceId) return has(input.savedDeviceId)
+    ? { deviceId: input.savedDeviceId, source: 'saved' } : { deviceId: null, source: 'missing' };
+  if (input.executionDeviceId) return has(input.executionDeviceId)
+    ? { deviceId: input.executionDeviceId, source: 'execution' } : { deviceId: null, source: 'missing' };
   return { deviceId: null, source: 'none' };
 }
 
@@ -119,6 +123,7 @@ export function readStatus(value: unknown): PhoneStatus {
   return {
     available,
     occupied,
+    reason: typeof record.reason === 'string' && record.reason.trim() ? record.reason : undefined,
     label: typeof record.label === 'string' && record.label ? record.label : undefined,
     phoneId: typeof record.phoneId === 'string' && record.phoneId ? record.phoneId : undefined,
   };

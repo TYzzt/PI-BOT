@@ -54,9 +54,10 @@ async function api(method: string, path: string, opts: { token?: string; body?: 
 function clientSocket(url: string) {
   const ws = new WebSocket(url);
   const frames: any[] = [];
+  const audio: Buffer[] = [];
   const waiters: { match: (frame: any) => boolean; resolve: (frame: any) => void }[] = [];
   ws.on("message", (raw, isBinary) => {
-    if (isBinary) return;
+    if (isBinary) { audio.push(Buffer.from(raw as Buffer)); return; }
     const frame = JSON.parse(raw.toString());
     frames.push(frame);
     for (const waiter of [...waiters]) if (waiter.match(frame)) {
@@ -70,7 +71,7 @@ function clientSocket(url: string) {
   });
   const closed = new Promise<number>((resolve) => ws.once("close", (code) => resolve(code)));
   return {
-    ws, frames, opened, closed,
+    ws, frames, audio, opened, closed,
     send: (message: object) => ws.send(JSON.stringify(message)),
     next(match: (frame: any) => boolean, timeout = 8000) {
       const found = frames.find(match);
@@ -84,8 +85,11 @@ function clientSocket(url: string) {
 }
 
 async function mockRealtime() {
+  const connections: Array<{ authorization?: string }> = [];
+  const summaryAuth: Array<string | undefined> = [];
   const http = createServer((req, res) => {
     if ((req.url ?? "").startsWith("/v1/responses")) {
+      summaryAuth.push(req.headers.authorization);
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "通话总结：打过招呼。" }] }], usage: { input_tokens: 3, output_tokens: 5 } }));
       return;
@@ -106,6 +110,7 @@ async function mockRealtime() {
   http.on("upgrade", (req: IncomingMessage, socket, head) => {
     if (!(req.url ?? "").startsWith("/v1/realtime")) return socket.destroy();
     wss.handleUpgrade(req, socket, head, (ws) => {
+      connections.push({ authorization: req.headers.authorization });
       upstream = ws;
       ws.on("message", (raw, isBinary) => {
         if (isBinary) return;
@@ -121,6 +126,7 @@ async function mockRealtime() {
   await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve));
   const port = (http.address() as { port: number }).port;
   return {
+    connections, summaryAuth,
     baseUrl: `http://127.0.0.1:${port}/v1`,
     realtimeUrl: `ws://127.0.0.1:${port}/v1/realtime`,
     send: (frame: object) => upstream?.send(JSON.stringify(frame)),
@@ -313,4 +319,62 @@ test("a dropped call ends after the grace period and an expired voice lease is a
   assert.equal(stale.error, "语音通话已中断");
   assert.equal(message.visibility, "public");
   assert.equal(message.content, "语音通话已中断");
+});
+
+
+test("dedicated OpenAI voice ignores the text provider, keeps separate credentials and converts PCM", { skip }, async () => {
+  const rt = await mockRealtime();
+  const previous = { voiceProtocol: s.voiceProtocol, voiceRealtimeUrl: s.voiceRealtimeUrl, voiceModelId: s.voiceModelId };
+  let call: ReturnType<typeof clientSocket> | undefined;
+  try {
+    const admin = await api("POST", "/auth/login", { body: { username: "admin", password: "admin-password" } });
+    const token = admin.json.access_token;
+    const voice = await api("POST", "/admin/api/models", { token, body: {
+      name: "Dedicated realtime", base_url: rt.baseUrl, provider_model: "gpt-realtime", api_key: "sk-realtime", context_window: 32000, max_tokens: 1000,
+    } });
+    const text = await api("POST", "/admin/api/models", { token, body: {
+      name: "Keep text model", base_url: rt.baseUrl, provider_model: "text-summary", api_key: "sk-summary", context_window: 32000, max_tokens: 1000,
+    } });
+    assert.equal(voice.status, 200);
+    const bot = await api("POST", "/bots", { token, body: { name: "OpenAI phone", model_id: text.json.id } });
+    assert.equal(bot.status, 200);
+    // Use the mock endpoint with a different stored text provider to catch accidental
+    // protocol selection from the summary model rather than the dedicated voice row.
+    await db.tx(tx => tx.rows("UPDATE models SET provider='bailian' WHERE model_id=$1", [text.json.id]));
+    s.voiceProtocol = "openai";
+    s.voiceModelId = voice.json.id;
+    s.voiceRealtimeUrl = rt.realtimeUrl + "?model=gpt-realtime";
+    call = clientSocket(`${base.replace(/^http/, "ws")}/ws/voice?token=${token}&bot=${bot.json.id}`);
+    await call.opened;
+    const hello = await call.next(f => f.type === "hello");
+    assert.equal(hello.sample_rate, 16000);
+    const update = await rt.next(f => f.type === "session.update");
+    assert.equal(rt.connections[0]?.authorization, "Bearer sk-realtime");
+    assert.equal(update.session.type, "realtime");
+    assert.equal(update.session.model, "gpt-realtime");
+    assert.equal(update.session.audio.input.format.rate, 24000);
+    assert.equal(update.session.audio.output.voice, "marin");
+    assert.equal(update.session.turn_detection, undefined);
+    call.ws.send(Buffer.alloc(3200));
+    const input = await rt.next(f => f.type === "input_audio_buffer.append");
+    assert.ok(Buffer.from(input.audio, "base64").length >= 4796);
+    rt.send({ type: "response.output_audio.delta", delta: Buffer.alloc(4800).toString("base64") });
+    await eventually(async () => call!.audio.length > 0);
+    assert.equal(call.audio.reduce((n,b) => n+b.length, 0), 3200);
+    rt.send({ type: "conversation.item.input_audio_transcription.completed", transcript: "Summarize with the text model" });
+    const unchanged = await db.tx(tx => tx.get("bots", bot.json.id));
+    assert.equal(unchanged.model_id, text.json.id);
+    call.send({ type: "hangup" });
+    await call.next(f => f.type === "ended");
+    call.ws.close();
+    await eventually(async () => {
+      const run = await db.tx(tx => tx.get("bot_runs", hello.call_id));
+      return run.status === "completed";
+    });
+    assert.deepEqual(rt.summaryAuth, ["Bearer sk-summary"]);
+  } finally {
+    call?.ws.close();
+    Object.assign(s, previous);
+    await rt.close();
+  }
 });

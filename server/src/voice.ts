@@ -14,6 +14,8 @@ import { cancelRun, dispatchDevice } from "./runs.js";
 import { readVoiceTicket, user, Vault, type LlmClaims } from "./security.js";
 import { inferProvider } from "./providers.js";
 
+import { PcmResampler } from "./voice-audio.js";
+
 const SAMPLE_RATE = 16000;
 const MAX_CALL_MS = 120 * 60 * 1000;
 const PLAYBACK_WAIT_MS = 8000;
@@ -153,8 +155,15 @@ export class VoiceHub implements VoiceAnnouncer {
       const bot = await ownBot(tx, userId, botId, true);
       const model = await resolveModel(tx, bot);
       if (!model) throw new HttpError(503, "管理员尚未配置可用模型");
-      const endpoint = voiceEndpoint(model, this.s.voiceRealtimeUrl);
+      const voiceModel = this.s.voiceModelId ? await tx.get("models", this.s.voiceModelId) : model;
+      if (!voiceModel?.enabled) throw new HttpError(503, "语音模型尚未启用");
+      // A dedicated administrator-selected row opts into voice without changing the Bot's text model.
+      const endpoint = voiceEndpoint({
+        base_url: voiceModel.base_url, provider: voiceModel.provider,
+        voice_model: voiceModel.voice_model?.trim() || (this.s.voiceModelId ? voiceModel.provider_model : null),
+      }, this.s.voiceRealtimeUrl);
       if (!endpoint) throw new HttpError(422, "当前模型未开通语音");
+      const voiceProvider = String(voiceModel.provider || inferProvider(voiceModel.base_url));
       const aborts = await cancelTextTurns(tx, this.hub, userId, botId);
       const orphans = await tx.rows("SELECT * FROM bot_runs WHERE bot_id=$1 AND origin='voice' AND status = ANY($2)", [botId, ACTIVE]);
       for (const run of orphans) {
@@ -188,8 +197,10 @@ export class VoiceHub implements VoiceAnnouncer {
       });
       await wakeGoals(tx, botId);
       await tx.notify({ user_id: userId, bot_id: botId });
-      const key = new Vault(this.s.vaultFile).open(model.secret, model.model_id);
-      return { runId, assistantMessageId, endpoint, instructions, key, model, aborts };
+      const vault = new Vault(this.s.vaultFile);
+      const key = vault.open(voiceModel.secret, voiceModel.model_id);
+      const summaryKey = vault.open(model.secret, model.model_id);
+      return { runId, assistantMessageId, endpoint, instructions, key, summaryKey, model, voiceProvider, aborts };
     });
     for (const abort of opened.aborts) {
       if (abort.kind === "device") abort.send({ type: "cancel", run_id: abort.runId });
@@ -201,7 +212,7 @@ export class VoiceHub implements VoiceAnnouncer {
     }
     const session = new VoiceSession(this.db, this.s, this.hub, this.dispatcher, {
       userId, botId, runId: opened.runId, assistantMessageId: opened.assistantMessageId,
-      endpoint: opened.endpoint, instructions: opened.instructions, key: opened.key, model: opened.model,
+      endpoint: opened.endpoint, instructions: opened.instructions, key: opened.key, summaryKey: opened.summaryKey, model: opened.model, voiceProvider: opened.voiceProvider,
     }, () => {
       this.byBot.delete(botId);
       this.byRun.delete(opened.runId);
@@ -277,6 +288,8 @@ class VoiceSession {
   private earlyAudio: Buffer[] = [];
   private pcmPending: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   private replacing = false;
+  private inputPcm = new PcmResampler(16000, 24000);
+  private outputPcm = new PcmResampler(24000, 16000);
   constructor(
     private db: Database,
     private s: Settings,
@@ -284,7 +297,7 @@ class VoiceSession {
     private dispatcher: AgentDispatcher,
     private call: {
       userId: string; botId: string; runId: string; assistantMessageId: string;
-      endpoint: string; instructions: string; key: string; model: Row;
+      endpoint: string; instructions: string; key: string; summaryKey: string; model: Row; voiceProvider: string;
     },
     private onGone: () => void,
   ) {
@@ -336,7 +349,17 @@ class VoiceSession {
         },
       } : {
         type: "session.update",
-        session: {
+        session: this.s.voiceProtocol === "openai" ? {
+          type: "realtime",
+          model: new URL(this.call.endpoint).searchParams.get("model") || "gpt-realtime",
+          output_modalities: ["audio"],
+          instructions: this.call.instructions,
+          tools: VOICE_TOOLS,
+          audio: {
+            input: { format: { type: "audio/pcm", rate: 24000 }, turn_detection: { type: "server_vad" }, transcription: { model: "gpt-4o-mini-transcribe" } },
+            output: { format: { type: "audio/pcm", rate: 24000 }, voice: "marin" },
+          },
+        } : {
           voice: "eve",
           instructions: this.call.instructions,
           turn_detection: { type: "server_vad" },
@@ -357,7 +380,7 @@ class VoiceSession {
     upstream.on("close", () => {
       if (this.upstream !== upstream || this.ending) return;
       this.upstream = undefined;
-      if (this.resumeTried) void this.finish("failed", "upstream");
+      if (this.resumeTried || (!bailian && this.s.voiceProtocol === "openai")) void this.finish("failed", "upstream");
       else { this.resumeTried = true; this.openUpstream(); }
     });
   }
@@ -374,9 +397,9 @@ class VoiceSession {
     return true;
   }
   private provider() {
-    return String(this.call.model.provider || inferProvider(String(this.call.model.base_url ?? "")));
+    return this.call.voiceProvider;
   }
-  /** Token Plan realtime returns 24 kHz PCM. Desktop and Android play 16 kHz. */
+  /** Provider audio rates differ; desktop and Android always play 16 kHz PCM. */
   private playPcm(pcm: Buffer) {
     if (!pcm.length || this.client?.readyState !== 1) return;
     let audio = pcm;
@@ -384,7 +407,7 @@ class VoiceSession {
       const converted = pcm24kTo16k(Buffer.concat([this.pcmPending, pcm]));
       this.pcmPending = converted.pending;
       audio = converted.audio;
-    }
+    } else if (this.s.voiceProtocol === "openai") audio = this.outputPcm.convert(pcm);
     if (!audio.length) return;
     this.client.send(audio);
     this.playbackIdle = false;
@@ -392,8 +415,12 @@ class VoiceSession {
   }
   private sendAudio(upstream: WebSocket, chunk: Buffer) {
     if (upstream.readyState !== 1 || !chunk.length) return;
-    if (this.provider() === "bailian") upstream.send(JSON.stringify({ type: "input_audio_buffer.append", audio: chunk.toString("base64") }));
-    else upstream.send(chunk);
+    if (this.provider() === "bailian") {
+      upstream.send(JSON.stringify({ type: "input_audio_buffer.append", audio: chunk.toString("base64") }));
+    } else if (this.s.voiceProtocol === "openai") {
+      const pcm = this.inputPcm.convert(chunk);
+      if (pcm.length) upstream.send(JSON.stringify({ type: "input_audio_buffer.append", audio: pcm.toString("base64") }));
+    } else upstream.send(chunk);
   }
   private audioFromClient(chunk: Buffer) {
     if (this.muted || !chunk.length) return;
@@ -611,7 +638,7 @@ class VoiceSession {
     const lines = this.transcript.filter(Boolean);
     if (!lines.length) return "语音通话已结束。";
     try {
-      const { text } = await complete(this.call.model, this.call.key, [
+      const { text } = await complete(this.call.model, this.call.summaryKey, [
         { role: "system", content: "把这段语音通话整理成给聊天时间线的简短中文总结。不要逐字稿，不要编造没有发生的事，两三句话即可。" },
         { role: "user", content: lines.join("\n").slice(0, 12000) },
       ], 400, 20000);
