@@ -1,11 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { lstatSync, readFileSync } from 'node:fs';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { z } from 'zod';
 
-// Explicit, owner-only node configuration. Never discover arbitrary ADB devices.
-const configSchema = z.object({ enabled: z.literal(true), adbPath: z.string().startsWith('/'), lockPath: z.string().startsWith('/'), serial: z.string().min(1).max(256).regex(/^[A-Za-z0-9._:\[\]-]+$/), adbPort: z.number().int().min(1).max(65535), ffmpegPath: z.string().startsWith('/') }).strict();
-type Config = z.infer<typeof configSchema>;
+import { readPhoneConfig, type Config } from './config.js';
+export { PhoneAdb, isPhoneAdbCommand } from './adb.js';
+
 const point = z.number().int().nonnegative();
 export const phoneEvent = z.discriminatedUnion('type', [
   z.object({ type: z.literal('tap'), x: point.max(719), y: point.max(1279) }).strict(),
@@ -34,13 +33,7 @@ export class PhoneController {
   private pending = 0;
   private closed = false;
   constructor(private configPath: string, private hooks?: { acquired(): Promise<void>; released(): void }) {}
-  private config(): Config {
-    try {
-      const st = lstatSync(this.configPath);
-      if (!st.isFile() || st.isSymbolicLink() || st.uid !== process.getuid?.() || (st.mode & 0o077)) throw Error();
-      return configSchema.parse(JSON.parse(readFileSync(this.configPath, 'utf8')));
-    } catch { throw new Error('此节点未显式启用手机控制'); }
-  }
+  private config(): Config { return readPhoneConfig(this.configPath); }
   release() { this.generation++; const old = this.lease; this.lease = undefined; old?.lock.stdin?.end(); old?.lock.kill(); if (old) this.hooks?.released(); }
   close() { this.closed = true; this.release(); clearInterval(this.timer); }
   call(method: string, raw: unknown): Promise<unknown> {

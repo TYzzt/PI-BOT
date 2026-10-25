@@ -3,6 +3,7 @@ import type { ChatImage } from '@pi-bot/agent/images';
 import { join } from 'node:path';
 import { a2uiTools, askAgentTool, taskTools, automationTools, CANCELLED, createBotAgent, webSearchTool, type AgentFactory, type AgentHandle, type ToolActivity, type SkillSummary } from '@pi-bot/agent';
 import type { Mood } from '@pi-bot/bot-face';
+import { PhoneAdb, isPhoneAdbCommand } from './phone.js';
 import { commandShell } from './platform.js';
 import { libraryDir, libraryTools, Sandbox } from './library.js';
 
@@ -37,6 +38,7 @@ export interface ExecutorDeps {
   activity(run: RunContext, tool: string | null, mood: Mood | null): void;
   factory?: AgentFactory;
   approvalTimeoutMs?: number;
+  phoneConfigPath?: string;
 }
 interface Active {
   run: RunContext;
@@ -82,6 +84,10 @@ export class Executor {
     try {
       const sandbox = new Sandbox(await libraryDir(this.deps.libraryRoot, run.bot.slug));
       let token = await this.deps.llmToken(run.bot.id);
+      const phone = PhoneAdb.open(this.deps.phoneConfigPath);
+      const phoneEnvironment = phone
+        ? await phone.environment(run.lane === 'conversation', !!run.automation_readonly, this.commandsSuspended)
+        : '\n本执行节点没有有效的显式手机配置；不能把其他电脑或其他智能体的手机当作本节点设备。';
       let tools = run.lane === "conversation" ? [] : libraryTools(sandbox, {
         requestOutside: (path, reason, signal) => new Promise<boolean>(resolve => {
           const requestId = randomUUID();
@@ -100,7 +106,8 @@ export class Executor {
       });
       if (run.automation_readonly) tools = tools.filter(t => ['list_files', 'read_file', 'search_files'].includes(t.name));
       tools = tools.map(tool => tool.name !== 'run_command' ? tool : {
-        ...tool, execute: async (id, args, signal, update, ctx) => {
+        ...tool, description: tool.description + (phone ? ' 也支持内置受控 phone-adb 命令；exec-out screencap -p 会返回图片。' : ''),
+        execute: async (id, args, signal, update, ctx) => {
           if (this.commandsSuspended) throw new Error('手机正在人工接管，此节点命令执行已暂停');
           const controller = new AbortController();
           const abort = () => controller.abort();
@@ -108,7 +115,16 @@ export class Executor {
           let finish!: () => void;
           const item = {controller, done:new Promise<void>(resolve => {finish=resolve;})};
           this.commands.add(item);
-          try { return await tool.execute(id, args, controller.signal, update, ctx); }
+          try {
+            const command = (args as { command: string; cwd?: string; timeout_seconds?: number }).command;
+            if (isPhoneAdbCommand(command)) {
+              if (!phone) throw new Error('本执行节点未显式配置受控手机');
+              const input = args as { cwd?: string; timeout_seconds?: number };
+              await sandbox.resolve(input.cwd ?? '.', { mustExist: true });
+              return await phone.command(command, (input.timeout_seconds ?? 120) * 1000, controller.signal);
+            }
+            return await tool.execute(id, args, controller.signal, update, ctx);
+          }
           finally { signal?.removeEventListener('abort', abort); this.commands.delete(item); finish(); }
         },
       });
@@ -153,7 +169,7 @@ export class Executor {
         readonly: run.automation_readonly,
         cwd: sandbox.root,
         agentDir: join(this.deps.agentDir, 'bots', run.bot.id),
-        systemPrompt: `${run.system}\n实际执行环境：${process.platform}；shell：${commandShell()}；资料库绝对路径：${sandbox.root}。${process.platform === 'win32' ? ' 使用非交互 PowerShell 语法，不使用 bash/cmd 语法；含空格路径必须加引号，调用带引号的程序路径使用 &。输出为 UTF-8（旧程序可能使用其他代码页）。' : ''}`,
+        systemPrompt: `${run.system}\n实际执行环境：${process.platform}；shell：${commandShell()}；资料库绝对路径：${sandbox.root}。${phoneEnvironment}${process.platform === 'win32' ? ' 使用非交互 PowerShell 语法，不使用 bash/cmd 语法；含空格路径必须加引号，调用带引号的程序路径使用 &。输出为 UTF-8（旧程序可能使用其他代码页）。' : ''}`,
         history: run.history,
         tools,
         skills: { baseUrl: api, token: () => token, runId: run.run_id, catalog: run.skills ?? [] },

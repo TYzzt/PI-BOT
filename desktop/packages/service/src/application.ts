@@ -76,6 +76,7 @@ export class Application {
       send: m => { this.socket?.send(m); },
       activity: (run, tool, mood) => this.activity(run, tool, mood),
       factory: this.o.factory,
+      phoneConfigPath: join(this.o.dataDir, 'phone.json'),
     });
     this.socket = new CloudSocket(account.serverUrl, this.sign, {
       open: () => { if (generation !== this.connectionGeneration) return; this.o.log?.('cloud.online'); this.setConnection('online'); this.o.emit({ type: 'bots' }); },

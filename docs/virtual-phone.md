@@ -1,6 +1,6 @@
 # Pi Bot 虚拟手机（可选附加能力）
 
-在 Bot 内查看一台已授权电脑上的 Android 手机，需要时手动接管。
+在 Bot 内查看一台已授权电脑上的 Android 手机，需要时手动接管，或通过聊天安排后台 ADB 任务。
 不启用此能力不影响文字聊天、资料库或管理端的语音模型配置。
 
 > 当前是受限的单机验证集成，不是通用云手机平台：Linux 执行节点、指定的一台 Android 设备、竖屏 720×1280。不会自动创建实例、登录账号或接入任意 ADB 设备。独立源码仓库：[pi-bot-virtual-phone](https://github.com/TYzzt/pi-bot-virtual-phone)；尚未发布 npm 包。
@@ -18,6 +18,26 @@
 直接输入仅支持最多 1000 个可打印 ASCII 字符，中文使用虚拟手机内的软键盘。输入框遮罩并不代表可安全分享凭据，请勿在聊天或本面板发送密码、验证码。
 
 当前每台电脑只使用节点显式启用的一台手机。Android 和桌面按服务器、账号、Bot 在本机保存选择，不上传、不跨设备同步。旧版无法确认服务器归属的关联不自动迁移；首次需重新选择。失效/撤销绑定不会静默切到另一台电脑，无绑定时也不自动选择唯一电脑；只有有效的 Bot 执行电脑绑定或用户明确选择才能确定目标。
+
+## 在聊天中使用手机
+
+Bot 绑定到配置了 `phone.json` 的在线 Linux 执行电脑后，节点会在每轮运行时核查指定设备，并注入手机配置和连接状态。询问“有没有手机”可以直接根据该状态回答；查看屏幕或操作仍交给 `start_task(execution=device)` 后台任务。使用 Bot 的执行电脑绑定，不读取手机面板仅保存在客户端的另一份选择，也不扫描其他电脑或 ADB 设备。
+
+后台复用现有 `run_command`，不新增点击/滑动专用模型工具。`phone-adb` 是执行器识别的内置命令，不是系统 PATH 中的可执行文件；必须单独作为一次 `run_command` 调用，不能嵌入 shell 脚本、管道或重定向：
+
+```text
+phone-adb get-state
+phone-adb exec-out screencap -p
+phone-adb shell input tap 360 640
+phone-adb shell input swipe 360 1000 360 300 400
+phone-adb shell input keyevent 3
+phone-adb shell input text hello%sworld
+phone-adb shell am start -a android.intent.action.VIEW -d https://example.com
+```
+
+截图经 FFmpeg 转为 JPEG，直接作为工具图片交给当前 Bot 的模型，以支持“看图—操作—再看图”，不是只返回一个文件名。节点不将截图写入文件、聊天消息或工具诊断事件；模型服务商会收到图片。ADB `shell` 可执行 Android 原生命令，能力范围比人工面板的输入白名单更广；文字输入仍受 Android `input text` 的字符支持限制，含空格用 `%s`。
+
+每个任务固定使用启动时的配置快照，每次命令检查配置是否改变，并显式附带本机 host、端口和 serial。每条 ADB 命令持有同一把 `flock`；不允许 `devices/connect` 或覆盖目标参数。人工接管期间暂停节点命令；取消/超时终止命令进程组并释放锁。只读目标检查不获得命令执行能力。外部裸 ADB 不受合作锁约束。
 
 ## 架构与边界
 

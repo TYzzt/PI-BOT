@@ -8,7 +8,8 @@ import { execFileSync } from 'node:child_process';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const files = ['package.json','README.md','LICENSE','NOTICE','THIRD_PARTY_NOTICES.md',
   'phone.example.json','tsconfig.json','src/index.ts','dist/index.js','dist/index.d.ts',
-  'tests/controller.test.ts','scripts/export.mjs'];
+  'src/config.ts','src/adb.ts','dist/config.js','dist/config.d.ts','dist/adb.js','dist/adb.d.ts',
+  'tests/controller.test.ts','tests/adb.test.ts','scripts/export.mjs'];
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 const name = `pi-bot-virtual-phone-${pkg.version}`;
 const target = resolve(process.argv[2] || `${name}-source.tar.gz`);

@@ -61,6 +61,26 @@ const preview = await phone.call('phone.preview', {}); // 无需接管，无副�
 
 输入白名单为 `tap`、`swipe`、`key`、`text`。坐标分别限制在 0..719、0..1279；滑动时长 50..2000ms；导航键仅 3、4、67、66、187；直接文字最多 1000 个可打印 ASCII 字符。中文用设备内软键盘。
 
+## 在聊天中使用手机
+
+Bot 绑定到配置了 `phone.json` 的在线 Linux 执行电脑后，节点会在每轮运行时核查指定设备，并注入手机配置和连接状态。询问“有没有手机”可以直接根据该状态回答；查看屏幕或操作仍交给 `start_task(execution=device)` 后台任务。使用 Bot 的执行电脑绑定，不读取手机面板仅保存在客户端的另一份选择，也不扫描其他电脑或 ADB 设备。
+
+后台复用现有 `run_command`，不新增点击/滑动专用模型工具。`phone-adb` 是执行器识别的内置命令，不是系统 PATH 中的可执行文件；必须单独作为一次 `run_command` 调用，不能嵌入 shell 脚本、管道或重定向：
+
+```text
+phone-adb get-state
+phone-adb exec-out screencap -p
+phone-adb shell input tap 360 640
+phone-adb shell input swipe 360 1000 360 300 400
+phone-adb shell input keyevent 3
+phone-adb shell input text hello%sworld
+phone-adb shell am start -a android.intent.action.VIEW -d https://example.com
+```
+
+截图经 FFmpeg 转为 JPEG，直接作为工具图片交给当前 Bot 的模型，以支持“看图—操作—再看图”，不是只返回一个文件名。节点不将截图写入文件、聊天消息或工具诊断事件；模型服务商会收到图片。ADB `shell` 可执行 Android 原生命令，能力范围比人工面板的输入白名单更广；文字输入仍受 Android `input text` 的字符支持限制，含空格用 `%s`。
+
+每个任务固定使用启动时的配置快照，每次命令检查配置是否改变，并显式附带本机 host、端口和 serial。每条 ADB 命令持有同一把 `flock`；不允许 `devices/connect` 或覆盖目标参数。人工接管期间暂停节点命令；取消/超时终止命令进程组并释放锁。只读目标检查不获得命令执行能力。外部裸 ADB 不受合作锁约束。
+
 ## 使用与安全
 
 - 客户端默认只读预览；用户确认接管才申请人工租约。Android 入口：Bot 更多菜单 →「虚拟手机」。
@@ -72,7 +92,7 @@ const preview = await phone.call('phone.preview', {}); // 无需接管，无副�
 - 客户端离开/后台应主动释放，节点超时兜底；节点关闭时调用 `close()`。
 - ADB 不得公开。使用 Pi Bot 已有认证连接，不需要 Tailscale 或独立截图公网代理。
 - 锁仅约束遵守该锁的合作程序，不能阻止外部原始 ADB；宿主机权限仍由管理员负责。
-- 不保存账号、画面或输入日志。敏感输入走子进程 stdin，不进命令行参数；不要额外记录 RPC 请求正文。
+- 不保存账号、画面或输入日志。人工面板的敏感输入走子进程 stdin，不进命令行参数；智能体的 ADB 命令会作为工具参数记录，因此不要通过聊天任务输入密码或验证码。不要额外记录 RPC 请求正文。
 - 发布时仅带必要源码、说明、示例和测试，不带实际 `phone.json`、环境变量、凭据、截图、日志、模拟器磁盘或 ADB 密钥。
 
 ## 排障与限制
