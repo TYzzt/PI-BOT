@@ -19,7 +19,7 @@ npm run service --workspace=pi-bot-desktop -- login --server https://bot.example
 npm run service --workspace=pi-bot-desktop -- status
 ```
 
-账号由管理后台创建。登录后可在 Android 上创建 Bot、选择执行电脑、聊天和审批；后台服务保持运行即可执行本地任务。`logout` 会解绑本机身份并保留资料库。暂停服务不会解绑，重启后自动连接。
+账号由管理后台创建。登录后可在 Android 上创建 Bot、选择执行电脑、聊天和审批；后台服务保持运行即可执行本地任务。`logout` 会清除本机登录并尝试远端解绑，断网也可退出，资料库保留。暂停服务不会解绑，重启后自动连接。
 
 ## 使用发行包与 systemd
 

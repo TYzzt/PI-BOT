@@ -151,8 +151,9 @@ export class Application {
   }
   private cloud<T>(method: string, path: string, body?: unknown) {
     if (!this.account || !this.sign) throw new Error('请先登录');
+    const generation = this.connectionGeneration;
     return cloudFetch<T>(this.account.serverUrl, method, path, { body, signer: this.sign }).catch(error => {
-      if (error instanceof CloudHttpError && error.status === 401 && path !== '/device/llm-token') { this.socket?.stop(); this.setConnection('revoked'); }
+      if (generation === this.connectionGeneration && error instanceof CloudHttpError && error.status === 401 && path !== '/device/llm-token') { this.socket?.stop(); this.setConnection('revoked'); }
       throw error;
     });
   }
@@ -175,10 +176,7 @@ export class Application {
     return this.state();
   }
   async logout(revoke = true) {
-    if (revoke && this.account && this.sign) {
-      try { await this.cloud('POST', `/devices/${this.account.deviceId}/revoke`); }
-      catch (error) { if (!(error instanceof CloudHttpError && error.status === 401)) throw error; }
-    }
+    const account = this.account, sign = this.sign;
     this.connectionGeneration++;
     this.phone.release();
     this.executor?.stopAll();
@@ -190,6 +188,12 @@ export class Application {
     for (const timer of this.afterglow.values()) clearTimeout(timer);
     this.afterglow.clear();
     this.setConnection('signed_out');
+    // Local logout must work offline. Revoke the captured identity only, so a
+    // delayed response cannot change a new login or restore the old session.
+    if (revoke && account && sign) {
+      try { await cloudFetch(account.serverUrl, 'POST', `/devices/${account.deviceId}/revoke`, { signer: sign, timeoutMs: 3000 }); }
+      catch { /* Remote unbinding is best effort; local credentials are gone. */ }
+    }
     return this.state();
   }
   async call(method: Method, input: any): Promise<unknown> {

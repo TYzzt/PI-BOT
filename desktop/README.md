@@ -19,6 +19,8 @@ Windows beta 的安装与验收说明见 [Windows 指南](../docs/windows-client
 
 Windows 本地服务只监听 `127.0.0.1`，默认按用户和数据目录计算 IPC 端口。若端口被占用或被系统保留，可用 `PI_BOT_IPC_PORT` 指定 1–65535 的可用端口；服务与桌面客户端、CLI 必须使用相同配置。Windows 打包测试和独立运行时检查使用系统分配的可用端口，仍验证 token 鉴权与父进程退出清理。
 
+退出登录会先断开连接并清除本机登录信息，保留资料库文件；服务端宕机或断网也可以退出。随后最多等待 3 秒尝试远端解绑。若解绑失败，服务端可能仍保留该电脑的绑定记录，恢复联网后可在其他已登录客户端的设备列表中解绑。
+
 Linux 安装、后台服务与 systemd 请看 [Linux 指南](LINUX.md)。
 
 Mac 前置条件：macOS、Xcode Command Line Tools（`xcrun swiftc --version` 可执行），以及一个可访问的 Pi Bot 服务器（见 [server/README.md](../server/README.md)）。
