@@ -40,7 +40,7 @@ export interface Change {
 }
 export class Tx {
   private queue: Promise<unknown> = Promise.resolve();
-  constructor(readonly client: PoolClient) {}
+  constructor(readonly client: PoolClient, readonly pushEnabled = false) {}
   async rows(sql: string, args: unknown[] = []): Promise<Row[]> {
     const result = this.queue.then(
       async () => (await this.client.query(sql, args)).rows as Row[],
@@ -92,6 +92,7 @@ function encode(v: unknown) {
 }
 export class Database {
   readonly pool: Pool;
+  pushEnabled = !!process.env.PI_BOT_FCM_PROJECT_ID?.trim();
   constructor(url: string) {
     this.pool = new Pool({ connectionString: url });
   }
@@ -99,7 +100,7 @@ export class Database {
     const c = await this.pool.connect();
     try {
       await c.query("BEGIN");
-      const result = await fn(new Tx(c));
+      const result = await fn(new Tx(c, this.pushEnabled));
       await c.query("COMMIT");
       return result;
     } catch (e) {

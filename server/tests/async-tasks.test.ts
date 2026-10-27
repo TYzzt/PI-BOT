@@ -63,7 +63,7 @@ const factory: AgentFactory = async options => {
 };
 
 let app: Awaited<ReturnType<typeof createApp>>, runner: Awaited<ReturnType<typeof createRunner>>;
-let db: Database, worker: Worker, loop: Promise<void>, base: string, token: string, bot: string;
+let db: Database, apiDb: Database, worker: Worker, loop: Promise<void>, base: string, token: string, bot: string;
 let s: ReturnType<typeof settings>, dir: ReturnType<typeof tempDir>;
 async function api(path: string, body?: object, bearer = token) {
   const response = await fetch(base + path, { method: body ? "POST" : "GET",
@@ -96,7 +96,8 @@ before(async () => {
     PI_BOT_RUNNER_URL: `http://127.0.0.1:${(runner.server.address() as any).port}`,
     PI_BOT_WORKER_POLL_SECONDS: "0.02", PI_BOT_WORKER_CONCURRENCY: "2" };
   s = settings(env);
-  app = await createApp(s, new Database(TEST_DB!), hub);
+  apiDb = new Database(TEST_DB!);
+  app = await createApp(s, apiDb, hub);
   await app.listen({ host: "127.0.0.1", port: 0 });
   base = `http://127.0.0.1:${(app.server.address() as any).port}`;
   token = (await api("/auth/login", { username: "admin", password: "test-password" }, "")).data.access_token;
@@ -118,6 +119,11 @@ after(async () => {
 });
 
 test("two background jobs keep dialogue available, queue a third, steer, cancel and report exactly once without leaking task records", { skip }, async () => {
+  db.pushEnabled = apiDb.pushEnabled = true;
+  const pushInstallation = randomUUID();
+  const pushUser = (await api("/me")).data.user.id;
+  await db.tx(tx => tx.rows(`INSERT INTO push_installations(installation_id,user_id,fcm_token,binding_id,session_expires_at,session_issued_at)
+    VALUES($1,$2,'async-test-token',$3,now()+interval '1 day',0)`, [pushInstallation,pushUser,randomUUID()]));
   const events = socket(base.replace("http", "ws") + "/ws/events", { authorization: `Bearer ${token}` });
   await events.next(m => m.type === "hello");
   try {
@@ -164,6 +170,10 @@ test("two background jobs keep dialogue available, queue a third, steer, cancel 
     const reports = await db.tx(tx => tx.rows("SELECT * FROM bot_runs WHERE origin='report' AND bot_id=$1", [bot]));
     for (const report of reports) await settled(report.run_id);
     assert.equal(reports.length, 3);
+    const reportDeliveries = await db.tx(tx => tx.rows("SELECT * FROM push_deliveries WHERE source_id=ANY($1::uuid[])", [reports.map(r => r.assistant_message_id)]));
+    assert.equal(reportDeliveries.length, 3, "each public task result creates one notification");
+    const privateDeliveries = await db.tx(tx => tx.rows(`SELECT d.* FROM push_deliveries d JOIN bot_messages m ON m.message_id=d.source_id WHERE m.visibility<>'public'`));
+    assert.equal(privateDeliveries.length, 0, "private task output does not become a push preview");
     await new AgentDispatcher(db, s, hub).once();
     assert.equal((await db.tx(tx => tx.rows("SELECT * FROM bot_runs WHERE bot_id=$1 AND origin='report'", [bot]))).length, 3, "a fresh dispatcher does not redeliver acknowledged reports");
     const page = (await api(`/bots/${bot}/messages`)).data.messages;
@@ -180,7 +190,11 @@ test("two background jobs keep dialogue available, queue a third, steer, cancel 
     });
     assert.ok(!context.history.some(m => m.content.includes("PRIVATE")));
     assert.notEqual(taskRun, a.run.id);
-  } finally { events.close(); }
+  } finally {
+    events.close();
+    db.pushEnabled = apiDb.pushEnabled = false;
+    await db.tx(tx => tx.rows("DELETE FROM push_installations WHERE installation_id=$1", [pushInstallation]));
+  }
 });
 
 test("task endpoints validate run identity, user and bot ownership, and durable instruction retries are idempotent", { skip }, async () => {

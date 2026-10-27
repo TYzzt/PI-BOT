@@ -28,6 +28,13 @@
             </intent-filter>
         </activity>
         <service
+            android:name=".push.PiBotMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+        <service
             android:name=".voice.VoiceCallService"
             android:exported="false"
             android:foregroundServiceType="microphone" />

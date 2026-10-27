@@ -15,6 +15,10 @@ vault.json.*.tmp
 *.vault.json.*.tmp
 *.jks
 *.keystore
+google-services.json
+*firebase-adminsdk*.json
+firebase-service-account*.json
+fcm-service-account*.json
 
 # Workspace-local development profiles.
 .local/

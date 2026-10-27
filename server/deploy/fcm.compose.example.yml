@@ -1,0 +1,11 @@
+# Optional override for server/docker-compose.yml or deploy/ubuntu/compose.yml.
+# Set PI_BOT_FCM_CREDENTIALS_FILE to an absolute HOST path; never commit the real key.
+services:
+  api:
+    environment:
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/pibot-fcm.json
+    volumes:
+      - type: bind
+        source: ${PI_BOT_FCM_CREDENTIALS_FILE:?set an absolute host credential path}
+        target: /run/secrets/pibot-fcm.json
+        read_only: true

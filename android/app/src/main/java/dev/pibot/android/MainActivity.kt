@@ -1,6 +1,7 @@
 package dev.pibot.android
 
 import android.os.Bundle
+import android.content.Intent
 import android.graphics.Color
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
@@ -17,10 +18,17 @@ class MainActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT),
         )
         val repository = (application as PiBotApp).repository
+        (application as PiBotApp).push.handleIntent(intent)
         setContent {
             PiBotTheme {
                 AppRoot(repository)
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        (application as PiBotApp).push.handleIntent(intent)
     }
 }

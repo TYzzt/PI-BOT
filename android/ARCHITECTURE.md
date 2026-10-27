@@ -163,6 +163,7 @@ Pi Bot 是多用户的个人 Bot 平台。每个用户有若干个 Bot，每个 
 - `PiBotApi`（OkHttp + kotlinx.serialization）调用与电脑相同的 REST 接口；`PiBotRepository` 用 StateFlow 保存会话、Bot 列表、电脑 状态和各 Bot 的时间线，没有本地数据库。
 - 应用在前台时连接 `/ws/events`：`delta` 直接合并进时间线，`bot` 事件 200ms 内合并成一次刷新，断线按 1、2、4…30 秒退避重连，重连后补拉列表和已打开的时间线；4401 或 401 退出登录。
 - 会话（服务器地址、用户、令牌）存在 EncryptedSharedPreferences。Android 的 debug 和 release 均支持 HTTP、HTTPS 服务器地址，实时连接相应使用 WS、WSS。
+- 可选 FCM 使用独立安装绑定和高优先级 data 消息补充系统后台通知。业务事务把最终公开回复和待审批写入持久发送队列，API 发送循环负责重试；安卓校验账号、登录绑定和有效期后展示，点击回到会话重新拉取数据。无 Firebase 配置时不启用推送。配置见 [FCM 通知说明](../docs/android-fcm.md)。
 - 消息按 `seq` 分页（每页 50 条），滚到顶部加载更早的消息。
 
 ## 角色

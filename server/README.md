@@ -1,5 +1,7 @@
 # Pi Bot server
 
+Android FCM 后台通知的项目创建、可选配置、凭据挂载和验收见 [FCM 通知说明](../docs/android-fcm.md)。
+
 Node.js 24 + TypeScript + Fastify 5 + PostgreSQL 16。包含 API（含管理后台 `/admin/` 和模型代理 `/llm/v1`）、Worker（执行电脑离线时的云端运行、长期记忆压缩）和 Runner（隔离执行 Pi agent）。整体设计见 [ARCHITECTURE.md](ARCHITECTURE.md)，需求与验收见 [REQUIREMENTS.md](REQUIREMENTS.md)。
 
 ## 本地开发

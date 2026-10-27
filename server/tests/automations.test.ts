@@ -24,6 +24,7 @@ const claims = (): LlmClaims => ({ sub: user, src: "device", bot, did: device })
 before(() => { if (!skip) db = new Database(TEST_DB!); });
 beforeEach(async () => {
   if (skip) return;
+  db.pushEnabled = false;
   await resetDatabase(TEST_DB!); await migrate(db);
   now = new Date(); hub = new Hub(); sent = [];
   user = randomUUID(); device = randomUUID();
@@ -179,19 +180,25 @@ test("concurrent scans coalesce wakes and quiet rounds change neither timeline n
 });
 
 test("important output is persisted, remains pending offline, and is published exactly once", { skip }, async () => {
+  db.pushEnabled = true;
+  await db.tx(tx => tx.rows(`INSERT INTO push_installations(installation_id,user_id,fcm_token,binding_id,session_expires_at,session_issued_at)
+    VALUES($1,$2,'goal-test-token',$3,now()+interval '1 day',0)`, [randomUUID(),user,randomUUID()]));
   await due(); await scheduler().once();
   const run = (await active())!;
   await done(run, { notify: true, summary: "发现一个需要确认的新问题", notification_key: "issue:42:needs-decision" });
   hub.detach(conn); await scheduler().once();
+  assert.equal((await db.tx(tx => tx.one("SELECT count(*) AS n FROM push_deliveries")))!.n, 0, "private review output is not a push event");
   assert.equal((await db.tx(tx => messagesPage(tx, bot, undefined, 50))).messages.at(-1)!.content, "已建立");
   hub.attach(conn); await Promise.all([scheduler().once(), scheduler().once()]);
   const page = await db.tx(tx => messagesPage(tx, bot, undefined, 50));
   assert.equal(page.messages.at(-1)!.content, "发现一个需要确认的新问题");
   assert.equal(page.messages.filter(m => m.content === "发现一个需要确认的新问题").length, 1);
   assert.ok(!JSON.stringify(page).includes("PRIVATE"));
+  assert.equal((await db.tx(tx => tx.one("SELECT count(*) AS n FROM push_deliveries")))!.n, 1, "published goal progress creates one push event");
   await due(); await scheduler().once(); await done((await active())!, { notify: true, summary: "同一问题", notification_key: "issue:42:needs-decision" });
   await scheduler().once();
   assert.equal((await db.tx(tx => messagesPage(tx, bot, undefined, 50))).messages.filter(m => m.content === "发现一个需要确认的新问题").length, 1);
+  assert.equal((await db.tx(tx => tx.one("SELECT count(*) AS n FROM push_deliveries")))!.n, 1, "repeated goal state does not notify again");
 });
 
 test("goal controls preserve checkpoints, reject stale decisions and cancel in-flight work", { skip }, async () => {

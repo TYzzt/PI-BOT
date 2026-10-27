@@ -208,6 +208,16 @@ class ApiException(val status: Int, message: String) : Exception(message) {
 }
 
 class PiBotApi(private val http: OkHttpClient, private val json: Json = API_JSON) {
+    fun registerPush(session: Session, installationId: String, fcmToken: String): JsonObject =
+        call(ServerUrl(session.serverUrl), "PUT", "/push/installations/$installationId", session.token,
+            kotlinx.serialization.json.buildJsonObject {
+                put("fcm_token", JsonPrimitive(fcmToken)); put("binding_id", JsonPrimitive(session.pushBindingId))
+            })
+
+    fun unregisterPush(session: Session, installationId: String): JsonObject =
+        call(ServerUrl(session.serverUrl), "DELETE", "/push/installations/$installationId", session.token,
+            query = listOf("binding_id" to session.pushBindingId))
+
     fun login(url: ServerUrl, username: String, password: String): LoginResponse =
         call(url, "POST", "/auth/login", null, LoginBody(username, password))
 

@@ -1,8 +1,12 @@
 plugins {
+    alias(libs.plugins.google.services) apply false
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
 }
+
+val fcmConfigured = file("google-services.json").isFile
+if (fcmConfigured) apply(plugin = "com.google.gms.google-services")
 
 android {
     namespace = "dev.pibot.android"
@@ -15,6 +19,7 @@ android {
         versionCode = 2
         versionName = "0.2.0"
         buildConfigField("String", "DEFAULT_SERVER_URL", "\"http://10.0.2.2:8000\"")
+        buildConfigField("boolean", "FCM_ENABLED", fcmConfigured.toString())
     }
 
     buildTypes {
@@ -64,7 +69,8 @@ val copyBotFaceSpec = tasks.register<CopyBotFaceSpec>("copyBotFaceSpec") {
 val buildA2ui = tasks.register<Exec>("buildA2ui") {
     workingDir(rootProject.projectDir.parentFile)
     // npm ci --ignore-scripts skips the vendored Node download. Fall back to the Node already on PATH.
-    val vendoredNode = rootProject.projectDir.resolve("../desktop/node_modules/node/bin/node")
+    val nodeExecutable = if (System.getProperty("os.name").startsWith("Windows", ignoreCase = true)) "node.exe" else "node"
+    val vendoredNode = rootProject.projectDir.resolve("../desktop/node_modules/node/bin/$nodeExecutable")
     val nodeCommand = if (vendoredNode.isFile) vendoredNode.absolutePath else "node"
     commandLine(nodeCommand, "packages/a2ui/scripts/build.mjs")
     inputs.dir(rootProject.projectDir.resolve("../packages/a2ui/src"))
@@ -118,6 +124,11 @@ androidComponents {
 }
 
 dependencies {
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.messaging)
+    implementation(libs.androidx.work)
+    implementation(libs.google.play.services.base)
+    implementation(libs.kotlinx.coroutines.play.services)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(platform(libs.androidx.compose.bom))

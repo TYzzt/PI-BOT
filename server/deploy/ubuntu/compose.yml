@@ -8,6 +8,7 @@ x-app: &app
     options: {max-size: "10m", max-file: "3"}
 
 x-env: &env
+  PI_BOT_FCM_PROJECT_ID: ${PI_BOT_FCM_PROJECT_ID:-}
   PI_BOT_REMOTE_BACKEND: ${PI_BOT_REMOTE_BACKEND:-none}
   PI_BOT_K8S_SERVER: ${PI_BOT_K8S_SERVER:-}
   PI_BOT_K8S_TOKEN_FILE: ${PI_BOT_K8S_TOKEN_FILE:-}

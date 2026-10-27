@@ -1,4 +1,5 @@
 import {targetPrompt} from "./targets.js";
+import { enqueueMessage } from "./push.js";
 import { randomUUID } from "node:crypto";
 import { imageBytes, MAX_IMAGES_BYTES, type ChatImage } from '@pi-bot/agent/images';
 import { UI_INSTRUCTIONS, isInternalTool, PROGRESS_CHARS, PROGRESS_SEGMENTS, TASK_TOOL_NAMES, type SkillSummary } from "@pi-bot/agent";
@@ -719,6 +720,7 @@ export async function finishRun(
   if ((final === "cancelled" || (final === "failed" && run.execution_policy === "device_only")) && run.lane === "task") await cancelDelegations(tx, runId);
   await tx.notify({ user_id: run.user_id, bot_id: run.bot_id });
   await recordRun(tx,{...run,status:final,error:final==='failed'?error:null,finished_at:new Date()},run.observation_enabled);
+  await enqueueMessage(tx, { ...run, status: final, error: final === "failed" ? error : null });
   return { ...run, status: final };
 }
 /**

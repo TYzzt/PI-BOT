@@ -1,6 +1,7 @@
 import { remoteRoutes } from './remote/routes.js';
 import type {RemoteService} from './remote/service.js';
 import { phoneRoutes } from './phone-routes.js';
+import { pushRoutes } from './push.js';
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -64,7 +65,7 @@ export interface Context {
   after(fn: () => unknown): void;
 }
 export interface Route {
-  method: "GET" | "POST" | "PATCH" | "DELETE";
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   path: string;
   auth: Auth;
   tag: string;
@@ -174,6 +175,7 @@ async function deviceFiles(ctx: Context, method: "list" | "read") {
 }
 
 export const routes: Route[] = [
+  ...pushRoutes,
   ...phoneRoutes,
   ...remoteRoutes,
   {method:"POST",path:"/agent/automations/effect",auth:"llm",tag:"agents",summary:"目标检查操作日志",internal:true,

@@ -15,6 +15,8 @@ export function settings(env = process.env) {
   const remoteBackend = z.enum(["none", "ssh", "kubevirt"]).parse(env.PI_BOT_REMOTE_BACKEND ?? "none");
   const required = (name: string) => remoteBackend === "kubevirt" ? z.string().min(1).parse(env[name]) : env[name];
   return {
+    fcmProjectId: env.PI_BOT_FCM_PROJECT_ID?.trim() || undefined,
+    fcmCredentialsFile: env.GOOGLE_APPLICATION_CREDENTIALS?.trim() || undefined,
     remoteBackend,
     kubevirt: {
       server: required("PI_BOT_K8S_SERVER"), tokenFile: required("PI_BOT_K8S_TOKEN_FILE"), caFile: required("PI_BOT_K8S_CA_FILE"),
