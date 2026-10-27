@@ -127,7 +127,7 @@ test("SSH verifies host fingerprints and exchanges guest RPC over an actual SSH 
     await new Promise<void>((r) => server.close(() => r()));
   }
 });
-test("guest sandbox follows symlinks and command timeout stops remote process groups", async () => {
+test("guest sandbox resolves directory links before enforcing approved paths", async () => {
   const modulePath = new URL("../remote-guest/core.mjs", import.meta.url).href;
   const core = await import(modulePath),
     dir = await mkdtemp(join(tmpdir(), "pibot-guest-"));
@@ -137,7 +137,8 @@ test("guest sandbox follows symlinks and command timeout stops remote process gr
     await mkdir(root);
     await mkdir(outside);
     await writeFile(join(outside, "secret"), "secret");
-    await symlink(outside, join(root, "link"));
+    // Directory junctions exercise realpath containment without Windows symlink privileges.
+    await symlink(outside, join(root, "link"), process.platform === "win32" ? "junction" : "dir");
     await assert.rejects(core.resolvePath(root, "link/secret"), /超出/);
     assert.equal(
       await core.resolvePath(root, "link/secret", [
@@ -146,6 +147,17 @@ test("guest sandbox follows symlinks and command timeout stops remote process gr
       await core.realPath(join(outside, "secret")),
     );
     await assert.rejects(core.resolvePath(root, "../outside/secret"), /超出/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("guest command timeout and cancellation stop POSIX process groups", {
+  skip: process.platform === "win32" && "Ubuntu guest commands require /bin/bash and POSIX process groups",
+}, async () => {
+  const core = await import(new URL("../remote-guest/core.mjs", import.meta.url).href);
+  const root = await mkdtemp(join(tmpdir(), "pibot-guest-command-"));
+  try {
     const result = await core.command(
       "printf ok; sleep 5",
       root,
@@ -159,7 +171,7 @@ test("guest sandbox follows symlinks and command timeout stops remote process gr
     c.abort();
     assert.equal((await pending).cancelled, true);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
   }
 });
 test("KubeVirt resources use persistent disks, separate credentials and stable names; conflicts never adopt another owner", async () => {
