@@ -1,3 +1,5 @@
+import { artifactOut } from "./reports.js";
+import { internalTool, TERMINAL_RUN_STATES } from "@pi-bot/runtime-contracts";
 import { taskMessage } from "./task-conversation.js";
 import {taskTarget} from "./targets.js";
 import { randomUUID } from "node:crypto";
@@ -12,7 +14,7 @@ import { AutomationScheduler } from "./automations.js";
 import { TASK_CONCURRENCY, resumeExecution } from "./scheduling.js";
 
 export const MAX_TASKS_PER_RUN = 5;
-export const TERMINAL = ["completed", "failed", "cancelled"];
+export const TERMINAL:readonly string[] = TERMINAL_RUN_STATES;
 /** The live voice call speaks a finished task instead of posting a text report. */
 export interface VoiceAnnouncer {
   announce(botId: string, task: Row): boolean;
@@ -28,9 +30,10 @@ export const agentTaskOut = (t: Row) => ({
   kind: t.kind,
   title: t.title,
   activity: t.progress?.at(-1) ?? null,
-  tools: (t.tools ?? []).filter((x: Row) => !["skill_manage", "skill_load"].includes(x.name)),
+  tools: (t.tools ?? []).filter((x: Row) => !internalTool(x.name)),
   updated_at: t.activity_at ?? t.updated_at,
   agent: { id: t.target_bot_id, name: t.bot_name ?? "" },
+  attachments:t.attachments??[],
   result: (t.run_status ?? t.status) === "completed" ? (t.run_result ?? t.result) : null,
   checkpoint: t.checkpoint,
   checkpoint_version: t.checkpoint_version,
@@ -66,7 +69,8 @@ async function ownTask(tx: Tx, userId: string, claims: LlmClaims, taskId: string
     [taskId, userId, claims.bot],
   );
   if (!t) fail(404, "委托不存在");
-  return { ...t!, status: t!.run_status ?? t!.status };
+  const reports=t!.child_run_id ? await tx.rows('SELECT artifact_id,title,name,mime,size,created_at FROM report_artifacts WHERE run_id=$1 ORDER BY created_at',[t!.child_run_id]) : [];
+  return { ...t!, attachments:reports.map(artifactOut),status: t!.run_status ?? t!.status };
 }
 async function resolveTarget(tx: Tx, userId: string, name: string, selfId: string) {
   const bots = await tx.rows("SELECT * FROM bots WHERE user_id=$1 AND archived_at IS NULL ORDER BY is_main DESC, last_active_at DESC", [userId]);
@@ -205,6 +209,9 @@ export async function readTask(tx: Tx, userId: string, claims: LlmClaims, taskId
     if (parent?.waiting_on_task_id === taskId && !await resumeExecution(tx, parent, s))
       return agentTaskOut({ ...task, status: "running", run_status: "running", result: null });
   }
+  if(task.attachments?.length && task.mode === "wait") {
+    await tx.rows(`INSERT INTO message_artifacts(message_id,artifact_id) SELECT r.assistant_message_id,a.artifact_id FROM bot_runs r CROSS JOIN report_artifacts a WHERE r.run_id=$1 AND a.run_id=$2 ON CONFLICT DO NOTHING`,[task.parent_run_id,task.child_run_id]);
+  }
   return agentTaskOut(task);
 }
 
@@ -224,10 +231,11 @@ export async function messageTask(tx: Tx, userId: string, claims: LlmClaims, tas
   if (TERMINAL.includes(task.status)) return { task: agentTaskOut(task), delivery: "finished" };
   await tx.rows(`INSERT INTO agent_task_instructions(instruction_id,task_id,request_id,text)
     VALUES($1,$2,$3,$4) ON CONFLICT(task_id,request_id) DO NOTHING`, [randomUUID(), taskId, body.request_id, body.text]);
+  const instruction = (await tx.one("SELECT instruction_id,delivered_at FROM agent_task_instructions WHERE task_id=$1 AND request_id=$2", [taskId, body.request_id]))!;
   await taskMessage(tx, task, `instruction:${body.request_id}`, "instruction", body.text, true);
   await tx.notify({ user_id: userId, bot_id: task.parent_bot_id });
   await tx.notify({ user_id: userId, bot_id: task.target_bot_id });
-  return { task: agentTaskOut(task), delivery: task.child_run_id ? "pending" : "queued" };
+  return { task: agentTaskOut(task), instruction_id: instruction.instruction_id, delivery: instruction.delivered_at ? "delivered" : task.child_run_id ? "pending" : "queued" };
 }
 /** The delegating tool gave up (its run stopped); nothing is reported back afterwards. */
 export async function cancelTask(tx: Tx, hub: Hub, userId: string, claims: LlmClaims, taskId: string) {
@@ -435,6 +443,7 @@ export class AgentDispatcher {
           });
           await tx.rows("UPDATE agent_tasks SET report_run_id=$2 WHERE task_id=$1", [task_id, report.run_id]);
           if (t.child_run_id) {
+            await tx.rows("INSERT INTO message_artifacts(message_id,artifact_id) SELECT $1,artifact_id FROM report_artifacts WHERE run_id=$2 ON CONFLICT DO NOTHING", [report.assistant_message_id,t.child_run_id]);
             const output = await tx.one("SELECT m.ui FROM bot_messages m JOIN bot_runs r ON r.assistant_message_id=m.message_id WHERE r.run_id=$1", [t.child_run_id]);
             if (output?.ui) await tx.update("bot_messages", report.assistant_message_id, { ui: output.ui });
           }
