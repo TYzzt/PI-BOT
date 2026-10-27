@@ -32,7 +32,7 @@
 
 - 令牌只存在加密存储里；不保存密码。
 - 界面中文，固定浅色主题；系统关闭动画（动画时长缩放为 0）时角色保持静止。
-- 基础聊天不依赖 Google Play 服务；可选 FCM 通知需要可用的 Google Play 服务和 Google 网络连接，配置与真机验收见 [FCM 通知说明](../docs/android-fcm.md)。
+- 基础聊天不依赖 Google Play 服务；可选 FCM 通知需要可用的 Google Play 服务和 Google 网络连接。统一 APK 从当前登录的 Server 获取公共配置，按账号和绑定缓存以供后台进程恢复；跨 Firebase 项目切换提示重启。配置与真机验收见 [FCM 通知说明](../docs/android-fcm.md)。
 - 不提供 skills 管理界面；skills 由各 Bot 自管理，正文和参考资料不出现在公开 Bot 接口与资料库中。详见 [agent/README.md](../packages/agent/README.md)。
 
 ## 自动化测试
@@ -43,6 +43,7 @@
 - `DomainTest`：时间线合并与 `delta`、运行中工具、状态一句话（含去掉 Markdown 标记）、服务器地址解析、Markdown 块与行内解析。
 - `RepositoryTest`（MockWebServer）：登录与路径前缀、错误信息、Bot/消息/发送/流式合并/分页、编辑时总是带上 `model_id`、资料库路径编码与 503 提示、401 自动登出。
 - `PushPolicyTest`：事件校验、账号与绑定隔离、有效期、前台会话抑制、持久去重和注册重试策略；`RepositoryTest` 另覆盖推送注册接口和换号时旧请求的隔离。
+- `PushConfigurationTest`：公共配置校验、缓存的服务器/账号/登录隔离、无网络的进程恢复、同项目复用、跨项目和密钥更新后的重启策略；`RepositoryTest` 另验证配置接口的认证和路径前缀。
 
 - 发送成功才清除已提交的草稿；失败保留输入与请求 ID；后台任务不禁用其他已完成消息的交互界面。聚合表情与状态读取 `activity`，不被最新短对话覆盖。
 

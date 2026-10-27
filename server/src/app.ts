@@ -1,5 +1,5 @@
 import {RemoteService} from "./remote/service.js";
-import { firebaseTransport, PushDispatcher } from "./push.js";
+import { firebaseTransport, loadAndroidPushConfig, PushDispatcher } from "./push.js";
 import {remoteWeb} from "./remote/web.js";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import websocket from "@fastify/websocket";
@@ -103,6 +103,7 @@ export async function createApp(
   remoteFactory=(db:Database,s:Settings)=>new RemoteService(db,s),
   pushFactory = firebaseTransport,
 ) {
+  const pushConfig = await loadAndroidPushConfig(s);
   const pushTransport = await pushFactory(s);
   db.pushEnabled = !!s.fcmProjectId;
   await migrate(db);
@@ -146,7 +147,7 @@ export async function createApp(
         for (const [k, v] of Object.entries(params))
           if (k === "id" && !/^[0-9a-f-]{36}$/i.test(v)) fail(404, "记录不存在");
         const after: (() => unknown)[] = [];
-        const base = { db, s, hub, webSearch, remote, query, params, req, reply, after: (fn: () => unknown) => void after.push(fn) };
+        const base = { db, s, hub, webSearch, remote, pushConfig, query, params, req, reply, after: (fn: () => unknown) => void after.push(fn) };
         let result: unknown;
         if (route.tx === false) {
           const who = await db.tx((tx) => authenticate(tx, route, req, raw, s));

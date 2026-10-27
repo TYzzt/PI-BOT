@@ -17,6 +17,7 @@ export function settings(env = process.env) {
   return {
     fcmProjectId: env.PI_BOT_FCM_PROJECT_ID?.trim() || undefined,
     fcmCredentialsFile: env.GOOGLE_APPLICATION_CREDENTIALS?.trim() || undefined,
+    fcmAndroidConfigFile: env.PI_BOT_FCM_ANDROID_CONFIG_FILE?.trim() || undefined,
     remoteBackend,
     kubevirt: {
       server: required("PI_BOT_K8S_SERVER"), tokenFile: required("PI_BOT_K8S_TOKEN_FILE"), caFile: required("PI_BOT_K8S_CA_FILE"),

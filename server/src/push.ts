@@ -8,11 +8,66 @@ import type { Settings } from "./config.js";
 import { fail, type Database, type Row, type Tx } from "./db.js";
 import type { Route } from "./routes.js";
 
+const androidPackage = "dev.pibot.android";
+const publicConfigSchema = z.object({
+  project_id: z.string().min(1).max(128),
+  application_id: z.string().regex(/^1:\d+:android:[0-9a-f]+$/),
+  sender_id: z.string().regex(/^\d+$/),
+  api_key: z.string().regex(/^A[\w-]{38}$/),
+  package_name: z.literal(androidPackage),
+});
+export type AndroidPushConfig = z.infer<typeof publicConfigSchema>;
+
+/** Only allowlisted Android identifiers leave the server, never the service account or raw JSON. */
+export function parseAndroidPushConfig(document: unknown, projectId: string): AndroidPushConfig {
+  const input = z.object({
+    project_info: z.object({ project_id: z.string(), project_number: z.string() }),
+    client: z.array(z.object({
+      client_info: z.object({ mobilesdk_app_id: z.string(), android_client_info: z.object({ package_name: z.string() }) }),
+      api_key: z.array(z.object({ current_key: z.string() })),
+    })),
+  }).parse(document);
+  const clients = input.client.filter(c => c.client_info.android_client_info.package_name === androidPackage);
+  if (input.project_info.project_id !== projectId || clients.length !== 1)
+    throw new Error("FCM Android 配置必须匹配 PI_BOT_FCM_PROJECT_ID 和 dev.pibot.android");
+  const client = clients[0];
+  const config = publicConfigSchema.parse({
+    project_id: input.project_info.project_id, sender_id: input.project_info.project_number,
+    application_id: client.client_info.mobilesdk_app_id, package_name: androidPackage,
+    api_key: client.api_key[0]?.current_key,
+  });
+  if (config.application_id.split(":")[1] !== config.sender_id)
+    throw new Error("FCM Android 配置的 Sender ID 与应用 ID 不匹配");
+  return config;
+}
+
+export async function loadAndroidPushConfig(s: Settings): Promise<AndroidPushConfig | undefined> {
+  if (!s.fcmProjectId) {
+    if (s.fcmAndroidConfigFile) throw new Error("配置 Android FCM 文件时需要 PI_BOT_FCM_PROJECT_ID");
+    return;
+  }
+  if (!s.fcmAndroidConfigFile) throw new Error("启用 FCM 需要 PI_BOT_FCM_ANDROID_CONFIG_FILE（google-services.json）");
+  // Do not include file contents or schema errors (which may contain input values) in startup errors.
+  try {
+    return parseAndroidPushConfig(JSON.parse(await readFile(s.fcmAndroidConfigFile, "utf8")), s.fcmProjectId);
+  } catch {
+    throw new Error("FCM Android 配置不可读或无效，请检查项目、包名、Sender ID 和 API Key");
+  }
+}
+
 export const pushRoutes: Route[] = [
   {
+    method: "GET", path: "/push/config", auth: "user", tag: "push", summary: "获取当前服务器的 Android 推送公共配置",
+    handler: async ({ pushConfig, reply }) => {
+      reply.header("cache-control", "no-store");
+      return { enabled: !!pushConfig, firebase: pushConfig ?? null };
+    },
+  },
+  {
     method: "PUT", path: "/push/installations/:id", auth: "user", tag: "push", summary: "注册当前 Android 推送安装",
-    body: z.object({ fcm_token: z.string().trim().min(1).max(4096), binding_id: z.string().uuid() }).strict(),
+    body: z.object({ fcm_token: z.string().trim().min(1).max(4096), binding_id: z.string().uuid(), firebase_project_id: z.string().min(1).max(128).optional() }).strict(),
     handler: async ({ tx, s, user, params, req, body }) => {
+      if (s.fcmProjectId && body.firebase_project_id !== s.fcmProjectId) fail(409, "推送项目已更新，请重新获取服务器配置");
       // The route has already verified this bearer; never accept expiry from the client.
       const token = req.headers.authorization!.replace(/^Bearer\s+/i, "");
       const claims = decodeJwt(token);

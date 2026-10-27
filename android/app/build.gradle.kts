@@ -1,12 +1,8 @@
 plugins {
-    alias(libs.plugins.google.services) apply false
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
 }
-
-val fcmConfigured = file("google-services.json").isFile
-if (fcmConfigured) apply(plugin = "com.google.gms.google-services")
 
 android {
     namespace = "dev.pibot.android"
@@ -19,7 +15,6 @@ android {
         versionCode = 2
         versionName = "0.2.0"
         buildConfigField("String", "DEFAULT_SERVER_URL", "\"http://10.0.2.2:8000\"")
-        buildConfigField("boolean", "FCM_ENABLED", fcmConfigured.toString())
     }
 
     buildTypes {

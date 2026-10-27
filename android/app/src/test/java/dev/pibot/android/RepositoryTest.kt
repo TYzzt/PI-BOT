@@ -93,7 +93,7 @@ class RepositoryTest {
         val session = repo.session.value!!
         val installation = java.util.UUID.randomUUID().toString()
         respond(200, """{"ok":true,"enabled":true}""")
-        PiBotApi(http).registerPush(session, installation, "fcm-token")
+        PiBotApi(http).registerPush(session, installation, "fcm-token", "test-project")
         val request = server.takeRequest()
         assertEquals("PUT", request.method)
         assertEquals("/pibot/push/installations/$installation", request.requestUrl!!.encodedPath)
@@ -101,11 +101,25 @@ class RepositoryTest {
         val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
         assertEquals("fcm-token", body["fcm_token"]!!.jsonPrimitive.content)
         assertEquals(session.pushBindingId, body["binding_id"]!!.jsonPrimitive.content)
+        assertEquals("test-project", body["firebase_project_id"]!!.jsonPrimitive.content)
         respond(200, """{"ok":true}""")
         PiBotApi(http).unregisterPush(session, installation)
         val removal = server.takeRequest()
         assertEquals("DELETE", removal.method)
         assertEquals(session.pushBindingId, removal.requestUrl!!.queryParameter("binding_id"))
+    }
+
+    @Test
+    fun pushConfigUsesAuthenticatedCurrentServerWithItsPathPrefix() = runBlocking {
+        login()
+        respond(200, """{"enabled":false,"firebase":null}""")
+        val config = PiBotApi(http).pushConfig(repo.session.value!!)
+        val request = server.takeRequest()
+        assertEquals("GET", request.method)
+        assertEquals("/pibot/push/config", request.requestUrl!!.encodedPath)
+        assertEquals("Bearer tok", request.getHeader("Authorization"))
+        assertFalse(config.enabled)
+        assertNull(config.firebase)
     }
 
     @Test

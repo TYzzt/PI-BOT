@@ -2,14 +2,23 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { SignJWT } from "jose";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { createApp, openapi } from "../src/app.js";
 import { Database, type Row } from "../src/db.js";
 import { settings } from "../src/config.js";
 import { createBot, insertRun, finishRun } from "../src/bots.js";
 import { issueToken } from "../src/security.js";
-import { enqueueApproval, enqueueMessage, firebaseTransport, PushDispatcher, pushSummary, type PushTransport } from "../src/push.js";
+import { enqueueApproval, enqueueMessage, firebaseTransport, loadAndroidPushConfig, parseAndroidPushConfig, PushDispatcher, pushSummary, type PushTransport } from "../src/push.js";
 import type { Message } from "firebase-admin/messaging";
-import { TEST_DB, resetDatabase, eventually } from "./helpers.js";
+import { TEST_DB, resetDatabase, eventually, tempDir } from "./helpers.js";
+
+const androidDocument = () => ({
+  project_info: { project_id: "test-project", project_number: "123456", storage_bucket: "unrelated" },
+  client: [{ client_info: { mobilesdk_app_id: "1:123456:android:abcdef", android_client_info: { package_name: "dev.pibot.android" } },
+    api_key: [{ current_key: "A" + "x".repeat(38) }], oauth_client: [{ secret: "never-distribute" }] }],
+  private_key: "never-distribute",
+});
 
 test("FCM configuration is optional, but explicit missing credentials fail immediately", async () => {
   const config = settings({ PI_BOT_DATABASE_URL: "unused", PI_BOT_JWT_SECRET: "j".repeat(40) });
@@ -17,6 +26,37 @@ test("FCM configuration is optional, but explicit missing credentials fail immed
   await assert.rejects(firebaseTransport({ ...config, fcmProjectId: "project" }), /GOOGLE_APPLICATION_CREDENTIALS/);
   assert.ok(openapi().paths["/push/installations/{id}"].put);
   assert.ok(openapi().paths["/push/installations/{id}"].delete);
+  assert.ok(openapi().paths["/push/config"].get);
+  assert.equal(await loadAndroidPushConfig(config), undefined);
+  await assert.rejects(loadAndroidPushConfig({ ...config, fcmProjectId: "test-project" }), /PI_BOT_FCM_ANDROID_CONFIG_FILE/);
+  await assert.rejects(loadAndroidPushConfig({ ...config, fcmAndroidConfigFile: "unused" }), /PI_BOT_FCM_PROJECT_ID/);
+});
+
+test("Android configuration is allowlisted and rejects mismatched projects, packages, senders, and keys", () => {
+  const document = androidDocument();
+  const config = parseAndroidPushConfig(document, "test-project");
+  assert.deepEqual(config, { project_id: "test-project", sender_id: "123456", application_id: "1:123456:android:abcdef",
+    package_name: "dev.pibot.android", api_key: "A" + "x".repeat(38) });
+  assert.equal(JSON.stringify(config).includes("never-distribute"), false);
+  assert.throws(() => parseAndroidPushConfig(document, "other-project"));
+  document.client[0].client_info.android_client_info.package_name = "other.app";
+  assert.throws(() => parseAndroidPushConfig(document, "test-project"));
+  const mismatched = androidDocument(); mismatched.project_info.project_number = "999";
+  assert.throws(() => parseAndroidPushConfig(mismatched, "test-project"));
+  const invalidKey = androidDocument(); invalidKey.client[0].api_key[0].current_key = "invalid";
+  assert.throws(() => parseAndroidPushConfig(invalidKey, "test-project"));
+});
+
+test("explicit unreadable or malformed Android configuration fails startup without echoing JSON", async () => {
+  const dir = tempDir();
+  try {
+    const file = join(dir.path, "google-services.json");
+    const config = { ...settings({ PI_BOT_DATABASE_URL: "unused", PI_BOT_JWT_SECRET: "j".repeat(40) }),
+      fcmProjectId: "test-project", fcmAndroidConfigFile: file };
+    await assert.rejects(loadAndroidPushConfig(config), /不可读或无效/);
+    await writeFile(file, JSON.stringify({ private_key: "never-distribute" }));
+    await assert.rejects(createApp(config), e => e instanceof Error && !e.message.includes("never-distribute") && /不可读或无效/.test(e.message));
+  } finally { dir.cleanup(); }
 });
 
 test("notification previews are bounded by Unicode characters and contain no markup", () => {
@@ -51,6 +91,12 @@ test("FCM registration and durable delivery", { skip: !TEST_DB }, async t => {
   let now = new Date();
   const clock = () => new Date(Math.max(now.getTime(), Date.now()));
   const dispatcher = new PushDispatcher(db, transport, clock);
+  const dispatchOnce = async (sender = dispatcher) => {
+    // PostgreSQL has microsecond precision. Advance the test clock beyond committed enqueue timestamps.
+    const time = await db.tx(tx => tx.one("SELECT clock_timestamp() AS now"));
+    now = new Date(Math.max(now.getTime(), new Date(time!.now).getTime() + 1));
+    await sender.once();
+  };
   const deliveries = () => db.tx(tx => tx.rows("SELECT * FROM push_deliveries ORDER BY event_id,installation_id"));
   const resetQueue = async () => { messages.length = 0; failure = undefined; now = new Date(); await db.tx(tx => tx.rows("DELETE FROM push_deliveries")); };
   const run = async (options: { origin?: "report" | "voice"; lane?: "task"; state?: "completed" | "failed" | "cancelled" } = {}) => db.tx(async tx => {
@@ -61,6 +107,10 @@ test("FCM registration and durable delivery", { skip: !TEST_DB }, async t => {
   });
 
   await t.test("authenticated, idempotent registration, token rotation, and owner-scoped deletion", async () => {
+    assert.equal((await app.inject({ method: "GET", url: "/push/config" })).statusCode, 401);
+    const disabled = await app.inject({ method: "GET", url: "/push/config", headers: { authorization: `Bearer ${token}` } });
+    assert.deepEqual(disabled.json(), { enabled: false, firebase: null });
+    assert.equal(disabled.headers["cache-control"], "no-store");
     assert.equal((await app.inject({ method: "PUT", url: `/push/installations/${installation}`, payload: { fcm_token: "x", binding_id: binding } })).statusCode, 401);
     assert.equal((await register()).statusCode, 200);
     assert.equal((await register()).statusCode, 200);
@@ -110,11 +160,11 @@ test("FCM registration and durable delivery", { skip: !TEST_DB }, async t => {
     await db.tx(tx => enqueueMessage(tx, r));
     await db.tx(tx => finishRun(tx, r.run_id, "completed", null, "duplicate"));
     assert.equal((await deliveries()).length, 2);
-    await dispatcher.once(); assert.equal(messages.length, 2);
+    await dispatchOnce(); assert.equal(messages.length, 2);
     assert.equal(messages[0].android?.priority, "high");
     assert.equal(messages[0].data?.message_id, r.assistant_message_id);
     assert.equal("notification" in messages[0], false);
-    await dispatcher.once(); assert.equal(messages.length, 2);
+    await dispatchOnce(); assert.equal(messages.length, 2);
     await run({ origin: "report" }); // Both task handoff and goal progress use public report runs.
     await run({ state: "failed" });
     assert.equal((await deliveries()).length, 6);
@@ -145,7 +195,7 @@ test("FCM registration and durable delivery", { skip: !TEST_DB }, async t => {
         ids.push(a.approval_id); await enqueueApproval(tx, a);
       }
     });
-    await dispatcher.once(); assert.equal(messages.length, 1);
+    await dispatchOnce(); assert.equal(messages.length, 1);
     assert.equal(messages[0].data?.approval_id, ids[0]);
     assert.equal(messages[0].data?.body, "需要读取资料 所请求的文件");
     assert.equal(JSON.stringify(messages).includes("SECRET-PATH"), false);
@@ -153,14 +203,14 @@ test("FCM registration and durable delivery", { skip: !TEST_DB }, async t => {
 
   await t.test("transient errors retry and a new dispatcher recovers expired leases", async () => {
     await resetQueue(); await run();
-    failure = { code: "messaging/server-unavailable" }; await dispatcher.once();
+    failure = { code: "messaging/server-unavailable" }; await dispatchOnce();
     let row = (await deliveries())[0]; assert.equal(row.finished_at, null); assert.equal(row.attempts, 1);
     assert.ok(new Date(row.available_at) > now);
     failure = undefined; now = new Date(now.getTime() + 15000);
     await db.tx(tx => tx.rows("UPDATE push_deliveries SET lease_id=$1,lease_until=$2", [randomUUID(), new Date(now.getTime() + 1000)]));
-    await dispatcher.once(); assert.equal(messages.length, 0);
+    await dispatchOnce(); assert.equal(messages.length, 0);
     now = new Date(now.getTime() + 2000);
-    await new PushDispatcher(db, transport, clock).once();
+    await dispatchOnce(new PushDispatcher(db, transport, clock));
     row = (await deliveries())[0]; assert.equal(row.outcome, "sent"); assert.equal(messages.length, 1);
   });
 
@@ -169,34 +219,44 @@ test("FCM registration and durable delivery", { skip: !TEST_DB }, async t => {
     const replacement = randomUUID(); await register(installation, replacement);
     // A delayed unregister from the old login must leave the new binding intact.
     await call("DELETE", installation, token, undefined, `?binding_id=${binding}`);
-    await dispatcher.once(); assert.equal(messages.length, 0);
+    await dispatchOnce(); assert.equal(messages.length, 0);
     await register(); await resetQueue(); await run();
     await db.tx(tx => tx.rows("UPDATE users SET disabled=true WHERE user_id=$1", [user!.user_id]));
-    await dispatcher.once(); assert.equal(messages.length, 0);
+    await dispatchOnce(); assert.equal(messages.length, 0);
     await db.tx(tx => tx.rows("UPDATE users SET disabled=false WHERE user_id=$1", [user!.user_id]));
     await resetQueue(); await run();
     await db.tx(tx => tx.rows("UPDATE push_installations SET session_expires_at=now()-interval '1 second'"));
-    await dispatcher.once(); assert.equal(messages.length, 0);
+    await dispatchOnce(); assert.equal(messages.length, 0);
     await register();
   });
 
   await t.test("invalid tokens are disabled; permanent payload errors finish without retry", async () => {
     await resetQueue(); await run(); failure = { code: "messaging/registration-token-not-registered" };
-    await dispatcher.once(); assert.equal((await deliveries())[0].outcome, "invalid-token");
+    await dispatchOnce(); assert.equal((await deliveries())[0].outcome, "invalid-token");
     assert.ok((await db.tx(tx => tx.one("SELECT disabled_at FROM push_installations")))!.disabled_at);
     await register(); await resetQueue(); await run(); failure = { code: "messaging/invalid-argument" };
-    await dispatcher.once(); assert.equal((await deliveries())[0].outcome, "permanent-error");
+    await dispatchOnce(); assert.equal((await deliveries())[0].outcome, "permanent-error");
     await register(); await resetQueue(); await run();
-    now = new Date(Date.now() + 86401_000); await dispatcher.once(); assert.equal(messages.length, 0);
+    now = new Date(Date.now() + 86401_000); await dispatchOnce(); assert.equal(messages.length, 0);
   });
 
   await t.test("the configured API starts the sender and closes it before the database", async () => {
     await resetQueue(); await register();
     const sent: Message[] = [];
     let closed = false;
-    const api = await createApp({ ...s, fcmProjectId: "test-project" }, new Database(TEST_DB!), undefined, undefined, undefined,
+    const dir = tempDir(); t.after(() => dir.cleanup());
+    const file = join(dir.path, "google-services.json");
+    await writeFile(file, JSON.stringify(androidDocument()));
+    const api = await createApp({ ...s, fcmProjectId: "test-project", fcmAndroidConfigFile: file }, new Database(TEST_DB!), undefined, undefined, undefined,
       async () => ({ async send(m) { sent.push(m); }, async close() { closed = true; } }));
     try {
+      const config = await api.inject({ method: "GET", url: "/push/config", headers: { authorization: `Bearer ${token}` } });
+      assert.deepEqual(config.json(), { enabled: true, firebase: parseAndroidPushConfig(androidDocument(), "test-project") });
+      assert.equal(config.body.includes("never-distribute"), false);
+      assert.equal((await api.inject({ method: "PUT", url: `/push/installations/${installation}`, headers: { authorization: `Bearer ${token}` },
+        payload: { binding_id: binding, fcm_token: "wrong-project-token", firebase_project_id: "other-project" } })).statusCode, 409);
+      assert.equal((await api.inject({ method: "PUT", url: `/push/installations/${installation}`, headers: { authorization: `Bearer ${token}` },
+        payload: { binding_id: binding, fcm_token: "token-one", firebase_project_id: "test-project" } })).statusCode, 200);
       const r = await run();
       await eventually(async () => (await deliveries()).some(d => d.source_id === r.assistant_message_id && d.outcome === "sent"));
       assert.equal(sent.length, 1);

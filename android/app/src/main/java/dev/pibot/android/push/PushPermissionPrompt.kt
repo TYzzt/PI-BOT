@@ -12,12 +12,26 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 @Composable
 fun PushPermissionPrompt(push: PushController) {
-    var show by remember { mutableStateOf(push.available && !push.permissionGranted && !push.permissionExplained && Build.VERSION.SDK_INT >= 33) }
+    val config by push.configuration.collectAsStateWithLifecycle()
+    val restartRequired by push.restartRequired.collectAsStateWithLifecycle()
+    var restartDismissed by remember(restartRequired) { mutableStateOf(false) }
+    var show by remember(config, restartRequired) {
+        mutableStateOf(config?.enabled == true && !restartRequired && push.available &&
+            !push.permissionGranted && !push.permissionExplained && Build.VERSION.SDK_INT >= 33)
+    }
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { push.sync() }
     fun dismiss() { push.permissionExplained = true; show = false }
+    if (restartRequired && !restartDismissed) AlertDialog(
+        onDismissRequest = { restartDismissed = true },
+        title = { Text("启用当前服务器的通知") },
+        text = { Text("通知配置已更新，需要重新启动应用后生效。你也可以稍后在设置中重启。") },
+        confirmButton = { TextButton(onClick = push::restart) { Text("重新启动应用") } },
+        dismissButton = { TextButton(onClick = { restartDismissed = true }) { Text("稍后") } },
+    )
     if (show) AlertDialog(
         onDismissRequest = ::dismiss,
         title = { Text("接收 Bot 通知") },

@@ -59,6 +59,7 @@ fun SettingsScreen(repository: PiBotRepository, onBack: () -> Unit, onPhone: (St
     val context = LocalContext.current
     val push = (context.applicationContext as PiBotApp).push
     val pushStatus by push.status.collectAsStateWithLifecycle()
+    val pushRestartRequired by push.restartRequired.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     var removing by remember { mutableStateOf<Device?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -83,6 +84,7 @@ fun SettingsScreen(repository: PiBotRepository, onBack: () -> Unit, onPhone: (St
             }
             Group("通知") {
                 Item("推送状态", pushStatus, last = true)
+                if (pushRestartRequired) TextButton(onClick = push::restart) { Text("重新启动应用以启用通知") }
                 TextButton(onClick = {
                     context.startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName))
                 }) { Text("系统通知设置") }

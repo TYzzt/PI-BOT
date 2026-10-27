@@ -19,12 +19,15 @@ import androidx.work.WorkManager
 import androidx.work.workDataOf
 import com.google.android.gms.common.ConnectionResult
 import com.google.android.gms.common.GoogleApiAvailability
-import dev.pibot.android.BuildConfig
+import com.google.firebase.FirebaseApp
+import com.google.firebase.FirebaseOptions
+import com.google.firebase.messaging.FirebaseMessaging
 import dev.pibot.android.MainActivity
 import dev.pibot.android.R
 import dev.pibot.android.data.PiBotApi
 import dev.pibot.android.data.PiBotRepository
 import dev.pibot.android.data.Session
+import dev.pibot.android.data.API_JSON
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -46,8 +49,19 @@ class PushController(
     val status = _status.asStateFlow()
     private val _target = MutableStateFlow<PushEvent?>(null)
     val target = _target.asStateFlow()
-    val configured: Boolean get() = BuildConfig.FCM_ENABLED
-    val available: Boolean get() = configured && GoogleApiAvailability.getInstance().isGooglePlayServicesAvailable(context) == ConnectionResult.SUCCESS
+    private val _configuration = MutableStateFlow<PushConfigResponse?>(null)
+    val configuration = _configuration.asStateFlow()
+    private val _restartRequired = MutableStateFlow(false)
+    val restartRequired = _restartRequired.asStateFlow()
+    private val runtime = PushRuntime(
+        initialize = { config ->
+            FirebaseApp.initializeApp(context, FirebaseOptions.Builder()
+                .setProjectId(config.projectId).setApplicationId(config.applicationId)
+                .setGcmSenderId(config.senderId).setApiKey(config.apiKey).build())
+        },
+        autoInit = { FirebaseMessaging.getInstance().isAutoInitEnabled = it },
+    )
+    val available: Boolean get() = GoogleApiAvailability.getInstance().isGooglePlayServicesAvailable(context) == ConnectionResult.SUCCESS
     val permissionGranted: Boolean get() = (Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED)
         && NotificationManagerCompat.from(context).areNotificationsEnabled()
     var permissionExplained: Boolean
@@ -59,6 +73,11 @@ class PushController(
             NotificationChannel(MESSAGES, "Bot 消息", NotificationManager.IMPORTANCE_DEFAULT),
             NotificationChannel(APPROVALS, "待处理审批", NotificationManager.IMPORTANCE_HIGH),
         ))
+        // Application.onCreate also runs when FCM wakes a killed process. Restore before the service runs.
+        val cached = runCatching {
+            API_JSON.decodeFromString(CachedPushConfig.serializer(), prefs.getString("configuration", null) ?: "")
+        }.getOrNull()?.takeIf { it.matches(repository.session.value) }
+        if (cached != null && available) runCatching { applyConfiguration(repository.session.value!!, cached.config) }
     }
 
     @Synchronized
@@ -67,6 +86,10 @@ class PushController(
             clearAll()
             _target.value = null
             prefs.edit().remove("ledger").apply()
+            prefs.edit().remove("configuration").remove("registered_binding").remove("server_enabled").commit()
+            _configuration.value = null
+            _restartRequired.value = false
+            runtime.configure(null, false)
         }
         if (previous != null && previous.pushBindingId != current?.pushBindingId) {
             WorkManager.getInstance(context).cancelAllWorkByTag("push:${previous.pushBindingId}")
@@ -76,12 +99,15 @@ class PushController(
         sync()
     }
 
+    @Synchronized
     fun sync() {
         val session = repository.session.value
         _status.value = when {
-            !configured -> "此安装包未配置推送"
             !available -> "设备缺少可用的 Google Play 服务"
-            session == null -> "登录后启用"
+            session == null -> "登录后获取服务器通知配置"
+            _configuration.value == null -> "正在获取服务器通知配置"
+            _configuration.value?.enabled == false -> "服务器未启用推送"
+            _restartRequired.value -> "通知配置已更新，重启应用后生效"
             !permissionGranted -> "系统通知权限已关闭"
             prefs.getString("registered_binding", null) == session.pushBindingId ->
                 if (prefs.getBoolean("server_enabled", false)) "已注册 FCM 推送" else "服务器未启用推送"
@@ -96,6 +122,25 @@ class PushController(
             WorkManager.getInstance(context).enqueueUniqueWork("push-register", ExistingWorkPolicy.REPLACE, work)
         }
     }
+
+    @Synchronized
+    fun applyConfiguration(session: Session, config: PushConfigResponse): Boolean {
+        val cached = CachedPushConfig(session.serverUrl, session.user.id, session.pushBindingId, config)
+        if (!cached.matches(repository.session.value)) return false
+        config.validate()
+        // Commit before initializing the SDK: a subsequent process can always recover the desired options.
+        check(prefs.edit().putString("configuration", API_JSON.encodeToString(CachedPushConfig.serializer(), cached)).commit())
+        if (_configuration.value != config) prefs.edit().remove("registered_binding").remove("server_enabled").apply()
+        _configuration.value = config
+        val ready = runtime.configure(config.firebase, permissionGranted)
+        _restartRequired.value = !ready
+        if (!config.enabled) _status.value = "服务器未启用推送"
+        else if (!ready) _status.value = "通知配置已更新，重启应用后生效"
+        else if (!permissionGranted) _status.value = "系统通知权限已关闭"
+        return ready
+    }
+
+    fun restart() { if (_restartRequired.value) PushRestartActivity.restart(context) }
 
     fun registrationResult(session: Session, enabled: Boolean) {
         if (repository.session.value?.pushBindingId != session.pushBindingId) return
