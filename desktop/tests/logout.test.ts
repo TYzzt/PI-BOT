@@ -10,6 +10,7 @@ import { WebSocketServer } from 'ws';
 import { Application } from '../packages/service/src/application.js';
 import { newIdentity } from '../packages/service/src/cloud.js';
 import { FileCredentials, MemoryCredentials } from '../packages/service/src/keychain.js';
+import { protectWindowsDirectory } from '../packages/service/src/windows.js';
 import type { AppEvent } from '../packages/protocol/src/index.js';
 
 async function eventually(check: () => boolean) {
@@ -47,7 +48,11 @@ async function fixture(t: TestContext, persistCredentials = false) {
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const serverUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
-  mkdirSync(dataDir); mkdirSync(libraryRoot);
+  // Match service startup: the helper creates private directories with the
+  // user's SID even when an elevated runner's default owner is Administrators.
+  if (persistCredentials && process.platform === 'win32') protectWindowsDirectory(dataDir);
+  else mkdirSync(dataDir);
+  mkdirSync(libraryRoot);
   writeFileSync(libraryFile, 'keep local files');
   writeFileSync(accountFile, JSON.stringify({ serverUrl, deviceId, deviceLabel: 'Test computer', user }));
   await credentials.set(deviceId, newIdentity().privateKey);
