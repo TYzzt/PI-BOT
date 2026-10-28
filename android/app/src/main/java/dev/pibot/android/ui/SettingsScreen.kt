@@ -84,6 +84,8 @@ fun SettingsScreen(repository: PiBotRepository, onBack: () -> Unit) {
             Spacer(Modifier.height(10.dp))
             OutlinedButton(onClick = { repository.logout() }, modifier = Modifier.fillMaxWidth()) { Text("退出登录", color = Danger) }
             Spacer(Modifier.height(20.dp))
+            ClientUpdateSettings(repository)
+            Spacer(Modifier.height(20.dp))
             Text("Pi Bot ${BuildConfig.VERSION_NAME}", color = Muted, fontSize = 12.sp, modifier = Modifier.fillMaxWidth())
         }
     }
