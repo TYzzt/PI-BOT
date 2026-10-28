@@ -14,7 +14,7 @@ export function ClientUpdates() {
     catch (e) { setError(errorText(e)); }
     finally { setBusy(false); }
   }
-  if (!bridge.updates) return null;
+  if (!bridge.updates || state?.supported === false) return null;
   return <section>
     <h3>客户端更新</h3>
     <p className="muted small">当前 {state?.version ?? '…'} · 构建 {state?.buildNumber ?? 0}。测试版来自 main 成功构建，可能不稳定。</p>

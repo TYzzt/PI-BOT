@@ -70,9 +70,9 @@ else {
   app.on('second-instance', () => { if (window) present(window); });
   app.whenReady().then(() => {
     if (process.platform === 'darwin') app.dock?.setIcon(nativeImage.createFromPath(iconPath));
-    ipcMain.handle('updates:state', event => { validSender(event); return updater.state(); });
-    ipcMain.handle('updates:check', (event, channel: unknown) => { validSender(event); return updater.check(channel); });
-    ipcMain.handle('updates:download', event => { validSender(event); return updater.download(); });
+    ipcMain.handle('updates:state', async event => { validSender(event); return { ...await updater.state(), supported: process.platform === 'win32' && process.arch === 'x64' }; });
+    ipcMain.handle('updates:check', (event, channel: unknown) => { validSender(event); if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('当前仅支持 Windows x64 在线更新'); return updater.check(channel); });
+    ipcMain.handle('updates:download', event => { validSender(event); if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('当前仅支持 Windows x64 在线更新'); return updater.download(); });
     ipcMain.handle('updates:install', async event => {
       validSender(event);
       const launched = await updater.install(async () => {

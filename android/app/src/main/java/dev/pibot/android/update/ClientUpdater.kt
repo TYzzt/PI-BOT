@@ -53,6 +53,7 @@ class ClientUpdater(context: Context) {
                 if (candidate != null && candidate.buildNumber > (best?.buildNumber ?: 0)) best = candidate
             }
             if (releases.size < 100) break
+            check(page < 5) { "发布记录过多，请在 GitHub 页面手动核实最新版本" }
         }
         best
     }

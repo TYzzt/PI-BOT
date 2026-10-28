@@ -16,7 +16,8 @@ before reaching that bound, do not reset it or rename this workflow's sequence.
 Android `versionCode` equals the build number. Local development defaults to 3,
 which is higher than the previous versionCode 2 but is not a published identity.
 
-Clients enumerate releases (up to 500), ignore drafts, and match explicit
+Clients enumerate releases (up to 500; if the bound is reached, report an explicit
+manual-check error rather than silently claiming no update), ignore drafts, and match explicit
 prerelease + `client-test-*` for test, non-prerelease + `client-stable-*` for
 stable. They compare numeric build numbers, not commit hashes. Stable publication
 is manual/not implemented by this main workflow; its metadata must follow the

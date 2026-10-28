@@ -73,6 +73,7 @@ export class ClientUpdater {
           if (candidate && candidate.buildNumber > (best?.buildNumber ?? 0)) best = candidate;
         }
         if (releases.length < 100) break;
+        if (page === 5) throw new Error('发布记录过多，请在 GitHub 页面手动核实最新版本');
       }
       this.selected = best;
       this.stateValue = { ...this.stateValue, phase: best ? 'available' : 'idle',

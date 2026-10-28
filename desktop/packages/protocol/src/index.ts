@@ -80,6 +80,7 @@ export interface DesktopBridge {
 
 export type UpdateChannel = 'stable' | 'test';
 export interface ClientUpdateState {
+  supported?: boolean;
   channel: UpdateChannel;
   phase: 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'launching' | 'error';
   version: string;

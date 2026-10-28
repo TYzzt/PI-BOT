@@ -72,3 +72,11 @@ test('corrupt download and network failures leave update uninstalled', async t =
   await assert.rejects(updater.install(async () => true), /先下载/);
 });
 
+test('release pagination exhaustion is visible rather than false up-to-date', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'pibot-updater-pages-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const original = globalThis.fetch; t.after(() => { globalThis.fetch = original; });
+  let calls = 0;
+  globalThis.fetch = async () => { calls++; return new Response(JSON.stringify(Array.from({ length: 100 }, () => ({ draft: true })))); };
+  const state = await new ClientUpdater(dir, '0.3.0', 0).check('stable');
+  assert.equal(calls, 5); assert.equal(state.phase, 'error'); assert.match(state.message, /发布记录过多/);
+});
