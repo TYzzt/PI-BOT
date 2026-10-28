@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import { nativeWindows, protectWindowsDirectory } from './windows.js';
 import { spawn } from 'node:child_process';
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -9,18 +11,29 @@ export class FileCredentials implements Credentials {
     if (!existsSync(this.file)) return {};
     const stat = lstatSync(this.file);
     if (!stat.isFile() || stat.isSymbolicLink() || (typeof process.getuid === 'function' && stat.uid !== process.getuid())) throw new Error('凭据文件不安全');
-    chmodSync(this.file, 0o600);
-    const parsed = JSON.parse(readFileSync(this.file, 'utf8')) as unknown;
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    if (process.platform === 'win32') {
+      protectWindowsDirectory(dirname(this.file));
+      nativeWindows('protect-file', Buffer.from(this.file, 'utf8'));
+    } else chmodSync(this.file, 0o600);
+    const raw = readFileSync(this.file);
+    const parsed = JSON.parse((process.platform === 'win32' ? nativeWindows('decrypt', raw) : raw).toString('utf8')) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      if (process.platform === 'win32') throw new Error('加密凭据内容无效');
+      return {};
+    }
+    if (process.platform === 'win32' && Object.values(parsed).some(value => typeof value !== 'string')) throw new Error('加密凭据内容无效');
     return Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
   }
   private save(data: Record<string, string>) {
-    mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
-    const tmp = `${this.file}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify(data), { mode: 0o600 });
-    chmodSync(tmp, 0o600);
+    if (process.platform === 'win32') protectWindowsDirectory(dirname(this.file));
+    else mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
+    const tmp = `${this.file}.${randomUUID()}.tmp`;
+    const plain = Buffer.from(JSON.stringify(data));
+    try { writeFileSync(tmp, process.platform === 'win32' ? nativeWindows('encrypt', plain) : plain, { mode: 0o600, flag: 'wx' }); }
+    finally { plain.fill(0); }
+    if (process.platform !== 'win32') chmodSync(tmp, 0o600);
     renameSync(tmp, this.file);
-    chmodSync(this.file, 0o600);
+    if (process.platform !== 'win32') chmodSync(this.file, 0o600);
   }
   async get(id: string) { return this.load()[id] ?? null; }
   async set(id: string, value: string) { const data = this.load(); data[id] = value; this.save(data); }

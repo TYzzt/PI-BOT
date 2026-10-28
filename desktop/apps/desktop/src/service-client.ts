@@ -1,8 +1,8 @@
-import { connect, type Socket } from 'node:net';
+import { type Socket } from 'node:net';
 import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import type { AppEvent, Method } from '../../../packages/protocol/src/index.js';
-import { socketPath, tokenPath } from '../../../packages/service/src/paths.js';
+import { socketPath, tokenPath, connectLocal } from '../../../packages/service/src/paths.js';
 
 interface PendingCall {
   resolve: (value: unknown) => void;
@@ -26,7 +26,7 @@ export class ServiceClient {
     if (this.stopped || this.socket) return;
     let token: string;
     try { token = readFileSync(this.paths.tokenPath, 'utf8'); } catch { this.schedule(); return; }
-    const socket = connect(this.paths.socketPath);
+    const socket = connectLocal(this.paths.socketPath);
     this.socket = socket; socket.setEncoding('utf8'); let buffer = '';
     socket.once('connect', () => socket.write(JSON.stringify({ token }) + '\n'));
     socket.on('data', (data: string) => {
@@ -84,4 +84,15 @@ export class ServiceClient {
     });
   }
   stop() { this.stopped = true; clearTimeout(this.timer); this.timer = undefined; this.socket?.destroy(); }
+}
+
+/** Check authenticated IPC before starting another instance. */
+export function serviceRunning(timeoutMs = 800): Promise<boolean> {
+  return new Promise(resolve => {
+    const client = new ServiceClient(event => {
+      if (event.type === 'service.status' && event.connected) { clearTimeout(timer); client.stop(); resolve(true); }
+    });
+    const timer = setTimeout(() => { client.stop(); resolve(false); },timeoutMs);
+    client.start();
+  });
 }
