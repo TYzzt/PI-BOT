@@ -306,7 +306,7 @@ private fun MessageItem(message: Message, onOpenBot: (String) -> Unit, repositor
                     }
                     Spacer(Modifier.height(6.dp))
                 }
-                Box(bubble) {
+                if (!user || message.content.isNotBlank()) {
                     when {
                         message.content.isNotBlank() -> CopyableMessage(
                             text = message.content, modifier = bubble,
