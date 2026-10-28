@@ -16,6 +16,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import dev.pibot.android.PiBotApp
+import dev.pibot.android.push.PushPermissionPrompt
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -29,23 +32,31 @@ import dev.pibot.android.data.PiBotRepository
 
 @Composable
 fun AppRoot(repository: PiBotRepository) {
+    val push = (LocalContext.current.applicationContext as PiBotApp).push
     val session by repository.session.collectAsStateWithLifecycle()
     val owner = LocalLifecycleOwner.current
     val signedIn = session != null
     DisposableEffect(owner, signedIn) {
         val observer = LifecycleEventObserver { _, event ->
             if (!signedIn) return@LifecycleEventObserver
-            if (event == Lifecycle.Event.ON_START) repository.startEvents()
+            if (event == Lifecycle.Event.ON_START) {
+                repository.startEvents()
+                repository.visibleBotId?.let(push::clearBot)
+                push.sync()
+            }
             if (event == Lifecycle.Event.ON_STOP) repository.stopEvents()
         }
         owner.lifecycle.addObserver(observer)
         onDispose { owner.lifecycle.removeObserver(observer) }
     }
     if (!signedIn) LoginScreen(repository) else Signed(repository)
+    if (signedIn) PushPermissionPrompt(push)
 }
 
 @Composable
 private fun Signed(repository: PiBotRepository) {
+    val push = (LocalContext.current.applicationContext as PiBotApp).push
+    val target by push.target.collectAsStateWithLifecycle()
     val nav = rememberNavController()
     val entry by nav.currentBackStackEntryAsState()
     val route = entry?.destination?.route
@@ -60,6 +71,23 @@ private fun Signed(repository: PiBotRepository) {
             popUpTo("bots")
             launchSingleTop = true
         }
+    }
+
+    LaunchedEffect(target) {
+        target?.let { event ->
+            if (event.matches(repository.session.value)) {
+                // A notification selection takes precedence over the wide-screen default.
+                wideSelectionMade = true
+                openBot(event.botId)
+            }
+            push.consumeTarget(event)
+        }
+    }
+    val selectedBot = if (route == "bot/{id}") entry?.arguments?.getString("id") else null
+    DisposableEffect(selectedBot) {
+        repository.visibleBotId = selectedBot
+        selectedBot?.let(push::clearBot)
+        onDispose { if (repository.visibleBotId == selectedBot) repository.visibleBotId = null }
     }
 
     BoxWithConstraints(Modifier.fillMaxSize().background(Paper)) {

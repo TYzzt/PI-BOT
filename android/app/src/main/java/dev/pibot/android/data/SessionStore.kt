@@ -8,7 +8,8 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 
 /** Signed-in session: server URL, bearer token and user, kept in encrypted preferences. */
-data class Session(val serverUrl: String, val token: String, val expiresAt: Long, val user: User)
+data class Session(val serverUrl: String, val token: String, val expiresAt: Long, val user: User,
+    val pushBindingId: String = java.util.UUID.randomUUID().toString())
 
 interface SessionStorage {
     fun load(): Session?
@@ -31,7 +32,10 @@ class SessionStore(context: Context) : SessionStorage {
         val expires = prefs.getLong(EXPIRES, 0)
         if (expires <= System.currentTimeMillis() + 60_000) return null
         val user = runCatching { API_JSON.decodeFromString(User.serializer(), prefs.getString(USER, null)!!) }.getOrNull() ?: return null
-        return Session(prefs.getString(URL, null) ?: return null, token, expires, user)
+        val binding = prefs.getString(BINDING, null) ?: java.util.UUID.randomUUID().toString().also {
+            prefs.edit().putString(BINDING, it).commit()
+        }
+        return Session(prefs.getString(URL, null) ?: return null, token, expires, user, binding)
     }
 
     override fun save(session: Session) {
@@ -39,12 +43,13 @@ class SessionStore(context: Context) : SessionStorage {
             .putString(URL, session.serverUrl)
             .putString(TOKEN, session.token)
             .putLong(EXPIRES, session.expiresAt)
+            .putString(BINDING, session.pushBindingId)
             .putString(USER, API_JSON.encodeToString(User.serializer(), session.user))
             .apply()
     }
 
     override fun clear() {
-        prefs.edit().remove(TOKEN).remove(EXPIRES).remove(USER).apply()
+        prefs.edit().remove(TOKEN).remove(EXPIRES).remove(USER).remove(BINDING).commit()
     }
 
     override fun lastServerUrl(): String? = prefs.getString(URL, null)
@@ -54,5 +59,6 @@ class SessionStore(context: Context) : SessionStorage {
         const val TOKEN = "access_token"
         const val EXPIRES = "expires_at"
         const val USER = "user"
+        const val BINDING = "push_binding"
     }
 }

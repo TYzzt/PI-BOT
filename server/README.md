@@ -1,5 +1,7 @@
 # Pi Bot server
 
+Android FCM 后台通知由 Server 保存服务账号私钥及 `google-services.json`，统一 APK 登录后获取公共配置，无需为每个部署重新编译。项目创建、环境变量、只读文件挂载和验收见 [FCM 通知说明](../docs/android-fcm.md)。
+
 Node.js 24 + TypeScript + Fastify 5 + PostgreSQL 16。包含 API（含管理后台 `/admin/` 和模型代理 `/llm/v1`）、Worker（执行电脑离线时的云端运行、长期记忆压缩）和 Runner（隔离执行 Pi agent）。整体设计见 [ARCHITECTURE.md](ARCHITECTURE.md)，需求与验收见 [REQUIREMENTS.md](REQUIREMENTS.md)。
 
 ## 本地开发
@@ -89,7 +91,7 @@ PI_BOT_TEST_DATABASE_URL=postgresql://pibot:pibot@127.0.0.1:5432/pibot npm test
 
 没有新进展不发消息。某个目标有新进展时，在原时间线发一条；同一状态不重复发。检查可以在该目标写明的授权范围内改文件或跑命令，资料库外访问仍需审批。不能自己新增目标，也不能把工作交给其他智能体。中断时操作结果无法确认会暂停并请你核实。
 
-升级需同步更新 API、Worker、Runner、Linux/Mac 客户端和 Android。服务端自动应用 `0010-multi-device`，保留已有电脑绑定、聊天和记忆；升级前备份数据库与 vault 并结束运行。旧客户端协议不兼容本版本。Android 不提供系统后台推送。
+升级需同步更新 API、Worker、Runner、Linux/Mac 客户端和 Android。服务端自动应用 `0010-multi-device`，保留已有电脑绑定、聊天和记忆；升级前备份数据库与 vault 并结束运行。旧客户端协议不兼容本版本。Android 系统后台通知通过可选 FCM 提供。
 
 
 ## 云端机器操作

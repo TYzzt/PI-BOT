@@ -2,6 +2,7 @@ import { errorInfo } from "@pi-bot/runtime-contracts";
 import { taskMessage } from "./task-conversation.js";
 import { recordReply, replySchema } from "./replies.js";
 import { randomUUID } from "node:crypto";
+import { enqueueApproval } from "./push.js";
 import { z } from "zod";
 import { fail, type Database, type Row, type Tx } from "./db.js";
 import type { Settings } from "./config.js";
@@ -181,6 +182,7 @@ export async function handleRunEvent(
       status: "pending",
       expires_at: new Date(Date.now() + s.approvalTtl * 1000),
     });
+    await enqueueApproval(tx, approval);
     await tx.rows(
       "UPDATE bot_runs SET status='waiting_approval' WHERE run_id=$1 AND status='running'",
       [runId],

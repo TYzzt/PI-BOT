@@ -1,5 +1,6 @@
 import { reportViewer } from "./reports.js";
 import {RemoteService} from "./remote/service.js";
+import { firebaseTransport, loadAndroidPushConfig, PushDispatcher } from "./push.js";
 import {remoteWeb} from "./remote/web.js";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import websocket from "@fastify/websocket";
@@ -101,11 +102,16 @@ export async function createApp(
   hub = new Hub(),
   webSearch = new WebSearch(s),
   remoteFactory=(db:Database,s:Settings)=>new RemoteService(db,s),
+  pushFactory = firebaseTransport,
 ) {
+  const pushConfig = await loadAndroidPushConfig(s);
+  const pushTransport = await pushFactory(s);
+  db.pushEnabled = !!s.fcmProjectId;
   await migrate(db);
   await bootstrapAdmin(db, s);
   await failOrphanedDeviceRuns(db);
   const app = Fastify({ logger: false, bodyLimit: 16 * 1024 * 1024 });
+  const push = pushTransport ? new PushDispatcher(db, pushTransport) : undefined;
   app.removeContentTypeParser("application/json");
   app.addContentTypeParser(
     "application/json",
@@ -143,7 +149,7 @@ export async function createApp(
         for (const [k, v] of Object.entries(params))
           if (k === "id" && !/^[0-9a-f-]{36}$/i.test(v)) fail(404, "记录不存在");
         const after: (() => unknown)[] = [];
-        const base = { db, s, hub, webSearch, remote, query, params, req, reply, after: (fn: () => unknown) => void after.push(fn) };
+        const base = { db, s, hub, webSearch, remote, pushConfig, query, params, req, reply, after: (fn: () => unknown) => void after.push(fn) };
         let result: unknown;
         if (route.tx === false) {
           const who = await db.tx((tx) => authenticate(tx, route, req, raw, s));
@@ -190,6 +196,9 @@ export async function createApp(
   const voice = new VoiceHub(db, s, hub, dispatcher);
   dispatcher.setAnnouncer(voice);
   await sockets(app, db, s, hub, dispatcher, voice);
+  // onClose runs in reverse registration order; stop sends before sockets close the database.
+  app.addHook("onClose", async () => { await push?.stop(); });
+  push?.start();
   return Object.assign(app, { hub, db, remote });
 }
 

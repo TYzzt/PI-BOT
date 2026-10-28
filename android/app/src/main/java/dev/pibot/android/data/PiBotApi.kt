@@ -2,6 +2,7 @@ package dev.pibot.android.data
 
 import dev.pibot.android.domain.ServerUrl
 import dev.pibot.android.face.Avatar
+import dev.pibot.android.push.PushConfigResponse
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -227,6 +228,19 @@ class ApiException(val status: Int, message: String, val code: String? = null) :
 }
 
 class PiBotApi(private val http: OkHttpClient, private val json: Json = API_JSON) {
+    fun pushConfig(session: Session): PushConfigResponse = call(ServerUrl(session.serverUrl), "GET", "/push/config", session.token)
+
+    fun registerPush(session: Session, installationId: String, fcmToken: String, projectId: String): JsonObject =
+        call(ServerUrl(session.serverUrl), "PUT", "/push/installations/$installationId", session.token,
+            kotlinx.serialization.json.buildJsonObject {
+                put("fcm_token", JsonPrimitive(fcmToken)); put("binding_id", JsonPrimitive(session.pushBindingId))
+                put("firebase_project_id", JsonPrimitive(projectId))
+            })
+
+    fun unregisterPush(session: Session, installationId: String): JsonObject =
+        call(ServerUrl(session.serverUrl), "DELETE", "/push/installations/$installationId", session.token,
+            query = listOf("binding_id" to session.pushBindingId))
+
     fun login(url: ServerUrl, username: String, password: String): LoginResponse =
         call(url, "POST", "/auth/login", null, LoginBody(username, password))
 

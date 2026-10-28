@@ -163,6 +163,7 @@ Pi Bot 是多用户的个人 Bot 平台。每个用户有若干个 Bot，每个 
 - `PiBotApi`（OkHttp + kotlinx.serialization）调用与电脑相同的 REST 接口；`PiBotRepository` 用 StateFlow 保存会话、Bot 列表、电脑 状态和各 Bot 的时间线，没有本地数据库。
 - 应用在前台时连接 `/ws/events`：`delta` 直接合并进时间线，`bot` 事件 200ms 内合并成一次刷新，断线按 1、2、4…30 秒退避重连，重连后补拉列表和已打开的时间线；4401 或 401 退出登录。
 - 会话（服务器地址、用户、令牌）存在 EncryptedSharedPreferences。Android 的 debug 和 release 均支持 HTTP、HTTPS 服务器地址，实时连接相应使用 WS、WSS。
+- 可选 FCM 使用独立安装绑定、高优先级 data 消息和事务内持久发送队列。Server 保存两份 Firebase JSON，登录后的 Android 从 `/push/config` 获取公共配置并按登录身份缓存，进程恢复时先初始化默认 FirebaseApp；同一 APK 可连接不同部署，跨项目或选项变化时提示重启，不热替换 SDK。API 负责重试，Android 校验账号、绑定和有效期后展示，点击回会话拉取最新数据。无配置时聊天仍可用。配置见 [FCM 通知说明](../docs/android-fcm.md)。
 - 消息按 `seq` 分页（每页 50 条），滚到顶部加载更早的消息。
 
 ## 角色
@@ -221,7 +222,7 @@ Agent 可以通过 `get_ui_catalog` 查询组件 / 函数，并用 `show_ui` 在
 - 暂停或停止目标会取消进行中的检查。归档 Bot 会停止检查并作废未发回报。静默轮次不更新公开消息预览或 `last_active_at`。更换执行电脑会暂停检查，确认后再恢复。
 - 默认每轮五分钟、二十次模型调用，每 Bot 每本地日最多八轮。到上限后等到下一本地日，不另发一条次数用完。可重试的失败按一、五、十五分钟重试，仍失败或有未确认操作则等待用户并说一次。
 
-升级时先结束旧运行，更新 API、Worker、Runner 与电脑后启动；服务端自动应用迁移。Android 沿用消息、审批和 `activity` 协议；不提供系统推送。目标检查在兼容电脑连接后开始。回滚前停止检查并备份数据库。
+升级时先结束旧运行，更新 API、Worker、Runner 与电脑后启动；服务端自动应用迁移。Android 沿用消息、审批和 `activity` 协议，系统通知通过可选 FCM 提供。目标检查在兼容电脑连接后开始。回滚前停止检查并备份数据库。
 
 
 ## Linux 与多设备（0010-multi-device）

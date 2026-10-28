@@ -1,0 +1,16 @@
+# Optional override for server/docker-compose.yml or deploy/ubuntu/compose.yml.
+# Set both PI_BOT_FCM_CREDENTIALS_FILE and PI_BOT_FCM_ANDROID_CONFIG_FILE to absolute HOST paths.
+services:
+  api:
+    environment:
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/pibot-fcm.json
+      PI_BOT_FCM_ANDROID_CONFIG_FILE: /run/secrets/google-services.json
+    volumes:
+      - type: bind
+        source: ${PI_BOT_FCM_CREDENTIALS_FILE:?set an absolute host credential path}
+        target: /run/secrets/pibot-fcm.json
+        read_only: true
+      - type: bind
+        source: ${PI_BOT_FCM_ANDROID_CONFIG_FILE:?set an absolute host google-services.json path}
+        target: /run/secrets/google-services.json
+        read_only: true

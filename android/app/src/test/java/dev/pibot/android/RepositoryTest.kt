@@ -15,6 +15,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.async
@@ -85,6 +86,69 @@ class RepositoryTest {
         respond(200, """{"access_token":"tok","expires_in":3600,"user":$USER}""")
         repo.login(base(), " bob ", "secret")
         server.takeRequest()
+    }
+
+    @Test
+    fun pushRegistrationUsesCurrentBindingBearerAndPathPrefix() = runBlocking {
+        login()
+        val session = repo.session.value!!
+        val installation = java.util.UUID.randomUUID().toString()
+        respond(200, """{"ok":true,"enabled":true}""")
+        PiBotApi(http).registerPush(session, installation, "fcm-token", "test-project")
+        val request = server.takeRequest()
+        assertEquals("PUT", request.method)
+        assertEquals("/pibot/push/installations/$installation", request.requestUrl!!.encodedPath)
+        assertEquals("Bearer tok", request.getHeader("Authorization"))
+        val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+        assertEquals("fcm-token", body["fcm_token"]!!.jsonPrimitive.content)
+        assertEquals(session.pushBindingId, body["binding_id"]!!.jsonPrimitive.content)
+        assertEquals("test-project", body["firebase_project_id"]!!.jsonPrimitive.content)
+        respond(200, """{"ok":true}""")
+        PiBotApi(http).unregisterPush(session, installation)
+        val removal = server.takeRequest()
+        assertEquals("DELETE", removal.method)
+        assertEquals(session.pushBindingId, removal.requestUrl!!.queryParameter("binding_id"))
+    }
+
+    @Test
+    fun pushConfigUsesAuthenticatedCurrentServerWithItsPathPrefix() = runBlocking {
+        login()
+        respond(200, """{"enabled":false,"firebase":null}""")
+        val config = PiBotApi(http).pushConfig(repo.session.value!!)
+        val request = server.takeRequest()
+        assertEquals("GET", request.method)
+        assertEquals("/pibot/push/config", request.requestUrl!!.encodedPath)
+        assertEquals("Bearer tok", request.getHeader("Authorization"))
+        assertFalse(config.enabled)
+        assertNull(config.firebase)
+    }
+
+    @Test
+    fun pushRefreshCannotInstallOldAccountDataAfterRelogin() = runBlocking {
+        login()
+        val binding = repo.session.value!!.pushBindingId
+        server.enqueue(MockResponse().setHeader("content-type", "application/json").setBody(BOT).setBodyDelay(400, TimeUnit.MILLISECONDS))
+        val refresh = async(Dispatchers.IO) { repo.refreshFromPush("b1", binding) }
+        assertEquals("/pibot/bots/b1", server.takeRequest(5, TimeUnit.SECONDS)!!.requestUrl!!.encodedPath)
+        repo.logout()
+        login()
+        assertFalse(binding == repo.session.value!!.pushBindingId)
+        refresh.await()
+        assertNull(repo.bots.value)
+        assertFalse(repo.timeline("b1").first().loaded)
+    }
+
+    @Test
+    fun oldUnauthorizedRequestCannotLogOutNewSession() = runBlocking {
+        login()
+        server.enqueue(MockResponse().setResponseCode(401).setBody("{}").setBodyDelay(400, TimeUnit.MILLISECONDS))
+        val refresh = async(Dispatchers.IO) { runCatching { repo.refreshBots() }.exceptionOrNull() }
+        server.takeRequest(5, TimeUnit.SECONDS)!!
+        repo.logout()
+        login()
+        val binding = repo.session.value!!.pushBindingId
+        assertEquals(401, (refresh.await() as ApiException).status)
+        assertEquals(binding, repo.session.value!!.pushBindingId)
     }
 
     @Test

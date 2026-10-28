@@ -58,6 +58,9 @@ class PiBotRepository(
     private val scope: CoroutineScope,
     private val io: CoroutineDispatcher = Dispatchers.IO,
 ) {
+    var onSessionChanged: (Session?, Session?) -> Unit = { _, _ -> }
+    @Volatile var visibleBotId: String? = null
+    @Volatile var foreground = false
     private val socketClient = http.newBuilder().pingInterval(25, TimeUnit.SECONDS).readTimeout(0, TimeUnit.MILLISECONDS).build()
     private val _session = MutableStateFlow(storage.load())
     private val _bots = MutableStateFlow<List<Bot>?>(null)
@@ -120,10 +123,13 @@ class PiBotRepository(
         val r = withContext(io) { api.login(url, username.trim(), password) }
         val session = Session(url.base, r.accessToken, System.currentTimeMillis() + r.expiresIn * 1000, r.user)
         storage.save(session)
+        val previous = _session.value
         _session.value = session
+        onSessionChanged(previous, session)
     }
 
     fun logout() {
+        val previous = _session.value
         stopEvents()
         storage.clear()
         _session.value = null
@@ -133,6 +139,7 @@ class PiBotRepository(
         _devices.value = emptyList()
         _liveCall.value = null
         _voiceNotice.value = null
+        onSessionChanged(previous, null)
     }
 
     fun updateLiveCall(call: LiveCall?) {
@@ -157,7 +164,7 @@ class PiBotRepository(
         try {
             return withContext(io) { block(ServerUrl(s.serverUrl), s.token) }
         } catch (e: ApiException) {
-            if (e.unauthorized) logout()
+            if (e.unauthorized && _session.value === s) logout()
             throw e
         }
     }
@@ -179,6 +186,25 @@ class PiBotRepository(
         }
         _computer.value = list.computer
         _devices.value = list.devices
+    }
+
+    /** A background refresh must never install old account data after a login change. */
+    suspend fun refreshFromPush(botId: String, bindingId: String) {
+        val session = _session.value?.takeIf { it.pushBindingId == bindingId } ?: return
+        val result = withContext(io) { api.bot(ServerUrl(session.serverUrl), session.token, botId) }
+        if (_session.value?.pushBindingId != bindingId) return
+        _bots.update { current ->
+            if (_session.value?.pushBindingId != bindingId) current
+            else current?.filterNot { it.id == botId }?.plus(result)?.sortedByDescending { it.lastActiveAt }
+        }
+        if (visibleBotId != botId) return
+        val page = withContext(io) { api.messages(ServerUrl(session.serverUrl), session.token, botId) }
+        _timelines.update { all ->
+            if (_session.value?.pushBindingId != bindingId) all else {
+                val current = all[botId] ?: Timeline()
+                all + (botId to current.merge(page.messages, if (current.loaded) current.hasMore else page.hasMore))
+            }
+        }
     }
 
     suspend fun refreshMe(): Me = authed { u, t -> api.me(u, t) }.also { _computer.value = it.computer; _devices.value = it.devices }
@@ -364,6 +390,7 @@ class PiBotRepository(
 
     @Synchronized
     fun startEvents() {
+        foreground = true
         wantEvents = true
         if (activityPoll?.isActive != true) activityPoll = scope.launch {
             while (wantEvents) {
@@ -380,6 +407,7 @@ class PiBotRepository(
 
     @Synchronized
     fun stopEvents() {
+        foreground = false
         wantEvents = false
         activityPoll?.cancel()
         activityPoll = null

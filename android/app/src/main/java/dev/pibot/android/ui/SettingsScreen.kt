@@ -41,6 +41,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.pibot.android.BuildConfig
+import dev.pibot.android.PiBotApp
+import android.content.Intent
+import android.provider.Settings
 import dev.pibot.android.data.Device
 import dev.pibot.android.data.PiBotRepository
 import kotlinx.coroutines.launch
@@ -54,6 +57,9 @@ fun SettingsScreen(repository: PiBotRepository, onBack: () -> Unit, onPhone: (St
     val devices by repository.devices.collectAsStateWithLifecycle()
     val call by repository.liveCall.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val push = (context.applicationContext as PiBotApp).push
+    val pushStatus by push.status.collectAsStateWithLifecycle()
+    val pushRestartRequired by push.restartRequired.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     var removing by remember { mutableStateOf<Device?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -75,6 +81,13 @@ fun SettingsScreen(repository: PiBotRepository, onBack: () -> Unit, onPhone: (St
                 Item("用户", session?.user?.let { it.displayName.ifBlank { it.username } } ?: "")
                 Item("服务器", session?.serverUrl ?: "")
                 Item("实时连接", if (live) "已连接" else "未连接", last = true)
+            }
+            Group("通知") {
+                Item("推送状态", pushStatus, last = true)
+                if (pushRestartRequired) TextButton(onClick = push::restart) { Text("重新启动应用以启用通知") }
+                TextButton(onClick = {
+                    context.startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName))
+                }) { Text("系统通知设置") }
             }
             Group("执行电脑") {
                 if (devices.none { it.revokedAt == null }) Text("在 Mac 或 Linux 上安装 Pi Bot，并用同一个账号登录，即可添加执行电脑。", color = Muted, fontSize = 14.sp)

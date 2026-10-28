@@ -5,6 +5,212 @@
     "version": "0.4.0"
   },
   "paths": {
+    "/push/config": {
+      "get": {
+        "tags": [
+          "push"
+        ],
+        "summary": "获取当前服务器的 Android 推送公共配置",
+        "security": [
+          {
+            "UserBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "default": {
+            "description": "{ detail }"
+          }
+        }
+      }
+    },
+    "/push/installations/{id}": {
+      "put": {
+        "tags": [
+          "push"
+        ],
+        "summary": "注册当前 Android 推送安装",
+        "security": [
+          {
+            "UserBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                  "fcm_token": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "binding_id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "firebase_project_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  }
+                },
+                "required": [
+                  "fcm_token",
+                  "binding_id"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "default": {
+            "description": "{ detail }"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "push"
+        ],
+        "summary": "注销当前账号的推送绑定",
+        "security": [
+          {
+            "UserBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "default": {
+            "description": "{ detail }"
+          }
+        }
+      }
+    },
+    "/reports/{id}/open": {
+      "post": {
+        "tags": [
+          "reports"
+        ],
+        "summary": "打开报告预览",
+        "security": [
+          {
+            "UserBearer": []
+          },
+          {
+            "DeviceSignature": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "default": {
+            "description": "{ detail }"
+          }
+        }
+      }
+    },
+    "/reports/{id}/content": {
+      "get": {
+        "tags": [
+          "reports"
+        ],
+        "summary": "读取短期授权报告文件",
+        "security": [],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "ticket",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          {
+            "name": "download",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "default": {
+            "description": "{ detail }"
+          }
+        }
+      }
+    },
     "/devices/{id}/phone/status": {
       "post": {
         "tags": [
@@ -3009,6 +3215,47 @@
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "type": "object",
                 "properties": {
+                  "capabilities": {
+                    "type": "object",
+                    "properties": {
+                      "chat": {
+                        "type": "boolean"
+                      },
+                      "vision": {
+                        "type": "boolean"
+                      },
+                      "voice": {
+                        "type": "boolean"
+                      },
+                      "tools": {
+                        "type": "boolean"
+                      },
+                      "reasoning": {
+                        "type": "string",
+                        "enum": [
+                          "none",
+                          "configurable",
+                          "required",
+                          "unknown"
+                        ]
+                      },
+                      "reasoning_off": {
+                        "type": "object",
+                        "propertyNames": {
+                          "type": "string"
+                        },
+                        "additionalProperties": {}
+                      }
+                    },
+                    "required": [
+                      "chat",
+                      "vision",
+                      "voice",
+                      "tools",
+                      "reasoning"
+                    ],
+                    "additionalProperties": false
+                  },
                   "name": {
                     "type": "string",
                     "minLength": 1,
@@ -3174,6 +3421,47 @@
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "type": "object",
                 "properties": {
+                  "capabilities": {
+                    "type": "object",
+                    "properties": {
+                      "chat": {
+                        "type": "boolean"
+                      },
+                      "vision": {
+                        "type": "boolean"
+                      },
+                      "voice": {
+                        "type": "boolean"
+                      },
+                      "tools": {
+                        "type": "boolean"
+                      },
+                      "reasoning": {
+                        "type": "string",
+                        "enum": [
+                          "none",
+                          "configurable",
+                          "required",
+                          "unknown"
+                        ]
+                      },
+                      "reasoning_off": {
+                        "type": "object",
+                        "propertyNames": {
+                          "type": "string"
+                        },
+                        "additionalProperties": {}
+                      }
+                    },
+                    "required": [
+                      "chat",
+                      "vision",
+                      "voice",
+                      "tools",
+                      "reasoning"
+                    ],
+                    "additionalProperties": false
+                  },
                   "name": {
                     "type": "string",
                     "minLength": 1,

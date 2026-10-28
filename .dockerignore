@@ -22,6 +22,10 @@ boards
 **/*.vault.json.*.tmp
 **/*.jks
 **/*.keystore
+**/*firebase-adminsdk*.json
+**/firebase-service-account*.json
+**/fcm-service-account*.json
+**/google-services.json
 
 # Local accounts, libraries, IDE configuration, and development output.
 **/.local

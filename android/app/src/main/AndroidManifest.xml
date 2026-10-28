@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -19,6 +19,15 @@
         android:networkSecurityConfig="@xml/network_security_config"
         android:supportsRtl="true"
         android:theme="@style/Theme.PiBot">
+        <!-- Restore server-provided options in Application before any MessagingService callbacks. -->
+        <provider android:name="com.google.firebase.provider.FirebaseInitProvider" tools:node="remove" />
+        <meta-data android:name="firebase_messaging_auto_init_enabled" android:value="false" />
+        <activity
+            android:name=".push.PushRestartActivity"
+            android:exported="false"
+            android:process=":push_restart"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.NoDisplay" />
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -28,6 +37,13 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <service
+            android:name=".push.PiBotMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
         <service
             android:name=".voice.VoiceCallService"
             android:exported="false"

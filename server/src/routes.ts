@@ -3,6 +3,7 @@ import { conversation } from "./task-conversation.js";
 import { remoteRoutes } from './remote/routes.js';
 import type {RemoteService} from './remote/service.js';
 import { phoneRoutes } from './phone-routes.js';
+import { pushRoutes, type AndroidPushConfig } from './push.js';
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -54,6 +55,7 @@ export interface Context {
   hub: Hub;
   webSearch: WebSearch;
   remote: RemoteService;
+  pushConfig?: AndroidPushConfig;
   user: Row;
   device?: Row;
   llm?: LlmClaims;
@@ -66,7 +68,7 @@ export interface Context {
   after(fn: () => unknown): void;
 }
 export interface Route {
-  method: "GET" | "POST" | "PATCH" | "DELETE";
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   path: string;
   auth: Auth;
   tag: string;
@@ -179,6 +181,7 @@ async function deviceFiles(ctx: Context, method: "list" | "read") {
 }
 
 export const routes: Route[] = [
+  ...pushRoutes,
   ...reportRoutes,
   ...phoneRoutes,
   ...remoteRoutes,

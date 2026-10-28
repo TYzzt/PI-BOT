@@ -33,6 +33,7 @@ export class Worker {
     readonly db: Database,
     readonly s: Settings,
   ) {
+    db.pushEnabled = !!s.fcmProjectId;
     this.exporter=new ObservationExporter(db,s);
     if (!s.runnerToken || s.runnerToken.length < 32) throw new Error("需要配置 PI_BOT_RUNNER_TOKEN（至少 32 字符）");
   }
