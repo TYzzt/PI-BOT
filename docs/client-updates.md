@@ -63,7 +63,9 @@ installed signer before offering installation. Signing rotation is not supported
 Settings → Client updates → choose channel → check → explicitly download →
 verify → explicitly install. Android invokes the platform package installer,
 requests unknown-source permission only on explicit installation, and rechecks
-file integrity and refreshed Bot activity before install. If tasks are running,
+file integrity and Bot activity (refreshing when Server is reachable) before install.
+When Server is offline, cached activity can be incomplete: the dialog explicitly
+requires the user to confirm that all activities have ended. If tasks are running,
 installation is deferred; users must also end calls/phone control first. No
 silent installation, background forced restart, uninstall or data migration.
 Windows installer is currently unsigned, and must be confirmed by the user.

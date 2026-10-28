@@ -41,3 +41,8 @@ coverage/
 htmlcov/
 test-results/
 playwright-report/
+
+# Client CI build identity and short Windows packaging scratch paths.
+/client-build.json
+/.w/
+/.t-*/

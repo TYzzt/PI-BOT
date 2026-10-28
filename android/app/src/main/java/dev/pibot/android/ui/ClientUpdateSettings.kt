@@ -61,13 +61,13 @@ fun ClientUpdateSettings(repository: PiBotRepository) {
     if (confirm) AlertDialog(
         onDismissRequest = { confirm = false },
         title = { Text("确认升级") },
-        text = { Text("请先结束任务、通话和手机控制。安装会关闭当前客户端，但不会清除本地配置。系统仍会再次要求你确认。若需允许安装来源，授权后请回到这里再次点击安装。") },
+        text = { Text("请先结束任务、通话和手机控制；服务器离线时，活动状态可能不完整，请自行确认已结束。安装会关闭当前客户端，但不会清除本地配置。系统仍会再次要求你确认。若需允许安装来源，授权后请回到这里再次点击安装。") },
         confirmButton = { TextButton(enabled = !busy, onClick = {
             confirm = false; busy = true
             scope.launch {
                 try {
-                    // Refresh rather than trust stale activity state before installation.
-                    repository.refreshBots()
+                    // Refresh when available; update installation itself must not require NAS.
+                    runCatching { repository.refreshBots() }
                     val active = repository.bots.value.orEmpty().any {
                         it.latestRun?.active == true || it.activeTasks.isNotEmpty() ||
                             (it.activity?.runningCount ?: 0) > 0 || (it.activity?.queuedCount ?: 0) > 0
