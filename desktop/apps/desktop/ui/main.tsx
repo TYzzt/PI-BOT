@@ -7,6 +7,7 @@ import { bridge, call, errorText } from './bridge.js';
 import { BotEditor } from './editor.js';
 import { Timeline } from './timeline.js';
 import { BotListItem } from './bot-list-item.js';
+import { ClientUpdates } from './client-updates.js';
 import './style.css';
 
 const ORANGE = DEFAULT_AVATAR;
@@ -18,7 +19,7 @@ function Login({ state }: { state: AccountState }) {
   const [password, setPassword] = useState('');
   const [advanced, setAdvanced] = useState(false);
   const [mood, setMood] = useState<Mood>(state.connection === 'revoked' ? 'error' : 'idle');
-  const [error, setError] = useState(state.connection === 'revoked' ? '这台 Mac 已被解绑或账号不可用，请重新登录。' : '');
+  const [error, setError] = useState(state.connection === 'revoked' ? '这台 电脑 已被解绑或账号不可用，请重新登录。' : '');
   useEffect(() => {
     if (state.serverUrl || serverUrlEdited.current) return;
     let active = true;
@@ -40,15 +41,15 @@ function Login({ state }: { state: AccountState }) {
       <form className="login-card" onSubmit={submit}>
         <PiBot avatar={ORANGE} mood={mood} size={150} followPointer />
         <h1>Pi Bot</h1>
-        <p className="muted">登录后，这台 Mac 就是你的 Bot 们工作的电脑。<br />它们的资料库放在 ~/pi-bot。</p>
+        <p className="muted">登录后，这台 电脑 就是你的 Bot 们工作的电脑。<br />它们的资料库放在 用户主目录下的 pi-bot。</p>
         <label>用户名<input value={username} onChange={e => setUsername(e.target.value)} autoFocus autoComplete="username" /></label>
         <label>密码<input type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete="current-password" /></label>
         {advanced
           ? <label>服务器地址<input value={serverUrl} onChange={e => { serverUrlEdited.current = true; setServerUrl(e.target.value); }} /></label>
           : <button type="button" className="link" onClick={() => setAdvanced(true)}>服务器：{serverUrl.replace(/^https?:\/\//, '')}</button>}
         {error && <p className="error">{error}</p>}
-        <button className="primary" disabled={!serverUrl.trim() || !username || !password || mood === 'thinking'}>登录并绑定这台 Mac</button>
-        <p className="muted small">账号由管理员创建。一个账号只绑定一台 Mac，重新绑定会替换旧设备。</p>
+        <button className="primary" disabled={!serverUrl.trim() || !username || !password || mood === 'thinking'}>登录并绑定这台 电脑</button>
+        <p className="muted small">账号由管理员创建。一个账号只绑定一台 电脑，重新绑定会替换旧设备。</p>
       </form>
     </div>
   );
@@ -77,13 +78,14 @@ function Settings({ state, onClose }: { state: AccountState; onClose(): void }) 
         <h2>设置</h2>
         <dl>
           <dt>账号</dt><dd>{state.user?.display_name}（{state.user?.username}）</dd>
-          <dt>这台 Mac</dt><dd>{state.deviceLabel}</dd>
+          <dt>这台 电脑</dt><dd>{state.deviceLabel}</dd>
           <dt>服务器</dt><dd className="mono">{state.serverUrl}</dd>
           <dt>资料库</dt><dd className="mono">{state.libraryRoot}</dd>
         </dl>
-        <p className="muted small">Mac 在线时，Bot 在这台电脑上工作：读写自己的资料库、执行命令，访问资料库以外的文件前会先征得你同意。Mac 离线时，Bot 在云端只能对话和联网搜索。</p>
+        <p className="muted small">电脑 在线时，Bot 在这台电脑上工作：读写自己的资料库、执行命令，访问资料库以外的文件前会先征得你同意。电脑 离线时，Bot 在云端只能对话和联网搜索。</p>
+        <ClientUpdates />
         <footer>
-          <button className="ghost danger" onClick={() => { if (confirm('退出登录并解绑这台 Mac？资料库文件会保留。')) void call('logout').then(onClose); }}>退出登录</button>
+          <button className="ghost danger" onClick={() => { if (confirm('退出登录并解绑这台 电脑？资料库文件会保留。')) void call('logout').then(onClose); }}>退出登录</button>
           <button className="primary" onClick={onClose}>完成</button>
         </footer>
       </div>
@@ -173,7 +175,7 @@ function App() {
       <aside>
         <div className="titlebar">
           <span className="brand">Pi Bot</span>
-          <span className={`pill ${account.connection}`}>{online ? 'Mac 在线' : account.connection === 'connecting' ? '连接中…' : '离线 · 重连中'}</span>
+          <span className={`pill ${account.connection}`}>{online ? '电脑 在线' : account.connection === 'connecting' ? '连接中…' : '离线 · 重连中'}</span>
         </div>
         <div className="bot-list">
           {bots.map(b => {
@@ -200,14 +202,14 @@ function App() {
         </button>
       </aside>
       <main>
-        {!online && <div className="banner">{account.connection === 'connecting' ? '正在连接服务器…' : '与服务器的连接已断开，正在自动重连。断开期间 Bot 无法在这台 Mac 上工作。'}</div>}
+        {!online && <div className="banner">{account.connection === 'connecting' ? '正在连接服务器…' : '与服务器的连接已断开，正在自动重连。断开期间 Bot 无法在这台 电脑 上工作。'}</div>}
         {bot ? (
           <>
             <header className="bot-head">
               <PiBot avatar={bot.avatar} mood={botMood(bot, activities[bot.id], now)} size={52} followPointer />
               <div className="bot-title">
                 <h1>{bot.name}</h1>
-                <span className="muted small">{bot.is_main ? '主智能体 · ' : ''}{models.find(m => m.id === bot.model_id)?.name ?? '默认模型'} · ~/pi-bot/{bot.slug}</span>
+                <span className="muted small">{bot.is_main ? '主智能体 · ' : ''}{models.find(m => m.id === bot.model_id)?.name ?? '默认模型'} · 用户主目录下的 pi-bot/{bot.slug}</span>
               </div>
               <button className="ghost" onClick={() => bridge.openLibrary(bot.slug).catch(e => alert(errorText(e)))}>在 Finder 中打开资料库</button>
               <button className="ghost" disabled={!online} onClick={() => setEditor(bot)}>编辑</button>
@@ -227,13 +229,13 @@ function App() {
             {online ? (
               <>
                 <h2>创建你的第一个 Bot</h2>
-                <p className="muted">每个 Bot 有自己的性格、长期记忆和资料库。它们会在这台 Mac 上帮你整理资料、写文件、跑命令。</p>
+                <p className="muted">每个 Bot 有自己的性格、长期记忆和资料库。它们会在这台 电脑 上帮你整理资料、写文件、跑命令。</p>
                 <button className="primary" onClick={() => setEditor('new')}>新建 Bot</button>
               </>
             ) : (
               <>
                 <h2>正在连接服务器</h2>
-                <p className="muted">连上之后这里会出现你的 Bot。资料库里的文件一直在 Finder 里：{account.libraryRoot ?? '~/pi-bot'}</p>
+                <p className="muted">连上之后这里会出现你的 Bot。资料库里的文件一直在 Finder 里：{account.libraryRoot ?? '用户主目录下的 pi-bot'}</p>
               </>
             )}
           </div>

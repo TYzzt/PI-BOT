@@ -1,0 +1,11 @@
+import { mkdirSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Windows helper 必须在 Windows x64 MSVC Developer shell 构建');
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const out = resolve(root, 'native/dist');
+mkdirSync(out, { recursive: true });
+const result = spawnSync('cl.exe', ['/nologo', '/std:c++17', '/EHsc', '/O2', '/MT', '/W4', '/DUNICODE', '/D_UNICODE', resolve(root, 'native/windows/helper.cpp'), `/Fe:${resolve(out, 'pi-bot-windows.exe')}`, `/Fo:${resolve(out, 'helper.obj')}`, '/link', '/DYNAMICBASE', '/NXCOMPAT'], { cwd: out, stdio: 'inherit', windowsHide: true });
+if (result.error) throw result.error;
+if (result.status !== 0) throw new Error(`Windows helper 编译失败 (${result.status})`);

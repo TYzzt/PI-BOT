@@ -1,6 +1,6 @@
 {
   "name": "pi-bot-desktop",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -13,7 +13,11 @@
     "pack:mac": "node scripts/pack-mac.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node_modules/node/bin/node --import tsx --test --test-timeout=120000 tests/*.test.ts",
-    "postinstall": "node node_modules/electron/install.js"
+    "postinstall": "node node_modules/electron/install.js",
+    "build:service": "node scripts/build-service.mjs",
+    "pack:win": "node scripts/pack-win.mjs",
+    "build:windows-helper": "node scripts/build-windows-helper.mjs",
+    "test:windows": "node --import tsx --test --test-timeout=120000 tests/windows.test.ts"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "0.87.1",
@@ -41,7 +45,9 @@
     "node": "24.21.0",
     "tsx": "4.23.15",
     "typescript": "7.0.2",
-    "vite": "8.3.1"
+    "vite": "8.3.1",
+    "@electron-forge/maker-squirrel": "7.11.2",
+    "@electron-forge/maker-zip": "7.11.2"
   },
   "engines": {
     "node": ">=24"
