@@ -117,8 +117,10 @@ data class ChatImage(val name: String, @SerialName("mime_type") val mimeType: St
 @Serializable
 data class MessageImage(val id: String, val name: String, @SerialName("mime_type") val mimeType: String)
 
+
 @Serializable
 data class Message(
+    val attachments: List<ReportAttachment> = emptyList(),
     val id: String,
     @SerialName("bot_id") val botId: String,
     @SerialName("run_id") val runId: String? = null,
@@ -131,6 +133,7 @@ data class Message(
     val executor: String? = null,
     val tools: List<ToolEntry> = emptyList(),
     val progress: List<String> = emptyList(),
+    @SerialName("reply_segments") val replySegments: List<ReplySegment> = emptyList(),
     val ui: JsonObject? = null,
     @SerialName("from_bot") val fromBot: FromBot? = null,
     @SerialName("agent_tasks") val agentTasks: List<AgentTaskRef> = emptyList(),
@@ -151,8 +154,24 @@ data class AgentTaskRef(
     val kind: String = "delegation",
     val title: String = "",
     @SerialName("updated_at") val updatedAt: String? = null,
+    @SerialName("message_count") val messageCount: Int = 0,
     @SerialName("operation_target") val operationTarget: String? = null,
 )
+
+@Serializable
+data class ReplySegment(val id: String, val text: String, val phase: String, @SerialName("created_at") val createdAt: String)
+
+@Serializable
+data class ConversationBot(val id: String, val name: String, val avatar: Avatar = Avatar())
+
+@Serializable
+data class ConversationMessage(val id: String, val seq: Long, @SerialName("from_bot_id") val fromBotId: String,
+    @SerialName("to_bot_id") val toBotId: String, val kind: String, val content: String, @SerialName("created_at") val createdAt: String? = null)
+
+@Serializable
+data class TaskConversation(@SerialName("task_id") val taskId: String, val status: String,
+    val bots: List<ConversationBot>, val messages: List<ConversationMessage>, val total: Int,
+    @SerialName("has_more") val hasMore: Boolean, @SerialName("next_after") val nextAfter: Long)
 
 @Serializable
 data class MessagePage(val messages: List<Message>, @SerialName("has_more") val hasMore: Boolean = false)
@@ -204,7 +223,7 @@ private data class PasswordBody(@SerialName("old_password") val oldPassword: Str
 private class EmptyBody
 
 /** Server-side errors carry a Chinese `detail`; [unauthorized] means the session is gone. */
-class ApiException(val status: Int, message: String) : Exception(message) {
+class ApiException(val status: Int, message: String, val code: String? = null) : Exception(message) {
     val unauthorized: Boolean get() = status == 401
 }
 
@@ -255,6 +274,9 @@ class PiBotApi(private val http: OkHttpClient, private val json: Json = API_JSON
     fun messages(url: ServerUrl, token: String, botId: String, before: Int? = null): MessagePage =
         call(url, "GET", "/bots/$botId/messages", token, query = listOfNotNull("limit" to "50", before?.let { "before" to it.toString() }))
 
+    fun taskConversation(url: ServerUrl, token: String, botId: String, taskId: String, after: Long = 0): TaskConversation =
+        call(url, "GET", "/bots/$botId/tasks/$taskId/conversation", token, query = listOf("after" to after.toString()))
+
     fun send(url: ServerUrl, token: String, botId: String, text: String, requestId: String, images: List<ChatImage> = emptyList()): SendResult =
         call(url, "POST", "/bots/$botId/messages", token, SendBody(text, requestId, images))
 
@@ -266,6 +288,8 @@ class PiBotApi(private val http: OkHttpClient, private val json: Json = API_JSON
 
     fun uiAction(url: ServerUrl, token: String, botId: String, messageId: String, body: JsonObject): SendResult =
         call(url, "POST", "/bots/$botId/messages/$messageId/ui-actions", token, JsonObject(body + ("client" to kotlinx.serialization.json.JsonPrimitive("android"))))
+
+    fun reportOpen(url: ServerUrl, token: String, id: String): JsonObject = call(url,"POST","/reports/$id/open",token,EmptyBody())
 
     fun remoteArtifact(url: ServerUrl, token: String, id: String): JsonObject = call(url,"POST","/remote/artifacts/$id/open",token,EmptyBody())
 
@@ -303,7 +327,7 @@ class PiBotApi(private val http: OkHttpClient, private val json: Json = API_JSON
         }
         response.use {
             val text = it.body.string()
-            if (!it.isSuccessful) throw ApiException(it.code, errorMessage(it.code, text))
+            if (!it.isSuccessful) throw ApiException(it.code, errorMessage(it.code, text), runCatching { (API_JSON.parseToJsonElement(text) as? JsonObject)?.get("error_info")?.let { info -> (info as? JsonObject)?.get("code")?.let { code -> (code as? JsonPrimitive)?.contentOrNull } } }.getOrNull())
             return json.decodeFromString(text)
         }
     }

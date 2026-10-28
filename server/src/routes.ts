@@ -1,3 +1,5 @@
+import { reportRoutes } from "./reports.js";
+import { conversation } from "./task-conversation.js";
 import { remoteRoutes } from './remote/routes.js';
 import type {RemoteService} from './remote/service.js';
 import { phoneRoutes } from './phone-routes.js';
@@ -94,7 +96,9 @@ const httpUrl = z
     return ["https:", "http:"].includes(u.protocol) && !u.username && !u.password && !u.search && !u.hash;
   }, "需要 HTTP(S) 根地址，不包含账号、查询参数或片段");
 const providerName = z.enum(["xai", "bailian", "custom"]);
+const modelCapabilities = z.object({chat:z.boolean(),vision:z.boolean(),voice:z.boolean(),tools:z.boolean(),reasoning:z.enum(["none","configurable","required","unknown"]),reasoning_off:z.record(z.string(),z.unknown()).optional()}).strict();
 const modelFields = z.object({
+  capabilities: modelCapabilities.optional(),
   name: z.string().trim().min(1).max(80),
   provider: providerName.optional(),
   base_url: httpUrl.optional(),
@@ -125,6 +129,7 @@ const modelOut = (m: Row) => ({
   provider_model: m.provider_model,
   voice_model: m.voice_model ?? null,
   provider_search: m.provider_search === true,
+  capabilities: m.capabilities,
   context_window: m.context_window,
   max_tokens: m.max_tokens,
   enabled: m.enabled,
@@ -177,6 +182,7 @@ async function deviceFiles(ctx: Context, method: "list" | "read") {
 
 export const routes: Route[] = [
   ...pushRoutes,
+  ...reportRoutes,
   ...phoneRoutes,
   ...remoteRoutes,
   {method:"POST",path:"/agent/automations/effect",auth:"llm",tag:"agents",summary:"目标检查操作日志",internal:true,
@@ -431,6 +437,14 @@ export const routes: Route[] = [
     },
   },
   {
+    method: "GET", path: "/bots/:id/tasks/:taskId/conversation", auth: "actor", tag: "bots", summary: "本次委托的双方传话记录",
+    query: z.object({ after: z.coerce.number().int().nonnegative().default(0), limit: z.coerce.number().int().min(1).max(100).default(50) }),
+    handler: async ({ tx, user, params, query }) => {
+      await ownBot(tx, user.user_id, params.id);
+      return conversation(tx, user.user_id, params.id, params.taskId, query.after, query.limit);
+    },
+  },
+  {
     method: "GET", path: "/bots/:id/messages", auth: "actor", tag: "bots", summary: "Bot 时间线（按 seq 倒序分页）",
     query: z.object({ before: z.coerce.number().int().positive().optional(), limit: z.coerce.number().int().min(1).max(200).default(50) }),
     handler: async ({ tx, user, params, query }) => {
@@ -617,7 +631,7 @@ export const routes: Route[] = [
       const normalized = normalizeModel(body);
       const id = randomUUID();
       const m = await tx.insert("models", {
-        model_id: id, name: body.name, provider: normalized.provider, base_url: normalized.base_url, provider_model: body.provider_model,
+        model_id: id, capabilities: body.capabilities ? JSON.stringify(body.capabilities) : undefined, name: body.name, provider: normalized.provider, base_url: normalized.base_url, provider_model: body.provider_model,
         voice_model: normalized.voice_model, provider_search: normalized.provider_search,
         context_window: body.context_window, max_tokens: body.max_tokens, secret: new Vault(s.vaultFile).seal(body.api_key, id),
         enabled: body.enabled, is_default: false,
@@ -636,7 +650,7 @@ export const routes: Route[] = [
       if ((body.max_tokens ?? m!.max_tokens) >= (body.context_window ?? m!.context_window)) fail(422, "输出上限必须小于上下文长度");
       const placed = body.provider !== undefined || body.base_url !== undefined || body.voice_model !== undefined;
       await tx.update("models", params.id, {
-        name: body.name, provider: placed ? normalized.provider : undefined, base_url: placed ? normalized.base_url : undefined,
+        capabilities: body.capabilities ? JSON.stringify(body.capabilities) : undefined, name: body.name, provider: placed ? normalized.provider : undefined, base_url: placed ? normalized.base_url : undefined,
         provider_model: body.provider_model, voice_model: body.voice_model === undefined ? undefined : normalized.voice_model,
         provider_search: body.provider_search !== undefined || placed ? normalized.provider_search : undefined,
         context_window: body.context_window,

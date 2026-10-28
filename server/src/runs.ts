@@ -1,3 +1,6 @@
+import { errorInfo } from "@pi-bot/runtime-contracts";
+import { taskMessage } from "./task-conversation.js";
+import { recordReply, replySchema } from "./replies.js";
 import { randomUUID } from "node:crypto";
 import { enqueueApproval } from "./push.js";
 import { z } from "zod";
@@ -56,8 +59,10 @@ export async function dispatchDevice(db: Database, s: Settings, hub: Hub, runId:
 
 const live = new Map<string, { content: string; written: number }>();
 const runEvent = z.discriminatedUnion("kind", [
+  z.object({kind:z.literal("manifest"),tools:z.array(z.string().max(100)).max(200)}),
   observationSchema.extend({kind:z.literal('observation')}),
   z.object({ kind: z.literal("started") }),
+  replySchema.extend({ kind: z.literal("reply") }),
   z.object({ kind: z.literal("instruction_ack"), id: z.string().uuid() }),
   z.object({ kind: z.literal("ui"), messages: z.array(z.record(z.string(),z.unknown())).min(1).max(20) }),
   z.object({ kind: z.literal("text"), text: z.string().max(400000) }),
@@ -68,6 +73,7 @@ const runEvent = z.discriminatedUnion("kind", [
     name: z.string().max(80),
     state: z.enum(["running", "completed", "failed"]),
     summary: z.string().max(2000).optional(),
+    resource_id:z.string().max(200).optional(),target_id:z.string().max(200).optional(),
   }),
   z.object({
     kind: z.literal("approval"),
@@ -79,6 +85,7 @@ const runEvent = z.discriminatedUnion("kind", [
     kind: z.literal("done"),
     state: z.enum(["completed", "failed", "cancelled"]),
     error: z.string().max(500).nullish(),
+    error_info:z.unknown().optional(),
     text: z.string().max(400000).optional(),
   }),
 ]);
@@ -138,7 +145,7 @@ export async function handleRunEvent(
     live.delete(runId);
     await db.tx(async (tx) => {
       if (!(await own(tx))) return;
-      await finishRun(tx, runId, e.state, e.error ?? "电脑运行失败", content);
+      await finishRun(tx, runId, e.state, e.error ?? "电脑运行失败", content,new Date(),errorInfo(e));
     });
     return;
   }
@@ -150,6 +157,8 @@ export async function handleRunEvent(
       await tx.notify({ user_id: run.user_id, bot_id: run.bot_id });
       return null;
     }
+    if (e.kind === "manifest") { await tx.rows("UPDATE bot_runs SET tool_manifest=$2 WHERE run_id=$1",[run.run_id,JSON.stringify(e.tools)]);return null; }
+    if (e.kind === "reply") { await recordReply(tx, run, e); return null; }
     if (e.kind === "ui") { await recordUi(tx,run,e.messages); return null; }
     if (e.kind === "tool") {
       await recordTool(tx, run, e);
@@ -195,8 +204,12 @@ export async function failDeviceRuns(db: Database, deviceId: string, reason = DE
   await db.tx(async (tx) => {
     if (!keepQueued) {
       const tasks = await tx.rows(`UPDATE agent_tasks SET status='failed',error=$2,finished_at=now(),updated_at=now()
-        WHERE device_id=$1 AND status='queued' AND child_run_id IS NULL RETURNING user_id,parent_bot_id`, [deviceId, reason]);
-      for (const t of tasks) await tx.notify({user_id:t.user_id,bot_id:t.parent_bot_id});
+        WHERE device_id=$1 AND status='queued' AND child_run_id IS NULL RETURNING *`, [deviceId, reason]);
+      for (const t of tasks) {
+        await taskMessage(tx, t, "terminal", "error", reason);
+        await tx.notify({user_id:t.user_id,bot_id:t.parent_bot_id});
+        await tx.notify({user_id:t.user_id,bot_id:t.target_bot_id});
+      }
     }
     const runs = await tx.rows(
       "SELECT run_id FROM bot_runs WHERE executor='device' AND device_id=$1 AND status = ANY($2)",
