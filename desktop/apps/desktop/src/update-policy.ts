@@ -29,15 +29,16 @@ export function manifestURL(value: unknown): string | null {
   if (matches.length !== 1) throw new Error('更新清单重复');
   return assetURL(matches[0].browser_download_url, r.tag_name, 'update-manifest.json');
 }
-export function parseCandidate(release: unknown, manifest: unknown, selected: UpdateChannel, currentBuild: number): Candidate | null {
+export type UpdatePlatform = 'windows-x64' | 'linux-x64';
+export function parseCandidate(release: unknown, manifest: unknown, selected: UpdateChannel, currentBuild: number, platform: UpdatePlatform = 'windows-x64'): Candidate | null {
   if (!releaseMatches(release, selected)) throw new Error('更新通道不匹配');
   const r = object(release), m = object(manifest);
   if (m.schemaVersion !== 1 || m.channel !== selected || !Number.isSafeInteger(m.buildNumber) || (m.buildNumber as number) <= 0 ||
       m.version !== `0.3.${m.buildNumber}` || r.tag_name !== `client-${selected}-${m.buildNumber}` ||
       typeof m.commit !== 'string' || !/^[a-f0-9]{40}$/.test(m.commit)) throw new Error('更新版本元数据无效');
   if (m.minimumServerVersion != null) throw new Error('此更新有服务器版本要求，请先核实兼容性');
-  const p = object(object(m.platforms)['windows-x64']);
-  const file = 'Pi-Bot-Windows-x64-Setup.exe';
+  const p = object(object(m.platforms)[platform]);
+  const file = platform === 'linux-x64' ? 'pi-bot-desktop-linux-x64.tar.gz' : 'Pi-Bot-Windows-x64-Setup.exe';
   if (p.file !== file || typeof p.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(p.sha256) ||
       !Number.isSafeInteger(p.size) || (p.size as number) <= 0 || (p.size as number) > 1024 * 1024 * 1024) throw new Error('更新包信息无效');
   if (!Array.isArray(r.assets)) throw new Error('更新包缺失');

@@ -1,8 +1,8 @@
-# Client updates (Android / Windows x64)
+# Client updates (Android / Windows x64 / Linux x64)
 
 Main still runs existing CI and Android artifact builds. `Client test prerelease`
-additionally tests both clients, builds installers, then publishes an immutable
-GitHub **Pre-release** only after project checks and both builds pass.
+additionally tests all clients, builds installers, then publishes an immutable
+GitHub **Pre-release** only after project checks and all platform builds pass.
 No NAS/Server deployment is involved. Default client channel is **stable**;
 users must explicitly select **test** to receive main builds.
 
@@ -27,7 +27,7 @@ forces downgrade. No available newer version is not a network error.
 
 `update-manifest.json` schemaVersion 1 carries channel, buildNumber, version,
 commit, minimumServerVersion (null = no additional requirement), and platforms
-`android` / `windows-x64`, each with file, sha256, size. Metadata and files come
+`android` / `windows-x64` / `linux-x64`, each with file, sha256, size. Metadata and files come
 only from the configured public repository release. No GitHub token is embedded.
 SHA256 authenticates package bytes against the HTTPS release metadata, not an
 independent signing authority. Protect repository write permissions.
@@ -97,8 +97,56 @@ Network/rate-limit/download/hash/signature failure must leave the old app usable
 - `node --test scripts/client-update/update.test.mjs`
 - Android: `./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug`
 - Windows: `npm run pack:win --workspace=pi-bot-desktop` on native Windows x64
-- Main workflow gates publication on reusable full CI and both platform builds.
-- Final acceptance: a real release with both packages/manifest; stable sees no
+- Main workflow gates publication on reusable full CI and all platform builds.
+- Final acceptance: a real release with all packages/manifest; stable sees no
   test prompt; test sees newer numeric build; corrupt file rejected; update
   overlay preserves settings; activity defers install; network failure preserves
   old app. These are acceptance steps, not claims of completed device tests.
+
+## Linux x64 tar.gz online updates
+
+The existing official `pi-bot-desktop-linux-x64.tar.gz` format is supported;
+this is NOT just a browser/download-page link. Settings uses the same stable/test
+selection, build-number comparison, trusted GitHub HTTPS hosts, size and SHA256
+verification. The manifest requires the Linux **desktop** archive, not the
+service-only tarball. CI builds and uploads that archive and main attaches it to
+the same complete immutable Pre-release.
+
+After explicit install confirmation and activity checks, the main process
+revalidates the archive, requires `python3`, checks current-user ownership and
+write permission on the install directory and its parent, and unpacks into a
+private sibling directory on the same filesystem. Extraction validates paths,
+size/count limits and safe relative links; absolute/traversal paths, device
+nodes, hardlinks, link ancestors and privileged modes are rejected. The staged
+bundle must contain the desktop executable, app.asar, bundled Node and the
+`.pi-bot-linux-tar` marker. The trusted helper uses bundled Node, waits for the
+client to exit, renames the old directory to a timestamped sibling backup, moves
+the new directory into the same path and restarts it. No shell interpolation,
+sudo/pkexec, background forced install, removal of the backup or user-data
+migration is performed. The normal quit path stops the client's owned service;
+independently managed services must be stopped manually before upgrading.
+
+Download/staging failures leave the current application untouched. Rename or
+executable-launch failure after exit restores and restarts the old directory
+where possible; error detail stays in the sibling `.pi-bot-update-*/update-error.txt`.
+Old directories are retained as `<install>.backup-<timestamp>` for manual recovery.
+This is NOT transactional against power loss between renames, nor an automatic
+rollback for a newly launched app that later crashes. Keep the backup and user
+data until the new app has been checked. The extra archive/extraction/backup
+requires free disk space; disk failures are reported, not silently ignored.
+
+User settings and the library remain outside the installation directory.
+Updating is refused when configured data/library paths are inside that directory.
+Do not relocate existing user data into the app bundle. No application or service
+was installed/replaced on the user's actual machine during development/testing;
+helper tests use only disposable fixture directories and fake launchers.
+
+Only Linux x86_64 official writable **desktop tar.gz** installs with the marker
+support in-place updates. Older bundles without this updater/marker need one
+manual bootstrap; developer runs, AppImage, deb/rpm, package-manager installs,
+read-only/root-owned installs, service-only bundles and other architectures do
+not support this replacement path. The Linux update section reports a specific
+error/instructions for unsupported installation layouts; it never treats opening
+a web page as a completed installation. Python is checked at staging and is not
+automatically installed. A real desktop-to-desktop upgrade still needs separate
+user-authorized acceptance testing after release; CI does not prove that step.
