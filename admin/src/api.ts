@@ -55,13 +55,24 @@ export interface User {
   disabled: boolean;
   created_at: string;
   bot_count?: number;
-  mac?: { label: string; last_seen_at: string | null; online: boolean } | null;
+  devices?: Device[];
+  computer?: { label: string; last_seen_at: string | null; online: boolean } | null;
+}
+export type ProviderName = "xai" | "bailian" | "custom";
+export interface CatalogModel {
+  id: string;
+  context_window: number | null;
+  max_tokens: number | null;
 }
 export interface Model {
+  capabilities?: {chat:boolean;vision:boolean;voice:boolean;tools:boolean;reasoning:"none"|"configurable"|"required"|"unknown";reasoning_off?:Record<string,unknown>};
   id: string;
   name: string;
+  provider: ProviderName;
   base_url: string;
   provider_model: string;
+  voice_model: string | null;
+  provider_search: boolean;
   context_window: number;
   max_tokens: number;
   enabled: boolean;
@@ -71,6 +82,7 @@ export interface Model {
 export interface Device {
   id: string;
   username: string;
+  platform: "linux" | "darwin" | "win32";
   label: string;
   created_at: string;
   last_seen_at: string | null;
@@ -83,7 +95,7 @@ export interface Overview {
   models: number;
   runs_today: number;
   tokens_today: number;
-  macs_online: number;
+  devices_online: number;
 }
 export interface UsageRow {
   calls: number;
@@ -116,6 +128,9 @@ export const api = {
   login: (username: string, password: string) =>
     request<{ access_token: string; user: User }>(server, "auth/login", "POST", { username, password }),
   me: () => request<{ user: User }>(server, "me"),
+  environment:(id:string)=>request<any>(adminApi,`users/${id}/environment`),
+  saveEnvironment:(id:string,body:unknown)=>request<any>(adminApi,`users/${id}/environment`,"POST",body),
+  testEnvironment:(id:string)=>request<any>(adminApi,`users/${id}/environment/test`,"POST",{}),
   overview: () => request<Overview>(adminApi, "overview"),
   users: () => request<User[]>(adminApi, "users"),
   createUser: (body: { username: string; password: string; display_name: string; role: string }) =>
@@ -124,6 +139,8 @@ export const api = {
     request<User>(adminApi, `users/${id}`, "PATCH", body),
   deleteUser: (id: string) => request(adminApi, `users/${id}`, "DELETE"),
   models: () => request<Model[]>(adminApi, "models"),
+  modelCatalog: (body: { provider: "xai" | "bailian"; api_key?: string; model_id?: string }) =>
+    request<{ chat: CatalogModel[]; voice: CatalogModel[] }>(adminApi, "model-catalog", "POST", body),
   createModel: (body: ModelInput) => request<Model>(adminApi, "models", "POST", body),
   updateModel: (id: string, body: Partial<ModelInput>) => request<Model>(adminApi, `models/${id}`, "PATCH", body),
   deleteModel: (id: string) => request(adminApi, `models/${id}`, "DELETE"),

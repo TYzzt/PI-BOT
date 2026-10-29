@@ -84,10 +84,31 @@ gh pr create --base main
 
 ## CI 与镜像发布
 
-- `ci.yml` 对所有指向 main 的 PR 和 main 推送运行，权限只读，不使用部署密钥；包括类型检查、PostgreSQL 集成测试、构建和 Ubuntu 脚本测试，不覆盖 Android 和 macOS 安装包签名。
-- `server-image.yml` 是维护者的镜像发布工作流，在匹配路径的 main 推送或手动触发后验证并发布。`ALIYUN_REGISTRY_USER` 和 `ALIYUN_REGISTRY_PASSWORD` 只放 GitHub Actions Secrets。
+- `ci.yml` 对所有指向 main 的 PR 和 main 推送运行，权限只读，不使用部署密钥；包括类型检查、PostgreSQL 集成测试、构建和 Ubuntu 脚本测试。它不按目录跳过。
+- 打包和发布按改动的端触发，手动运行不受路径限制。只改文档或其他端时，不会给没改的端上传安装包或镜像。
+- `desktop.yml` 在 `desktop/`、`packages/`、根目录依赖清单或本工作流有改动时运行。macOS 作业执行 `pack:mac`，上传未公证的 arm64 DMG（`pi-bot-macos-arm64-UNSIGNED-TEST`）。这是临时签名的测试包，没有 Apple Developer ID，也没有公证。
+- `android.yml` 在 `android/` 或本工作流有改动时执行 `:app:testDebugUnitTest` 与 `:app:assembleDebug`，上传 debug APK。不制作签名发布包。
+- `server-image.yml` 是维护者的镜像发布工作流，在 `server/`、`admin/`、`packages/`、根目录依赖清单或本工作流有改动的 main 推送，或手动触发后验证并发布。`ALIYUN_REGISTRY_USER` 和 `ALIYUN_REGISTRY_PASSWORD` 只放 GitHub Actions Secrets。
 - Fork 发布自己的镜像前，应修改 registry、image tags 和部署清单，配置自己的凭据。
 - 不把镜像发布作为 PR 的必需检查，以免外部贡献被部署凭据阻塞。
+
+## 桌面 beta 发布
+
+安装包放在 [GitHub Releases](https://github.com/lhx692135353/PI-BOT/releases)，Actions artifacts 用于逐提交测试，不作为长期下载入口。
+
+Windows 目前为未签名 beta。维护者合并桌面改动并核实验收范围后，检查 `desktop/package.json` 与 `desktop/apps/desktop/package.json` 的版本一致，再推送对应的 beta 标签。例如两个文件版本均为 `0.2.0` 时：
+
+```sh
+git fetch origin
+git tag -a desktop-v0.2.0-beta.1 origin/main -m "Desktop 0.2.0 beta 1"
+git push origin refs/tags/desktop-v0.2.0-beta.1
+```
+
+[`desktop-release.yml`](../.github/workflows/desktop-release.yml) 验证标签版本后复用 CI 与桌面构建工作流，包括 PostgreSQL 测试、Windows 原生测试、独立 runtime smoke、Linux 打包检查和未公证的 macOS DMG 构建。全部通过才创建 Release 草稿、上传附件并发布为预发布版，不标记为 Latest。PR 与普通分支推送不触发发布。
+
+附件包括 Windows Setup.exe、ZIP、Linux x64 桌面/服务压缩包及统一的 `SHA256SUMS.txt`；校验和使用附件文件名，不引用 CI 内部目录。macOS 作业会构建未公证 DMG 作为 Actions artifact，此 Release 不附带该安装包，也不附带 Android APK。自动更新不在本轮范围内。
+
+若检查失败，不会创建 Release；上传中断时可能留下未公开草稿，维护者应检查并清理草稿后再重跑。不要覆盖已发布附件或移动已发布标签，修复后使用新的 beta 序号。发布需要目标仓库的写权限；Fork 的安装包不会自动出现在原项目 Releases。
 
 ## 发布前检查
 

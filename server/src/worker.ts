@@ -1,4 +1,7 @@
+import { errorInfo, type AppError } from "@pi-bot/runtime-contracts";
+import { recordReply } from "./replies.js";
 import { randomUUID } from "node:crypto";
+import { CONVERSATION_TIMEOUT_MS } from "@pi-bot/agent";
 import { Database, type Row } from "./db.js";
 import { settings, type Settings } from "./config.js";
 import { issueLlmToken, Vault } from "./security.js";
@@ -15,7 +18,7 @@ import {recordUi} from "./ui.js";
 const RUN_LIMIT_MS = 30 * 60 * 1000;
 
 /**
- * Executes cloud runs (Mac offline) through the Runner and keeps each bot's
+ * Executes cloud runs (computer offline) through the Runner and keeps each bot's
  * rolling memory summary up to date.
  */
 export class Worker {
@@ -30,6 +33,7 @@ export class Worker {
     readonly db: Database,
     readonly s: Settings,
   ) {
+    db.pushEnabled = !!s.fcmProjectId;
     this.exporter=new ObservationExporter(db,s);
     if (!s.runnerToken || s.runnerToken.length < 32) throw new Error("需要配置 PI_BOT_RUNNER_TOKEN（至少 32 字符）");
   }
@@ -40,10 +44,15 @@ export class Worker {
   async claim(): Promise<RunContext | undefined> {
     return this.db.tx(async (tx) => {
       const stale = await tx.rows(
-        "SELECT run_id FROM bot_runs WHERE executor='cloud' AND status='running' AND lease_until < now() FOR UPDATE SKIP LOCKED",
+        "SELECT run_id, origin, assistant_message_id FROM bot_runs WHERE executor='cloud' AND status IN ('running','waiting_approval') AND lease_until < now() FOR UPDATE SKIP LOCKED",
       );
-      for (const r of stale) await finishRun(tx, r.run_id, "failed", "云端执行中断，请重新发送");
-      const candidates = await tx.rows("SELECT run_id FROM bot_runs WHERE executor='cloud' AND execution_policy='any' AND status='queued' AND NOT cancel_requested ORDER BY (lane='task'), (origin='report'), created_at LIMIT 100");
+      for (const r of stale) {
+        if (r.origin === "voice") {
+          await finishRun(tx, r.run_id, "failed", "语音通话已中断", "语音通话已中断");
+          await tx.rows("UPDATE bot_messages SET visibility='public' WHERE message_id=$1", [r.assistant_message_id]);
+        } else await finishRun(tx, r.run_id, "failed", "云端执行中断，请重新发送");
+      }
+      const candidates = await tx.rows("SELECT run_id FROM bot_runs WHERE executor='cloud' AND (execution_policy='any' OR operation_target LIKE 'remote:%') AND status='queued' AND NOT cancel_requested ORDER BY (lane='task'), (origin='report'), created_at LIMIT 100");
       let run: Row | null = null;
       for (const candidate of candidates) {
         run = await claimExecution(tx, candidate.run_id, this.s, this.id);
@@ -68,6 +77,7 @@ export class Worker {
     const controller = new AbortController();
     this.controllers.add(controller);
     const owner = await this.db.tx((tx) => tx.get("bot_runs", job.run_id));
+    let errorDetails:AppError|undefined;
     let content = "",
       state: "completed" | "failed" | "cancelled" = "failed",
       error: string | null = "模型请求失败，请稍后重试",
@@ -78,7 +88,7 @@ export class Worker {
     const headers = { Authorization: `Bearer ${this.s.runnerToken}`, "Content-Type": "application/json" };
     const cancelRunner = () =>
       fetch(`${this.s.runnerUrl}/runs/${job.run_id}/cancel`, { method: "POST", headers, signal: AbortSignal.timeout(5000) }).catch(() => {});
-    const ours = (r: Row | undefined) => !!r && r.status === "running" && r.worker_id === this.id;
+    const ours = (r: Row | undefined) => !!r && ["running","waiting_approval"].includes(r.status) && r.worker_id === this.id;
     const beat = async () => {
       if (beating) return;
       beating = true;
@@ -107,7 +117,7 @@ export class Worker {
       error = job.lane === "conversation" ? "对话响应超时，请重新发送" : "运行超过 30 分钟，已停止";
       void cancelRunner();
       controller.abort();
-    }, job.lane === "conversation" ? 60000 : RUN_LIMIT_MS);
+    }, job.deadline_at ? Math.max(1,Date.parse(job.deadline_at)-Date.now()) : job.lane === "conversation" ? CONVERSATION_TIMEOUT_MS : RUN_LIMIT_MS);
     let sawDone = false;
     try {
       const token = await issueLlmToken({ sub: owner.user_id, src: "cloud", bot: job.bot.id }, this.s, Math.ceil(RUN_LIMIT_MS / 1000) + 300);
@@ -140,6 +150,10 @@ export class Worker {
           } else if(e.type === "observation") {
             const {type,...observation}=e;
             await this.db.tx(async tx=>{const r=await tx.get("bot_runs",job.run_id);if(ours(r))await recordObservation(tx,r,observation,this.s.tracingEnabled);}).catch(()=>{});
+          } else if (e.type === "manifest") {
+            await this.db.tx(async tx=>{const r=await tx.get("bot_runs",job.run_id);if(ours(r))await tx.rows("UPDATE bot_runs SET tool_manifest=$2 WHERE run_id=$1",[r.run_id,JSON.stringify(e.tools)]);});
+          } else if (e.type === "reply") {
+            await this.db.tx(async tx => { const r = await tx.get("bot_runs", job.run_id); if (ours(r)) await recordReply(tx, r, e); });
           } else if (e.type === "instruction_ack") {
             await this.db.tx(tx => tx.rows("UPDATE agent_task_instructions SET delivered_at=now() WHERE task_id=$1 AND instruction_id=$2", [owner.task_id, e.id]));
           } else if (e.type === "ui") {
@@ -164,6 +178,7 @@ export class Worker {
             sawDone = true;
             state = e.state;
             error = e.error ?? null;
+            errorDetails=errorInfo(e);
             if (typeof e.text === "string") content = e.text;
           }
         }
@@ -185,7 +200,7 @@ export class Worker {
       await this.db.tx(async (tx) => {
         const r = await tx.get("bot_runs", job.run_id);
         if (!ours(r)) return;
-        await finishRun(tx, job.run_id, state, error, content);
+        await finishRun(tx, job.run_id, state, error, content,new Date(),errorDetails);
       });
   }
 

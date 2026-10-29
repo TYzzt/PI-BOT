@@ -1,11 +1,18 @@
+import { errorInfo, httpErrorInfo, type AppError } from "@pi-bot/runtime-contracts";
 import WebSocket from 'ws';
-import { createHash, createPrivateKey, generateKeyPairSync, randomBytes, sign, type KeyObject } from 'node:crypto';
+import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, sign, type KeyObject } from 'node:crypto';
+import { globalAgent as httpAgent } from 'node:http';
+import { globalAgent as httpsAgent } from 'node:https';
 
-export class CloudHttpError extends Error { constructor(readonly status: number, message: string) { super(message); } }
+export class CloudHttpError extends Error { readonly info:AppError; constructor(readonly status:number,message:string,info?:AppError){super(message);this.info=info??httpErrorInfo(status,message,"cloud");} }
 export class CloudNetworkError extends Error {}
 const TIMEOUT_MS = 15000;
 
 export interface DeviceIdentity { privateKey: string; publicKey: string }
+export function identityFromPrivateKey(privateKey: string): DeviceIdentity {
+  const key = createPrivateKey({key:Buffer.from(privateKey,'base64'),format:'der',type:'pkcs8'});
+  return {privateKey,publicKey:createPublicKey(key).export({format:'der',type:'spki'}).subarray(-32).toString('base64')};
+}
 export function newIdentity(): DeviceIdentity {
   const { privateKey, publicKey } = generateKeyPairSync('ed25519');
   return { privateKey: privateKey.export({ format: 'der', type: 'pkcs8' }).toString('base64'), publicKey: publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('base64') };
@@ -51,7 +58,10 @@ export async function cloudFetch<T>(serverUrl: string, method: string, path: str
   let response: Response;
   try { response = await fetch(base + path, { method, headers, body: options.body === undefined ? undefined : body, signal: AbortSignal.timeout(options.timeoutMs ?? TIMEOUT_MS), redirect: 'error' }); }
   catch { throw new CloudNetworkError('无法连接服务器'); }
-  if (!response.ok) throw new CloudHttpError(response.status, await detail(response));
+  if (!response.ok) {
+    const payload = await response.clone().json().catch(() => null);
+    throw new CloudHttpError(response.status, await detail(response), errorInfo(payload));
+  }
   return await response.json() as T;
 }
 
@@ -67,7 +77,9 @@ export class CloudSocket {
   send(message: Record<string, unknown>) { if (this.socket?.readyState === WebSocket.OPEN) { this.socket.send(JSON.stringify(message)); return true; } return false; }
   private open() {
     const url = new URL(`${this.serverUrl.replace(/\/$/, '')}/ws/device`); url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-    const socket = new WebSocket(url, { headers: this.sign('GET', '/ws/device', Buffer.alloc(0)), handshakeTimeout: TIMEOUT_MS, maxPayload: 8_000_000, followRedirects: false });
+    // ws supplies createConnection, which otherwise bypasses Node's environment proxy agent.
+    const agent = url.protocol === 'wss:' ? httpsAgent : httpAgent;
+    const socket = new WebSocket(url, { agent, headers: this.sign('GET', '/ws/device', Buffer.alloc(0)), handshakeTimeout: TIMEOUT_MS, maxPayload: 8_000_000, followRedirects: false });
     this.socket = socket; let authFailed = false;
     socket.on('open', () => {
       this.attempts = 0; this.lastPong = Date.now();

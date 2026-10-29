@@ -49,7 +49,7 @@ async function main() {
       await client.call('login',{serverUrl,username,password:await password(),label:values.label || computerName()});
       console.log('已登录并绑定这台执行电脑。');
     } else if (command === 'logout') {
-      await client.call('logout',{}); console.log('已退出登录并解绑这台执行电脑，资料库文件保留。');
+      await client.call('logout',{}); console.log('已退出登录，资料库文件保留。');
     } else console.log(JSON.stringify(await client.call('status',{}),null,2));
   } finally { clearTimeout(timer); client.stop(); }
 }

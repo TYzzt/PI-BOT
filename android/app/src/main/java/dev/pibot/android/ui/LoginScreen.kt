@@ -75,7 +75,7 @@ fun LoginScreen(repository: PiBotRepository) {
         PiBotFace(ORANGE, mood, 150.dp)
         Text("Pi Bot", fontSize = 28.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(6.dp))
-        Text("你的 Bot 们在 Mac 上干活，手机随时找它们。", color = Muted, textAlign = TextAlign.Center)
+        Text("你的 Bot 们在电脑上干活，手机随时找它们。", color = Muted, textAlign = TextAlign.Center)
         Spacer(Modifier.height(28.dp))
         OutlinedTextField(
             username, { username = it; if (mood == "error") mood = "idle" },

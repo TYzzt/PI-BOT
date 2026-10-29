@@ -82,7 +82,7 @@ class DomainTest {
         val now = Instant.parse("2026-10-11T08:00:00Z").toEpochMilli()
         val base = Bot(id = "b", name = "研究助理", slug = "research", lastActiveAt = "2026-10-11T07:59:00Z")
         assertEquals("还没有对话，打个招呼吧", base.statusLine(now))
-        val running = base.copy(latestRun = Run("r", "b", "running", "mac", createdAt = "2026-10-11T07:59:00Z"))
+        val running = base.copy(latestRun = Run("r", "b", "running", "device", createdAt = "2026-10-11T07:59:00Z"))
         assertEquals("工作中…", running.statusLine(now))
         assertEquals("在云端思考…", running.copy(latestRun = running.latestRun!!.copy(executor = "cloud")).statusLine(now))
         val waiting = base.copy(pendingApprovals = listOf(Approval("a", "r", "b", path = "/Users/x/Desktop", expiresAt = "2026-10-11T08:10:00Z")))
@@ -123,6 +123,11 @@ class DomainTest {
         assertEquals("http://203.0.113.5:8000/pibot", parseServerUrl(" http://203.0.113.5:8000/pibot/ ").base)
         assertEquals("ws://example.com:8000/pibot/ws/events?token=a%2Bb", parseServerUrl("HTTP://example.com:8000/pibot").eventsSocket("a+b"))
         assertEquals("wss://example.com/pibot/ws/events?token=t", parseServerUrl("HTTPS://example.com/pibot").eventsSocket("t"))
+        assertEquals(
+            "wss://bot.example.com/pibot/ws/voice?token=a%2Bb&client=android&bot=bot%2F1&call_id=call+1",
+            parseServerUrl("https://bot.example.com/pibot").voiceSocket("a+b", "bot/1", "call 1"),
+        )
+        assertEquals("ws://192.168.1.5:8787/ws/voice?token=t&client=android&bot=b1", parseServerUrl("http://192.168.1.5:8787").voiceSocket("t", "b1"))
         for (invalid in listOf("https://x.com/?a=1", "http://x.com/#fragment", "http://user:password@x.com", "http:///missing-host", "ftp://x.com", "")) {
             assertThrows(IllegalArgumentException::class.java) { parseServerUrl(invalid) }
         }

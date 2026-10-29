@@ -1,25 +1,30 @@
-import { commandShell } from './platform.js';
+import { reportTools } from "@pi-bot/agent";
+import { toolDescriptor, errorInfo } from "@pi-bot/runtime-contracts";
 import { randomUUID } from 'node:crypto';
+import type { ChatImage } from '@pi-bot/agent/images';
 import { join } from 'node:path';
-import { a2uiTools, askAgentTool, taskTools, automationTools, CANCELLED, createBotAgent, webSearchTool, type AgentFactory, type AgentHandle, type ToolActivity, type SkillSummary } from '@pi-bot/agent';
+import { a2uiTools, askAgentTool, taskTools, automationTools, CANCELLED, CONVERSATION_TIMEOUT_MS, createBotAgent, webSearchTool, type AgentFactory, type AgentHandle, type ToolActivity, type SkillSummary } from '@pi-bot/agent';
 import type { Mood } from '@pi-bot/bot-face';
+import { PhoneAdb, isPhoneAdbCommand } from './phone.js';
+import { commandShell } from './platform.js';
 import { libraryDir, libraryTools, Sandbox } from './library.js';
 
 /** What the server sends with `{type:'run'}`; mirrors server `RunContext`. */
 export interface RunContext {
   run_id: string;
-  executor: 'mac' | 'cloud';
+  executor: 'device' | 'cloud';
   lane?: 'conversation' | 'task';
-  execution_policy?: 'any' | 'mac_only';
+  execution_policy?: 'any' | 'device_only';
   automation_readonly?: boolean;
   deadline_at?: string;
-  automation?: { id: string; kind: 'patrol' | 'commission'; version: number; checkpoint_version: number; checkpoint: Record<string, unknown> };
+  automation?: { id: string; kind: 'review'; version: number; checkpoint_version: number; checkpoint: Record<string, unknown> };
   instructions?: { id: string; text: string }[];
   bot: { id: string; name: string; slug: string };
-  model: { id: string; name: string; context_window: number; max_tokens: number };
+  model: { id: string; name: string; context_window: number; max_tokens: number; capabilities?: Partial<import("@pi-bot/runtime-contracts").ModelCapabilities> };
   system: string;
-  history: { role: 'user' | 'assistant'; content: string }[];
+  history: { role: 'user' | 'assistant'; content: string; images?: ChatImage[] }[];
   text: string;
+  images?: ChatImage[];
   search_enabled?: boolean;
   agents_enabled?: boolean;
   skills?: SkillSummary[];
@@ -35,6 +40,7 @@ export interface ExecutorDeps {
   activity(run: RunContext, tool: string | null, mood: Mood | null): void;
   factory?: AgentFactory;
   approvalTimeoutMs?: number;
+  phoneConfigPath?: string;
 }
 interface Active {
   run: RunContext;
@@ -49,11 +55,18 @@ interface Active {
   approvals: Map<string, string>;
   early: Map<string, boolean>;
 }
-const SEARCH = new Set(['list_files', 'read_file', 'search_files', 'web_search']);
 const TOKEN_REFRESH_MS = 10 * 60 * 1000;
 
 export class Executor {
   private active = new Map<string, Active>();
+  private commandsSuspended = false;
+  private commands = new Set<{ controller: AbortController; done: Promise<void> }>();
+  async suspendCommands() {
+    this.commandsSuspended = true;
+    for (const item of this.commands) item.controller.abort();
+    await Promise.all([...this.commands].map(item => item.done));
+  }
+  resumeCommands() { this.commandsSuspended = false; }
   constructor(private deps: ExecutorDeps) {}
   get running() { return [...this.active.keys()]; }
 
@@ -65,13 +78,17 @@ export class Executor {
     event({ kind: 'started' });
     this.deps.activity(run, null, 'thinking');
     let timedOut = false;
-    const timeoutMs = run.deadline_at ? Math.max(1, Date.parse(run.deadline_at) - Date.now()) : run.lane === 'conversation' ? 60000 : undefined;
+    const timeoutMs = run.deadline_at ? Math.max(1, Date.parse(run.deadline_at) - Date.now()) : run.lane === 'conversation' ? CONVERSATION_TIMEOUT_MS : undefined;
     const deadline = timeoutMs === undefined ? undefined : setTimeout(() => { timedOut = true; void state.agent?.abort(); }, timeoutMs);
     let latest = '', lastSent = 0, pendingText: NodeJS.Timeout | undefined, refresh: NodeJS.Timeout | undefined;
     const flush = () => { clearTimeout(pendingText); pendingText = undefined; lastSent = Date.now(); event({ kind: 'text', text: latest }); };
     try {
       const sandbox = new Sandbox(await libraryDir(this.deps.libraryRoot, run.bot.slug));
       let token = await this.deps.llmToken(run.bot.id);
+      const phone = PhoneAdb.open(this.deps.phoneConfigPath);
+      const phoneEnvironment = phone
+        ? await phone.environment(run.lane === 'conversation', !!run.automation_readonly, this.commandsSuspended)
+        : '\n本执行节点没有有效的显式手机配置；不能把其他电脑或其他智能体的手机当作本节点设备。';
       let tools = run.lane === "conversation" ? [] : libraryTools(sandbox, {
         requestOutside: (path, reason, signal) => new Promise<boolean>(resolve => {
           const requestId = randomUUID();
@@ -88,10 +105,33 @@ export class Executor {
           event({ kind: 'approval', request_id: requestId, path, reason });
         }),
       });
-      if (run.automation_readonly) tools = tools.filter(t => ['list_files', 'read_file', 'search_files'].includes(t.name));
+      if (run.automation_readonly) tools = tools.filter(t => toolDescriptor(t.name)?.readonly);
+      tools = tools.map(tool => tool.name !== 'run_command' ? tool : {
+        ...tool, description: tool.description + (phone ? ' 也支持内置受控 phone-adb 命令；exec-out screencap -p 会返回图片。' : ''),
+        execute: async (id, args, signal, update, ctx) => {
+          if (this.commandsSuspended) throw new Error('手机正在人工接管，此节点命令执行已暂停');
+          const controller = new AbortController();
+          const abort = () => controller.abort();
+          if (signal?.aborted) controller.abort(); else signal?.addEventListener('abort', abort, {once:true});
+          let finish!: () => void;
+          const item = {controller, done:new Promise<void>(resolve => {finish=resolve;})};
+          this.commands.add(item);
+          try {
+            const command = (args as { command: string; cwd?: string; timeout_seconds?: number }).command;
+            if (isPhoneAdbCommand(command)) {
+              if (!phone) throw new Error('本执行节点未显式配置受控手机');
+              const input = args as { cwd?: string; timeout_seconds?: number };
+              await sandbox.resolve(input.cwd ?? '.', { mustExist: true });
+              return await phone.command(command, (input.timeout_seconds ?? 120) * 1000, controller.signal);
+            }
+            return await tool.execute(id, args, controller.signal, update, ctx);
+          }
+          finally { signal?.removeEventListener('abort', abort); this.commands.delete(item); finish(); }
+        },
+      });
       const api = this.deps.proxyUrl.replace(/\/llm\/v1\/?$/, '');
-      if (run.execution_policy === 'mac_only' && !run.automation_readonly) tools = tools.map(tool => {
-        if (!['write_file', 'edit_file', 'run_command'].includes(tool.name)) return tool;
+      if (run.execution_policy === 'device_only' && !run.automation_readonly) tools = tools.map(tool => {
+        if (toolDescriptor(tool.name)?.effect !== 'write') return tool;
         return { ...tool, execute: async (id, args, signal, update, ctx) => {
           const journal = async (phase: 'start' | 'end', confirmed?: boolean, result?: string) => {
             const response = await fetch(`${api}/agent/automations/effect`, {
@@ -118,26 +158,29 @@ export class Executor {
       if (run.automation) tools.push(...automationTools(api, () => token, run.run_id, true));
       if (run.lane !== "conversation" && run.search_enabled) tools.push(webSearchTool(api, () => token));
       if (run.agents_enabled) tools.push(askAgentTool(api, () => token, run.run_id, { conversation: run.lane === "conversation" }));
+      tools.push(...reportTools(api, () => token, run.run_id, run.lane === "task" && !run.automation));
       tools.push(...a2uiTools(messages => { event({ kind: 'ui', messages }); }));
       const onTool = (t: ToolActivity) => {
         event({ kind: 'tool', ...t });
-        const mood: Mood = t.name === 'ask_agent' ? 'waiting' : SEARCH.has(t.name) ? 'searching' : 'working';
+        const mood: Mood = toolDescriptor(t.name)?.activity ?? 'working';
         this.deps.activity(run, t.state === 'running' ? t.name : null, t.state === 'running' ? mood : 'thinking');
       };
       state.agent = await (this.deps.factory ?? createBotAgent)({
-        model: { id: run.model.id, name: run.model.name, baseUrl: this.deps.proxyUrl, modelId: run.model.id, contextWindow: run.model.context_window, maxTokens: run.model.max_tokens },
+        model: { id: run.model.id, name: run.model.name, baseUrl: this.deps.proxyUrl, modelId: run.model.id, contextWindow: run.model.context_window, capabilities:run.model.capabilities, maxTokens: run.model.max_tokens },
         apiKey: token,
         readonly: run.automation_readonly,
         cwd: sandbox.root,
         agentDir: join(this.deps.agentDir, 'bots', run.bot.id),
-        systemPrompt: `${run.system}\n实际执行环境：${process.platform}；shell：${commandShell()}；资料库绝对路径：${sandbox.root}。${process.platform === 'win32' ? ' 使用非交互 PowerShell 语法，不使用 bash/cmd 语法；含空格路径必须加引号，调用带引号的程序路径使用 &。' : ''}`,
+        systemPrompt: `${run.system}\n实际执行环境：${process.platform}；shell：${commandShell()}；资料库绝对路径：${sandbox.root}。${phoneEnvironment}${process.platform === 'win32' ? ' 使用非交互 PowerShell 语法，不使用 bash/cmd 语法；含空格路径必须加引号，调用带引号的程序路径使用 &。输出为 UTF-8（旧程序可能使用其他代码页）。' : ''}`,
         history: run.history,
         tools,
         skills: { baseUrl: api, token: () => token, runId: run.run_id, catalog: run.skills ?? [] },
         runId:run.run_id,
         memory:{baseUrl:api,token:()=>token,runId:run.run_id,lane:run.lane??'task',context:run.memory_context??'',taskId:run.task_id,checkpointVersion:run.checkpoint_version,readonly:run.automation_readonly},
         onObservation:run.observation_enabled?e=>event({kind:'observation',...e}):undefined,
-        onTool,
+        onAction: onTool,
+        onManifest: tools => event({kind:"manifest",tools}),
+        onReply: run.automation ? undefined : reply => { event({ kind: "reply", ...reply }); },
         onProgress: lines => {
           clearTimeout(pendingText); pendingText = undefined;
           latest = '';
@@ -155,7 +198,7 @@ export class Executor {
         latest = text;
         if (Date.now() - lastSent > 150) flush();
         else pendingText ??= setTimeout(flush, 150);
-      });
+      }, run.images);
       clearTimeout(pendingText);
       event({ kind: 'done', state: 'completed', text: final });
       this.deps.activity(run, null, run.automation ? null : 'celebrate');
@@ -163,7 +206,7 @@ export class Executor {
       clearTimeout(pendingText);
       const cancelled = !timedOut && (state.cancelled || (error instanceof Error && error.message === CANCELLED));
       const message = timedOut ? (run.automation ? '自动轮次超过执行时限' : '对话响应超时，请重新发送') : error instanceof Error && !cancelled ? error.message.slice(0, 300) : null;
-      event({ kind: 'done', state: cancelled ? 'cancelled' : 'failed', error: message ?? '运行失败', text: latest || undefined });
+      event({ kind: 'done', state: cancelled ? 'cancelled' : 'failed', error: message ?? '运行失败', error_info: errorInfo(error), text: latest || undefined });
       this.deps.activity(run, null, cancelled ? null : 'error');
     } finally {
       clearTimeout(deadline);

@@ -1,15 +1,16 @@
 # Pi Bot
 
-一个可以自托管的个人 Bot 平台：每个 Bot 有独立的人设、角色形象、长期记忆和连续时间线。Mac 为 Bot 提供工作电脑，Android 用于随时聊天、查看结果与处理审批。
+一个可以自托管的个人 Bot 平台：每个 Bot 有独立的人设、角色形象、长期记忆和连续时间线。Mac 或 Linux 为 Bot 提供工作电脑，Android 用于随时聊天、查看结果与处理审批。
 
 项目采用 [Apache License 2.0](LICENSE)。目前由 [@lhx692135353](https://github.com/lhx692135353) 个人维护，欢迎通过 Issue 和 Pull Request 参与。
 
 ## 能做什么
 
 - **多 Bot 与长期记忆**：为不同任务设置人设、模型和角色形象，沿同一条时间线持续协作。
-- **Mac 工作电脑**：在 `~/pi-bot/<slug>/` 中读写文件、执行命令；访问资料库外路径需要审批。
-- **手机协作**：聊天、查看任务进展、批准请求，以及在 Mac 在线时浏览资料库。
-- **后台任务与长期委托**：对话过程中安排后台任务；登录且保持运行的 Mac 可执行定时工作和自主巡检。
+- **Mac / Linux 工作电脑**：在 `~/pi-bot/<slug>/` 中读写文件、执行命令；访问资料库外路径需要审批。
+- **手机协作**：聊天、查看任务进展、批准请求，以及在 绑定的执行电脑在线时浏览资料库。
+- **图片聊天**：Mac、Linux 和 Android 可上传、预览和发送图片，也可只发图片；支持 JPEG、PNG、WebP、GIF，每条最多 4 张，单张 2 MB、合计 4 MB。图片理解需要配置支持视觉输入的模型。
+- **后台任务与目标**：对话过程中安排后台任务；每个智能体可以有自己的目标，绑定电脑在线时会定期对照现状并推进，有新进展才发到聊天里。
 - **A2UI 交互工具**：在对话里展示表单、计算器、图表和表格，提交后继续任务。
 - **服务端统一配置模型**：管理员配置支持 Responses API 的模型和 API Key；客户端经服务端代理调用。
 - **可选扩展**：服务端配置 Tavily 后提供联网搜索；可接入 Langfuse 记录云端追踪；ESP32 桌面屏可跟随 Bot 显示表情。
@@ -19,26 +20,28 @@
 ## 组成
 
 ```text
-Mac / Android ── API + 管理后台 ── PostgreSQL
+Mac / Linux / Android ── API + 管理后台 ── PostgreSQL
                      │
                      ├── 模型服务 / Tavily（可选）
-                     └── Worker ── Runner（Mac 离线时的云端对话）
+                     └── Worker ── Runner（绑定的执行电脑离线时的云端对话）
 ```
 
-Mac 在线时，Bot 在 Mac 上使用资料库和命令工具；离线时可由云端接续对话与联网搜索，无法访问 Mac 文件。定时工作和自主巡检等待 Mac 在线，不在云端自动执行。
+绑定的执行电脑在线时，Bot 在该电脑上使用资料库和命令工具；离线时可由云端接续对话与联网搜索，无法访问本地文件。目标检查等待绑定电脑在线，不在云端自动执行。
 
 | 目录 | 用途 |
 | --- | --- |
 | [server](server/README.md) | Node.js 24、Fastify、PostgreSQL；API、Worker、Runner、部署说明 |
 | [admin](admin) | React 管理后台，由 API 在 `/admin/` 提供 |
-| [desktop](desktop/README.md) | Electron + React 的 macOS 客户端与本地服务 |
+| [desktop](desktop/README.md) | Electron + React 的 macOS / Linux 客户端与独立执行服务 |
 | [android](android/README.md) | Kotlin + Jetpack Compose 的 Android 客户端 |
-| [packages/agent](packages/agent/README.md) | Mac 与云端共用的 agent、记忆和私有 skills |
+| [packages/agent](packages/agent/README.md) | 电脑与云端共用的 agent、记忆和私有 skills |
 | [packages/a2ui](packages/a2ui/README.md) | 共享交互工具协议与 Web 渲染器 |
 | [packages/bot-face](packages/bot-face) | 共享角色规格、动画引擎与渲染器 |
 | [boards](boards/esp32-s3-touch-lcd-2.8c/README.md) | ESP32-S3 桌面屏 |
 
 详细设计见 [整体架构](server/ARCHITECTURE.md)，各端的需求与限制见对应目录中的 `REQUIREMENTS.md`。
+
+Linux 支持桌面和无界面的后台执行服务，安装与 systemd 配置见 [Linux 指南](desktop/LINUX.md)。同一账号可同时绑定多台电脑，每个 Bot 固定选择一台；文件各自保存，离线时本地任务等待。
 
 ## 快速开始
 
@@ -90,7 +93,7 @@ npm run build
 npm run dev --workspace=@pi-bot/server
 ```
 
-API 启动时自动执行数据库迁移。Mac 离线时要继续云端对话，还需在另外两个终端分别运行：
+API 启动时自动执行数据库迁移。绑定的执行电脑离线时要继续云端对话，还需在另外两个终端分别运行：
 
 ```sh
 npm run runner --workspace=@pi-bot/server
@@ -121,18 +124,17 @@ npm run desktop:dev
 
 `127.0.0.1` 在真机上指手机本身。客户端会保留已登录/已保存的服务器地址，更改默认值不会覆盖已有配置。Mac 临时连接非本机 HTTP 地址的显式配置方法见 [Mac 文档](desktop/README.md)。
 
-登录 Mac 后创建一个 Bot，发送消息即可开始使用。Mac 休眠、退出应用或断网时不能执行本地任务；Android 当前不提供系统后台推送。
+登录 Mac 后创建一个 Bot，发送消息即可开始使用。执行电脑休眠、退出应用或断网时不能执行本地任务；Android 当前不提供系统后台推送。
 
-## 长期委托与自主巡检
+## 目标
 
 可以直接在对话中安排：
 
-- “每十分钟检查一下这个任务，有重要变化再告诉我。”
-- “每天上午九点整理一次，按上海时间。”
-- “现在有哪些自动工作？最近检查出了什么？”
-- “暂停自主巡检。” / “停止全部自动工作。”
+- “我的目标是把周报写进资料库，有进展再告诉我。”
+- “现在有哪些目标？最近推进了什么？”
+- “暂停这个目标。” / “停止全部目标。”
 
-Bot 空闲时会逐步降低巡检频率，最多六小时检查一次；无重要变化时保持安静。自动工作仅在登录且保持运行的 Mac 上执行，重连后合并检查。后台任务、自动工作和协议的升级要求见 [整体架构](server/ARCHITECTURE.md)。
+没有进行中的目标时不会自动检查。有目标时，空闲会把检查间隔逐步拉长，最多六小时一次；没有新进展就保持安静。目标检查只在登录且保持运行的执行电脑上进行，重连后合并检查。更换执行电脑会暂停检查，确认后再恢复。后台任务和目标的升级要求见 [整体架构](server/ARCHITECTURE.md)。
 
 ## 开发与验证
 
@@ -153,8 +155,8 @@ Android 的构建和单元测试单独执行：
 ## 部署与安全边界
 
 - 自托管部署见 [服务端说明](server/README.md)；Ubuntu 长期运行见 [Ubuntu 部署指南](server/deploy/ubuntu/README.md)。生产入口使用 HTTPS/WSS；Runner 只在内部网络供 Worker 调用。
-- API 当前须保持单副本，Mac 长连接和资料库 RPC 存于进程内存。Worker 可多副本。
-- Mac 的命令执行工具**不是操作系统沙箱**；它限制默认工作目录，但命令可以调用系统能力。请理解任务内容和审批范围后使用，详见 [安全政策](SECURITY.md)。
+- API 当前须保持单副本，设备长连接和资料库 RPC 存于进程内存。Worker 可多副本。
+- 电脑的命令执行工具**不是操作系统沙箱**；它限制默认工作目录，但命令可以调用系统能力。请理解任务内容和审批范围后使用，详见 [安全政策](SECURITY.md)。
 - 数据库、vault 和资料库应定期备份；仓库不包含托管服务、可用性承诺或自动备份保障。
 
 ## 参与与许可证
@@ -162,3 +164,7 @@ Android 的构建和单元测试单独执行：
 请先阅读 [贡献指南](CONTRIBUTING.md)。普通贡献者通过 Fork → 功能分支 → PR 提交；由维护者决定是否合并。`main` 的规则和开源发布步骤记录在 [维护指南](docs/MAINTAINING.md)。安全问题请按 [安全政策](SECURITY.md) 私下报告。
 
 本项目的原创代码按 [Apache License 2.0](LICENSE) 提供；第三方代码保留其原有许可，详见 [NOTICE](NOTICE) 和 [第三方声明](THIRD_PARTY_NOTICES.md)。仓库各 npm workspace 保留 `private: true`，用于防止误发布到 npm，不影响 GitHub 开源。
+
+## 可选：虚拟手机
+
+Bot 内可只读预览并显式接管已授权电脑上的 Android 手机。Android 入口位于 Bot 对话的「更多选项」→「虚拟手机」，与资料库、编辑 Bot 同级。部署、安全边界和排障见 [虚拟手机说明](docs/virtual-phone.md)。此能力独立于语音模型配置，当前不是通用多机云手机管理平台。

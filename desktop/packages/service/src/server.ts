@@ -1,3 +1,4 @@
+import { errorInfo, httpErrorInfo } from "@pi-bot/runtime-contracts";
 import { protectWindowsDirectory, nativeWindows } from './windows.js';
 import { createServer, type Socket, connect } from 'node:net';
 import { mkdirSync, chmodSync, readFileSync, writeFileSync, existsSync, unlinkSync, lstatSync } from 'node:fs';
@@ -40,7 +41,7 @@ const server = createServer(socket => {
   const timer = setTimeout(() => { if (!authed) socket.destroy(); }, 5000);
   socket.on('error', () => {}); socket.on('close', () => { clearTimeout(timer); peers.delete(socket); });
   socket.on('data', data => {
-    buffer += data.toString('utf8'); if (buffer.length > 1_000_000) { socket.destroy(); return; }
+    buffer += data.toString('utf8'); if (buffer.length > 8 * 1024 * 1024) { socket.destroy(); return; }
     let i: number;
     while ((i = buffer.indexOf('\n')) >= 0) {
       const line = buffer.slice(0, i); buffer = buffer.slice(i + 1);
@@ -53,13 +54,13 @@ const server = createServer(socket => {
         }
         if (typeof packet.id !== 'string' || packet.id.length > 100 || !Object.hasOwn(schemas, packet.method) || ++inFlight > 32) { socket.destroy(); return; }
         void Promise.resolve().then(() => application.call(packet.method as Method, parseInput(packet.method as Method, packet.input))).then(result => send(socket, { id: packet.id, result })).catch(error => {
-          send(socket, { id: packet.id, error: error instanceof Error ? error.message : '请求失败' });
+          send(socket, { id: packet.id, error: error instanceof Error ? error.message : '请求失败', error_info: errorInfo(error) ?? httpErrorInfo(500,'请求失败','local-service') });
         }).finally(() => { inFlight--; });
       } catch { socket.destroy(); return; }
     }
   });
 });
-server.on('error', () => { console.error('本地服务无法监听，请检查是否已有实例'); process.exit(1); });
+server.on('error', (error: NodeJS.ErrnoException) => { console.error(`本地服务无法监听（${error.code ?? 'UNKNOWN'}，${socketPath}），请检查端口是否可用或已有实例`); process.exit(1); });
 server.listen(listenAddress, () => {
   if (!windows) chmodSync(socketPath, 0o600);
   void application.start();

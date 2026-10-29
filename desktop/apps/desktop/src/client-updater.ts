@@ -64,7 +64,7 @@ export class ClientUpdater {
       await rename(temp, join(this.directory, 'preferences.json'));
       let best: Candidate | null = null;
       for (let page = 1; page <= 5; page++) {
-        const releases = await json(`https://api.github.com/repos/TYzzt/PI-BOT/releases?per_page=100&page=${page}`, 8 * 1024 * 1024);
+        const releases = await json(`https://api.github.com/repos/lhx692135353/PI-BOT/releases?per_page=100&page=${page}`, 8 * 1024 * 1024);
         if (!Array.isArray(releases)) throw new Error('Release 列表无效');
         for (const release of releases) {
           if (!releaseMatches(release, selected)) continue;

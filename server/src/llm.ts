@@ -1,8 +1,10 @@
 import type { FastifyReply } from "fastify";
+import { MODEL_TIMEOUT_MS } from "@pi-bot/agent";
 import { fail, type Database, type Row, type Tx } from "./db.js";
 import type { Settings } from "./config.js";
 import { Vault, type LlmClaims } from "./security.js";
 import { recordGeneration, bounded } from "./observations.js";
+import { applyConversationReasoning, applyProviderSearch } from "./providers.js";
 import { randomUUID } from "node:crypto";
 
 export interface Usage {
@@ -106,23 +108,23 @@ export async function proxyResponses(
   signal: AbortSignal,
   correlation?:{run:Row;generationId?:string;parentTool?:string},
 ) {
-  if (correlation?.run.execution_policy === "mac_only") {
+  if (correlation?.run.execution_policy === "device_only") {
     const admitted = await db.tx(async tx => {
       const r = correlation!.run;
       const root = await tx.one("SELECT r.run_id FROM bot_runs r JOIN automation_rounds ar ON ar.run_id=r.run_id WHERE r.automation_id=$1 AND ar.status='active'", [r.automation_id]);
-      if (!root || claims.src !== "mac") return false;
+      if (!root || claims.src !== "device") return false;
       return !!await tx.one(`UPDATE bot_runs SET automation_calls=automation_calls+1
         WHERE run_id=$1 AND status='running' AND NOT cancel_requested AND automation_calls<$2 AND deadline_at>now() RETURNING run_id`, [root.run_id, s.automationModelCalls]);
     });
-    if (!admitted) return openAiError(reply, 429, "自动工作已停止或达到本轮模型调用上限");
+    if (!admitted) return openAiError(reply, 429, "目标检查已停止或达到本轮模型调用上限");
   }
   const key = new Vault(s.vaultFile).open(model.secret, model.model_id);
-  const payload: Row = {
+  const payload = applyConversationReasoning(applyProviderSearch({
     ...body,
     model: model.provider_model,
     max_output_tokens: Math.min(body.max_output_tokens ?? model.max_tokens, model.max_tokens),
     store: false,
-  };
+  }, model, correlation?.run.lane), model, correlation?.run.lane);
   const started=new Date(),generationId=correlation?.generationId??randomUUID();
   let captured:unknown=null,observedUsage:Usage|null=null,firstToken:Date|undefined,traceError:string|undefined;
   try {
@@ -132,7 +134,7 @@ export async function proxyResponses(
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
       body: JSON.stringify(payload),
-      signal: AbortSignal.any([signal, AbortSignal.timeout(300000)]),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(MODEL_TIMEOUT_MS)]),
       redirect: "error",
     });
   } catch {
@@ -203,9 +205,13 @@ export async function complete(
   maxTokens: number,
   timeoutMs = 60000,
 ) {
+  const signal = AbortSignal.timeout(timeoutMs);
   const response = await fetch(endpoint(model), {
     method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${key}`,
+    },
     body: JSON.stringify({
       model: model.provider_model,
       input: messages,
@@ -213,18 +219,36 @@ export async function complete(
       stream: false,
       store: false,
     }),
-    signal: AbortSignal.timeout(timeoutMs),
+    signal,
     redirect: "error",
-  }).catch(() => {
-    throw new Error("无法连接模型服务");
+  }).catch((error: unknown) => {
+    if (
+      signal.aborted ||
+      (error instanceof Error && error.name === "TimeoutError")
+    )
+      throw new Error("模型请求超时");
+    const code = (error as { cause?: { code?: unknown } } | null)?.cause?.code;
+    throw new Error(
+      `无法连接模型服务${typeof code === "string" && /^[A-Z0-9_]{1,40}$/.test(code) ? ` (${code})` : ""}`,
+    );
   });
-  if (!response.ok) throw new Error(`模型服务返回错误（HTTP ${response.status}）`);
-  const data = (await response.json()) as Row;
-  if (data.status === "failed" || data.error)
-    throw new Error("模型生成失败");
+  if (!response.ok)
+    throw new Error(`模型服务返回错误（HTTP ${response.status}）`);
+  const data = (await response.json().catch(() => {
+    if (signal.aborted) throw new Error("模型请求超时");
+    throw new Error("模型服务返回的响应不是有效 JSON");
+  })) as Row;
+  if (data.status === "failed" || data.error) {
+    const code = data.error?.code;
+    throw new Error(
+      `模型生成失败${typeof code === "string" && /^[A-Za-z0-9_.-]{1,80}$/.test(code) ? ` (${code})` : ""}`,
+    );
+  }
   if (data.status === "incomplete") {
     if (data.incomplete_details?.reason === "max_output_tokens")
-      throw new Error("模型输出不完整：已达到输出 token 上限（思考内容也计入额度）");
+      throw new Error(
+        "模型输出不完整：已达到输出 token 上限（思考内容也计入额度）",
+      );
     throw new Error("模型输出不完整");
   }
   return {

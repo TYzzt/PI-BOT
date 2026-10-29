@@ -36,8 +36,8 @@ async function body(req: IncomingMessage) {
 }
 /** User messages that make the mock model call `ask_agent` with these arguments. */
 const DELEGATIONS: Record<string, object> = {
-  委托链路测试: { agent: "写作助手", task: "写一份本周周报", wait: true },
-  转交链路测试: { agent: "写作助手", task: "写一份本周周报", wait: false },
+  委托链路测试: { agent: "写作助手", task: "写一份本周周报", wait: true, execution: "cloud" },
+  转交链路测试: { agent: "写作助手", task: "写一份本周周报", wait: false, execution: "cloud" },
 };
 const SKILLS: Record<string, { name: string; args: object }> = {
   创建能力链路测试: { name: "skill_manage", args: { action: "create", name: "report-test", description: "整理周报时使用", instructions: "PRIVATE-WORKFLOW：先核实来源，再整理结论。", references: { "format.md": "先写结论，再写依据。" } } },
@@ -88,7 +88,7 @@ export async function mockProvider() {
       return void stream.end();
     }
     if (last === "联网搜索链路测试" && json.tools.some((t: any) => t.name === "start_task")) {
-      if (!toolDone) stream.tool("start_task", { title: "联网核查", task: last }, "start_search");
+      if (!toolDone) stream.tool("start_task", { title: "联网核查", task: last, execution: "cloud" }, "start_search");
       else stream.text("已开始核查，完成后告诉你。");
       return void stream.end();
     }

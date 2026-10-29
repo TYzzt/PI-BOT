@@ -15,6 +15,10 @@ vault.json.*.tmp
 *.vault.json.*.tmp
 *.jks
 *.keystore
+google-services.json
+*firebase-adminsdk*.json
+firebase-service-account*.json
+fcm-service-account*.json
 
 # Workspace-local development profiles.
 .local/
@@ -44,5 +48,6 @@ playwright-report/
 
 # Client CI build identity and short Windows packaging scratch paths.
 /client-build.json
+# Short Windows installer output and per-build NuGet scratch directories.
 /.w/
 /.t-*/

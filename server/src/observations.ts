@@ -58,6 +58,10 @@ export function sanitize(
     return value.slice(0, 100).map((x) => sanitize(x, secrets, depth + 1));
   if (value && typeof value === "object") {
     const media = value as Row;
+    // Content-bearing tool arguments never enter traces, including raw provider output.
+    if (media.name === "publish_report") {
+      return { ...media, arguments: "[report arguments omitted]", input: "[report arguments omitted]", content: "[report body omitted]" };
+    }
     const binary =
       /^(?:image|input_image|audio|input_audio|file|input_file|base64|buffer)$/i.test(
         String(media.type ?? ""),
@@ -123,6 +127,7 @@ export function observationBody(
     endTime: end.toISOString(),
     input: bounded(input),
     output: bounded(output),
+    ...extra,
     metadata: {
       user_id: run.user_id,
       bot_id: run.bot_id,
@@ -131,7 +136,6 @@ export function observationBody(
       executor: run.executor,
       ...extra.metadata,
     },
-    ...extra,
   };
 }
 export async function recordRun(tx: Tx, run: Row, enabled: boolean) {
@@ -205,6 +209,9 @@ async function recordRunData(tx: Tx, run: Row) {
         resumed_from_trace_id: previous?.trace_id
           ? traceId(previous.trace_id)
           : null,
+        first_reply_ms: run.first_reply_at ? new Date(run.first_reply_at).getTime() - new Date(run.created_at).getTime() : null,
+        reply_generation_ms: run.first_reply_generation_ms ?? null,
+        reply_delivery_overhead_ms: run.first_reply_at && run.first_reply_generation_ms != null ? Math.max(0, new Date(run.first_reply_at).getTime() - new Date(run.started_at ?? run.created_at).getTime() - run.first_reply_generation_ms) : null,
         incomplete: run.status !== "completed",
       },
     },
@@ -238,6 +245,7 @@ export async function recordObservation(
   const parsed = observationSchema.safeParse(event);
   if (!parsed.success) return;
   const e = parsed.data;
+  if (e.name === "publish_report") e.input = { content: "[report body omitted]" };
   const start = new Date(e.started_at),
     end = new Date(e.ended_at);
   if (e.phase === "start") {
@@ -299,6 +307,7 @@ export async function recordGeneration(
     id: string;
     parentTool?: string;
     started: Date;
+    ended?: Date;
     firstToken?: Date;
     input: unknown;
     output: unknown;
@@ -314,7 +323,7 @@ export async function recordGeneration(
     spanId(`${run.run_id}:generation:${data.id}`),
     "LLM Call",
     data.started,
-    new Date(),
+    data.ended ?? new Date(),
     bounded(data.input, data.secrets),
     bounded(data.output, data.secrets),
     {
@@ -349,6 +358,13 @@ export async function recordGeneration(
     )
     .catch(() => {});
 }
+export type MaintenancePhase = {
+  name: "model" | "validate" | "usage" | "persist";
+  started: Date;
+  ended: Date;
+  error?: string;
+};
+
 export async function recordMaintenance(
   db: Database,
   s: Settings,
@@ -362,6 +378,8 @@ export async function recordMaintenance(
     error?: string;
     model: Row;
     usage?: Row | null;
+    phases: MaintenancePhase[];
+    secrets?: string[];
   },
 ) {
   if (!s.tracingEnabled) return;
@@ -372,6 +390,14 @@ export async function recordMaintenance(
     bot_id: data.bot.bot_id,
     executor: "cloud",
   };
+  const ended = new Date();
+  const failurePhase = data.phases.find((phase) => phase.error)?.name;
+  const phaseMs = Object.fromEntries(
+    data.phases.map((phase) => [
+      phase.name,
+      phase.ended.getTime() - phase.started.getTime(),
+    ]),
+  );
   await db
     .tx(async (tx) => {
       await enqueue(tx, stableId(`maintenance:${data.id}`), {
@@ -392,21 +418,58 @@ export async function recordMaintenance(
           spanId(data.id),
           data.name,
           data.started,
-          new Date(),
-          data.input,
-          data.output,
-          { level: data.error ? "ERROR" : "DEFAULT" },
+          ended,
+          bounded(data.input, data.secrets),
+          bounded(data.output, data.secrets),
+          {
+            level: data.error ? "ERROR" : "DEFAULT",
+            statusMessage: data.error,
+            metadata: {
+              job_type: data.name,
+              failure_phase: failurePhase ?? null,
+              phase_ms: phaseMs,
+            },
+          },
         ),
       });
+      for (const phase of data.phases.filter(
+        (phase) => phase.name !== "model",
+      )) {
+        await enqueue(
+          tx,
+          stableId(`maintenance-phase:${data.id}:${phase.name}`),
+          {
+            type: "span-create",
+            body: observationBody(
+              run,
+              spanId(`${data.id}:${phase.name}`),
+              `memory.${phase.name}`,
+              phase.started,
+              phase.ended,
+              undefined,
+              undefined,
+              {
+                parentObservationId: spanId(data.id),
+                level: phase.error ? "ERROR" : "DEFAULT",
+                statusMessage: phase.error,
+              },
+            ),
+          },
+        );
+      }
     })
     .catch(() => {});
+  const modelPhase = data.phases.find((phase) => phase.name === "model");
+  if (!modelPhase) return;
   await recordGeneration(db, s, run, {
     id: data.id,
-    started: data.started,
+    started: modelPhase.started,
+    ended: modelPhase.ended,
     input: data.input,
     output: data.output,
     model: data.model,
     usage: data.usage,
-    error: data.error,
+    error: modelPhase.error,
+    secrets: data.secrets,
   });
 }

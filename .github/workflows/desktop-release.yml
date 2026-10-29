@@ -1,0 +1,100 @@
+name: Desktop beta release
+
+on:
+  push:
+    tags: ['desktop-v*-beta.*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Validate desktop beta tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Match tag to packaged desktop version
+        run: |
+          node --input-type=module - <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const app = JSON.parse(readFileSync('desktop/apps/desktop/package.json', 'utf8'));
+          const desktop = JSON.parse(readFileSync('desktop/package.json', 'utf8'));
+          const prefix = `desktop-v${app.version}-beta.`;
+          const tag = process.env.GITHUB_REF_NAME;
+          if (!/^\d+\.\d+\.\d+$/.test(app.version) || desktop.version !== app.version ||
+              !tag.startsWith(prefix) || !/^[1-9]\d*$/.test(tag.slice(prefix.length))) {
+            throw new Error(`Expected ${prefix}<positive integer> matching both desktop package versions`);
+          }
+          NODE
+
+  validate:
+    needs: version
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: version
+    uses: ./.github/workflows/desktop.yml
+
+  publish:
+    name: Publish unsigned desktop beta
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pi-bot-windows-x64-UNSIGNED-TEST
+          path: downloads/windows
+      - uses: actions/download-artifact@v4
+        with:
+          name: pi-bot-linux-x64
+          path: downloads/linux
+      - name: Prepare assets and download-friendly checksums
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          from pathlib import Path
+          import shutil
+
+          output = Path('release-assets')
+          output.mkdir()
+          assets = sorted(p for p in Path('downloads').rglob('*')
+                          if p.is_file() and p.name.endswith(('.exe', '.zip', '.tar.gz')))
+          if not all(any(p.name.endswith(ext) for p in assets) for ext in ('.exe', '.zip', '.tar.gz')):
+              raise SystemExit('Missing desktop release assets')
+          checksums = []
+          for source in assets:
+              target = output / source.name
+              if target.exists():
+                  raise SystemExit(f'Duplicate release asset: {source.name}')
+              shutil.copyfile(source, target)
+              with target.open('rb') as binary:
+                  digest = hashlib.file_digest(binary, 'sha256').hexdigest()
+              checksums.append(f'{digest}  {target.name}\n')
+          (output / 'SHA256SUMS.txt').write_text(''.join(checksums), encoding='utf-8')
+          PY
+      - name: Create and publish prerelease after all uploads succeed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          cat > release-notes.md <<'EOF'
+          Windows 11 x64 beta (unsigned) and Linux x64 packages.
+
+          Windows: download Pi-Bot-Windows-x64-Setup.exe for user-level installation, or the Windows ZIP. The installer is unsigned; interactive installation, upgrade/uninstall and second-user isolation still require manual acceptance.
+
+          Linux: download the desktop or service-only .tar.gz package.
+
+          Download SHA256SUMS.txt alongside the packages to verify their hashes. macOS packages and automatic updates are not included in this release workflow.
+
+          The server must include migration 0011 before registering Windows devices. See docs/windows-client.md for scope and manual acceptance steps.
+          EOF
+          printf '\nSource commit: `%s`\n' "$GITHUB_SHA" >> release-notes.md
+          gh release create "$GITHUB_REF_NAME" --verify-tag --draft --prerelease --latest=false \
+            --title "Pi Bot $GITHUB_REF_NAME (beta)" --notes-file release-notes.md release-assets/*
+          gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease --latest=false

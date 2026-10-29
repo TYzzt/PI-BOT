@@ -12,7 +12,20 @@ const integer = (
     .max(max)
     .parse(value ?? fallback);
 export function settings(env = process.env) {
+  const remoteBackend = z.enum(["none", "ssh", "kubevirt"]).parse(env.PI_BOT_REMOTE_BACKEND ?? "none");
+  const required = (name: string) => remoteBackend === "kubevirt" ? z.string().min(1).parse(env[name]) : env[name];
   return {
+    fcmProjectId: env.PI_BOT_FCM_PROJECT_ID?.trim() || undefined,
+    fcmCredentialsFile: env.GOOGLE_APPLICATION_CREDENTIALS?.trim() || undefined,
+    fcmAndroidConfigFile: env.PI_BOT_FCM_ANDROID_CONFIG_FILE?.trim() || undefined,
+    remoteBackend,
+    kubevirt: {
+      server: required("PI_BOT_K8S_SERVER"), tokenFile: required("PI_BOT_K8S_TOKEN_FILE"), caFile: required("PI_BOT_K8S_CA_FILE"),
+      namespace: env.PI_BOT_K8S_NAMESPACE ?? "pibot", imageUrl: required("PI_BOT_KUBEVIRT_IMAGE_URL"),
+      storageClass: env.PI_BOT_KUBEVIRT_STORAGE_CLASS, disk: env.PI_BOT_KUBEVIRT_DISK ?? "40Gi",
+      cpu: integer(env.PI_BOT_KUBEVIRT_CPU, 2, 1, 64), memory: env.PI_BOT_KUBEVIRT_MEMORY ?? "4Gi",
+      virtctl: env.PI_BOT_VIRTCTL_PATH ?? "virtctl", timeoutSeconds: integer(env.PI_BOT_REMOTE_READY_SECONDS, 300, 10, 1800),
+    },
     tracingEnabled: /^(true|1|yes)$/i.test(env.LANGFUSE_TRACING_ENABLED ?? "false"),
     databaseUrl: z.string().min(1).parse(env.PI_BOT_DATABASE_URL),
     adminUsername: z
@@ -37,6 +50,13 @@ export function settings(env = process.env) {
     /** Cloud runs one worker executes at once; delegating runs wait on their children. */
     workerConcurrency: integer(env.PI_BOT_WORKER_CONCURRENCY, 4, 1, 64),
     conversationConcurrency: integer(env.PI_BOT_CONVERSATION_CONCURRENCY, 4, 1, 64),
+    /** How long a dropped voice socket keeps the Grok session before the call ends. */
+    voiceGraceMs: integer(env.PI_BOT_VOICE_GRACE_MS, 15000, 200, 120000),
+    /** Dedicated voice model leaves the Bot text/summary model unchanged. */
+    voiceModelId: z.string().uuid().optional().parse(env.PI_BOT_VOICE_MODEL_ID || undefined),
+    voiceProtocol: z.enum(["grok", "openai"]).parse(env.PI_BOT_VOICE_PROTOCOL ?? "grok"),
+    /** Same-host realtime endpoint override, including proxy deployments. */
+    voiceRealtimeUrl: env.PI_BOT_VOICE_REALTIME_URL?.trim() || undefined,
     automationRoundSeconds: integer(env.PI_BOT_AUTOMATION_ROUND_SECONDS, 300, 10, 1800),
     automationModelCalls: integer(env.PI_BOT_AUTOMATION_MODEL_CALLS, 20, 1, 200),
     automationDailyRounds: integer(env.PI_BOT_AUTOMATION_DAILY_ROUNDS, 96, 1, 10000),

@@ -6,6 +6,7 @@ import { user, device } from "./security.js";
 import type { DeviceConnection, Hub } from "./hub.js";
 import { failDeviceRuns, handleRunEvent } from "./runs.js";
 import type { AgentDispatcher } from "./agents.js";
+import type { VoiceHub } from "./voice.js";
 
 const send = (ws: WebSocket, value: Row) => {
   if (ws.readyState !== 1) return;
@@ -14,8 +15,8 @@ const send = (ws: WebSocket, value: Row) => {
 };
 
 /**
- * `/ws/device`: the Mac harness (signed handshake) receives runs, cancels,
- * approval decisions and file RPCs. `/ws/events`: phones and the Mac UI get
+ * `/ws/device`: the computer harness (signed handshake) receives runs, cancels,
+ * approval decisions and file RPCs. `/ws/events`: phones and the desktop UI get
  * change notifications for the signed-in user.
  */
 export async function sockets(
@@ -24,7 +25,19 @@ export async function sockets(
   s: Settings,
   hub: Hub,
   dispatcher?: AgentDispatcher,
+  voice?: VoiceHub,
 ) {
+  // Serialize reconnect and disconnect cleanup for each identity. A replacement
+  // must not receive work until interrupted runs from its old socket are closed.
+  const lifecycles = new Map<string, Promise<void>>();
+  const lifecycle = (id: string, action: () => Promise<void>) => {
+    const next = (lifecycles.get(id) ?? Promise.resolve()).catch(() => {}).then(action);
+    lifecycles.set(id, next);
+    void next.finally(() => {
+      if (lifecycles.get(id) === next) lifecycles.delete(id);
+    }).catch(() => {});
+    return next;
+  };
   const listener = await db.pool.connect();
   await listener.query(`LISTEN ${CHANNEL}`);
   listener.on("notification", (n) => {
@@ -55,31 +68,44 @@ export async function sockets(
     let conn: DeviceConnection | undefined;
     let seen = 0;
     let lastMessageAt = Date.now();
-    // A sleeping Mac can retain a TCP connection without being able to execute.
+    // A sleeping computer can retain a TCP connection without being able to execute.
     const heartbeat = setInterval(() => {
       if (conn && Date.now() - lastMessageAt > 60000) ws.terminate();
     }, 15000);
     let queue = Promise.resolve();
     const ready = db
       .tx((tx) => device(tx, req.headers, "GET", "/ws/device", Buffer.alloc(0), s))
-      .then(async ({ device: d, user: u }) => {
+      .then(({ device: d, user: u }) => lifecycle(d.device_id, async () => {
         if (ws.readyState !== 1) return;
-        conn = {
-          deviceId: d.device_id,
-          userId: u.user_id,
-          send: (m) => send(ws, m),
-          close: (code) => ws.close(code),
-        };
-        hub.attach(conn);
-        send(ws, { type: "hello", user_id: u.user_id, device_id: d.device_id });
-        await db.tx((tx) => tx.rows("UPDATE devices SET last_seen_at=now() WHERE device_id=$1", [d.device_id]));
-      })
+        const previous = hub.device(u.user_id, d.device_id);
+        if (previous) {
+          hub.detach(previous);
+          previous.close(4409);
+        }
+        // Cleanup may still be pending even after the previous socket detached.
+        await failDeviceRuns(db, d.device_id);
+        await db.tx(async tx => {
+          // Hold the device row until attachment finishes: revoke's post-commit
+          // kick must see this socket even if the signed handshake began earlier.
+          const active = await tx.one('UPDATE devices SET last_seen_at=now() WHERE device_id=$1 AND revoked_at IS NULL RETURNING device_id', [d.device_id]);
+          if (!active) { ws.close(4401); return; }
+          if (ws.readyState !== 1) return;
+          conn = {
+            deviceId: d.device_id,
+            userId: u.user_id,
+            send: (m) => send(ws, m),
+            close: (code) => ws.close(code),
+          };
+          hub.attach(conn);
+          send(ws, { type: "hello", user_id: u.user_id, device_id: d.device_id });
+        });
+      }))
       .catch(() => ws.close(4401));
     ws.on("message", (raw) => {
       queue = queue
         .then(async () => {
           await ready;
-          if (!conn) return;
+          if (!conn || hub.device(conn.userId, conn.deviceId) !== conn) return;
           let m: Row;
           try {
             m = JSON.parse(raw.toString());
@@ -109,12 +135,23 @@ export async function sockets(
     });
     ws.on("close", () => {
       clearInterval(heartbeat);
-      void ready.then(async () => {
+      void ready.then(() => {
         if (!conn) return;
-        const current = hub.detach(conn);
-        if (current || hub.device(conn.userId)?.deviceId !== conn.deviceId)
-          await failDeviceRuns(db, conn.deviceId).catch(() => {});
-      });
+        const disconnected = conn;
+        return lifecycle(disconnected.deviceId, async () => {
+          const current = hub.detach(disconnected);
+          if (current || !hub.device(disconnected.userId, disconnected.deviceId))
+            await failDeviceRuns(db, disconnected.deviceId);
+        });
+      }).catch(() => {});
+    });
+  });
+
+  app.get("/ws/voice", { websocket: true }, (ws, req) => {
+    if (!voice) return ws.close(1011);
+    void voice.attach(ws, req).catch((error) => {
+      send(ws, { type: "error", detail: error instanceof Error ? error.message : "语音通话没有接通" });
+      try { ws.close(1011); } catch { /* already closed */ }
     });
   });
 
@@ -126,7 +163,7 @@ export async function sockets(
       .then((u) => {
         if (ws.readyState !== 1) return;
         unsubscribe = hub.subscribe(u.user_id, (event) => send(ws, { type: "event", event }));
-        send(ws, { type: "hello", user_id: u.user_id, mac_online: hub.online(u.user_id) });
+        send(ws, { type: "hello", user_id: u.user_id, device_online: hub.online(u.user_id) });
       })
       .catch(() => ws.close(4401));
     ws.on("message", (raw) => {

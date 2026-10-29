@@ -1,31 +1,44 @@
+import { artifactOut } from "./reports.js";
+import { internalTool, TERMINAL_RUN_STATES } from "@pi-bot/runtime-contracts";
+import { taskMessage } from "./task-conversation.js";
+import {taskTarget} from "./targets.js";
 import { randomUUID } from "node:crypto";
 import { fail, type Database, type Row, type Tx } from "./db.js";
 import type { Settings } from "./config.js";
 import type { Hub } from "./hub.js";
 import type { LlmClaims } from "./security.js";
-import { ACTIVE, MAX_DELEGATION_DEPTH, delegationChain, insertRun, resolveModel } from "./bots.js";
-import { cancelRun, dispatchMac } from "./runs.js";
+import { ACTIVE, MAX_DELEGATION_DEPTH, delegationChain, insertRun, resolveModel, finishRun } from "./bots.js";
+import { botConnection, checkDevice } from './devices.js';
+import { cancelRun, dispatchDevice } from "./runs.js";
 import { AutomationScheduler } from "./automations.js";
 import { TASK_CONCURRENCY, resumeExecution } from "./scheduling.js";
 
 export const MAX_TASKS_PER_RUN = 5;
-export const TERMINAL = ["completed", "failed", "cancelled"];
+export const TERMINAL:readonly string[] = TERMINAL_RUN_STATES;
+/** The live voice call speaks a finished task instead of posting a text report. */
+export interface VoiceAnnouncer {
+  announce(botId: string, task: Row): boolean;
+}
 
 export const agentTaskOut = (t: Row) => ({
   id: t.task_id,
-  status: t.status,
+  status: t.run_status ?? t.status,
+  execution: t.execution,
+  device_id: t.device_id,
+  operation_target:t.operation_target,
   mode: t.mode,
   kind: t.kind,
   title: t.title,
   activity: t.progress?.at(-1) ?? null,
-  tools: (t.tools ?? []).filter((x: Row) => !["skill_manage", "skill_load"].includes(x.name)),
+  tools: (t.tools ?? []).filter((x: Row) => !internalTool(x.name)),
   updated_at: t.activity_at ?? t.updated_at,
   agent: { id: t.target_bot_id, name: t.bot_name ?? "" },
-  result: t.result,
+  attachments:t.attachments??[],
+  result: (t.run_status ?? t.status) === "completed" ? (t.run_result ?? t.result) : null,
   checkpoint: t.checkpoint,
   checkpoint_version: t.checkpoint_version,
   resumed_from: t.resumed_from,
-  error: t.error,
+  error: t.run_status ? t.run_error ?? null : t.error,
   created_at: t.created_at,
   finished_at: t.finished_at,
 });
@@ -39,16 +52,16 @@ export async function callerRun(tx: Tx, userId: string, claims: LlmClaims, runId
     run.user_id !== userId ||
     run.bot_id !== claims.bot ||
     run.executor !== claims.src ||
-    (claims.src === "mac" && run.device_id !== claims.did) ||
+    (claims.src === "device" && run.device_id !== claims.did) ||
     !ACTIVE.includes(run.status)
   )
     fail(404, "当前运行不存在或已结束");
   return run!;
 }
-async function ownTask(tx: Tx, userId: string, claims: LlmClaims, taskId: string, lock = false) {
+async function ownTask(tx: Tx, userId: string, claims: LlmClaims, taskId: string, lock = false): Promise<Row> {
   if (!claims.bot) fail(403, "令牌未绑定智能体");
   const t = await tx.one(
-    `SELECT t.*, b.name AS bot_name, m.progress, m.tools, m.updated_at AS activity_at
+    `SELECT t.*, b.name AS bot_name, r.status AS run_status, r.error AS run_error, m.content AS run_result, m.progress, m.tools, m.updated_at AS activity_at
      FROM agent_tasks t JOIN bots b ON b.bot_id=t.target_bot_id
      LEFT JOIN bot_runs r ON r.run_id=t.child_run_id
      LEFT JOIN bot_messages m ON m.message_id=r.assistant_message_id
@@ -56,7 +69,8 @@ async function ownTask(tx: Tx, userId: string, claims: LlmClaims, taskId: string
     [taskId, userId, claims.bot],
   );
   if (!t) fail(404, "委托不存在");
-  return t!;
+  const reports=t!.child_run_id ? await tx.rows('SELECT artifact_id,title,name,mime,size,created_at FROM report_artifacts WHERE run_id=$1 ORDER BY created_at',[t!.child_run_id]) : [];
+  return { ...t!, attachments:reports.map(artifactOut),status: t!.run_status ?? t!.status };
 }
 async function resolveTarget(tx: Tx, userId: string, name: string, selfId: string) {
   const bots = await tx.rows("SELECT * FROM bots WHERE user_id=$1 AND archived_at IS NULL ORDER BY is_main DESC, last_active_at DESC", [userId]);
@@ -93,11 +107,12 @@ export async function createTask(
   hub: Hub,
   userId: string,
   claims: LlmClaims,
-  body: { run_id: string; agent?: string; task: string; wait: boolean; kind?: "background" | "delegation"; title?: string; request_id?: string;resumed_from?:string },
+  body: { run_id: string; agent?: string; task: string; wait: boolean; kind?: "background" | "delegation"; title?: string; request_id?: string;resumed_from?:string; execution?: "device" | "cloud" | "remote"; device_id?:string; operation_target?:string },
+  settings?:Settings,
 ) {
   const parent = await callerRun(tx, userId, claims, body.run_id);
-  if (parent.automation_readonly) fail(403, "自主巡检不能创建任务或委托其他 Bot");
-  if (parent.execution_policy === "mac_only" && !body.wait) fail(422, "自动工作中的协作必须同步等待，不能另行向用户回报");
+  if (parent.origin === "automation" || parent.automation_readonly) fail(403, "目标检查不能把工作交给其他智能体");
+  if (parent.execution_policy === "device_only" && !body.wait) fail(422, "目标检查中的协作必须同步等待，不能另行向用户回报");
   const kind = body.kind ?? "delegation";
   if (body.request_id) {
     const old = await tx.one("SELECT t.*, b.name AS bot_name FROM agent_tasks t JOIN bots b ON b.bot_id=t.target_bot_id WHERE t.parent_run_id=$1 AND t.request_id=$2", [parent.run_id, body.request_id]);
@@ -108,13 +123,17 @@ export async function createTask(
   if (kind === "background" && parent.lane !== "conversation") fail(422, "后台任务不能再创建自己的后台任务，请直接完成或委托其他智能体");
   if (parent.lane === "conversation" && body.wait) fail(422, "对话调度不能等待任务，请使用 wait=false");
   if (!body.wait && depth > 0) fail(422, "被委托的任务里只能用 wait=true 同步等待结果");
-  const target = kind === "background" ? await tx.get("bots", parent.bot_id) : await resolveTarget(tx, userId, body.agent ?? "", parent.bot_id);
+  const resolved = kind === "background" ? await tx.get("bots", parent.bot_id) : await resolveTarget(tx, userId, body.agent ?? "", parent.bot_id);
+  const target = (await tx.one("SELECT * FROM bots WHERE bot_id=$1 FOR NO KEY UPDATE",[resolved.bot_id]))!;
   if (kind === "delegation" && bots.includes(target.bot_id)) fail(422, `「${target.name}」正在等你的结果，不能再委托回去，否则会形成循环`);
   if (body.wait && (await waitsFor(tx, target.bot_id, parent.bot_id)))
     fail(409, `「${target.name}」正在等你完成另一项任务，同步等待会互相卡住${depth === 0 ? "；可以改用 wait=false" : "，请自己完成"}`);
   const { n } = (await tx.one("SELECT count(*) AS n FROM agent_tasks WHERE parent_run_id=$1", [parent.run_id]))!;
   if (n >= MAX_TASKS_PER_RUN) fail(422, `本次任务已委托 ${MAX_TASKS_PER_RUN} 次，达到上限，请自己完成剩余部分`);
+  const location=await taskTarget(tx,settings,hub,userId,parent,target,body.execution,body.device_id);
+  if(body.operation_target&&body.operation_target!==location.operation_target) fail(409,"原任务的执行环境已变化，不能自动迁移");
   const task = await tx.insert("agent_tasks", {
+    ...location,
     task_id: randomUUID(),
     user_id: userId,
     parent_run_id: parent.run_id,
@@ -129,6 +148,7 @@ export async function createTask(
     status: "queued",
     resumed_from:body.resumed_from??null,
   });
+  await taskMessage(tx, task, "request", "request", task.task, true);
   if (body.wait) await tx.rows("UPDATE bot_runs SET waiting_on_task_id=$2 WHERE run_id=$1", [parent.run_id, task.task_id]);
   const run = await startTask(tx, hub, task);
   const saved = await tx.get("agent_tasks", task.task_id);
@@ -137,10 +157,12 @@ export async function createTask(
 
 async function failQueued(tx: Tx, task: Row, error: string) {
   await tx.rows(
-    "UPDATE agent_tasks SET status='failed', error=$2, finished_at=now() WHERE task_id=$1 AND status='queued'",
+    "UPDATE agent_tasks SET status='failed', error=$2, finished_at=now(), updated_at=now() WHERE task_id=$1 AND status='queued'",
     [task.task_id, error],
   );
+  await taskMessage(tx, task, "terminal", "error", error);
   await tx.notify({ user_id: task.user_id, bot_id: task.parent_bot_id });
+  await tx.notify({ user_id: task.user_id, bot_id: task.target_bot_id });
 }
 /** Starts a queued task on its target if the target is idle; otherwise it stays queued. */
 export async function startTask(tx: Tx, hub: Hub, task: Row) {
@@ -150,21 +172,26 @@ export async function startTask(tx: Tx, hub: Hub, task: Row) {
     await failQueued(tx, task, "目标智能体已归档");
     return null;
   }
-  const { n } = (await tx.one("SELECT count(*) AS n FROM bot_runs WHERE bot_id=$1 AND lane='task' AND status = ANY($2) AND waiting_on_task_id IS NULL", [target.bot_id, ACTIVE]))!;
+  const { n } = (await tx.one(`SELECT count(*) AS n FROM bot_runs
+    WHERE bot_id=$1 AND lane='task' AND status = ANY($2) AND waiting_on_task_id IS NULL
+      AND NOT ($3='cloud' AND status='queued' AND executor='device')`, [target.bot_id, ACTIVE, task.execution]))!;
   if (n >= TASK_CONCURRENCY) return null;
   if (!(await resolveModel(tx, target))) {
     await failQueued(tx, task, "管理员尚未配置可用模型");
     return null;
   }
-  const conn = hub.device(task.user_id);
+  const conn = hub.device(task.user_id,task.device_id);
+  if(task.execution==="device"&&task.operation_target!=="legacy"&&!conn){await failQueued(tx,task,"指定电脑已离线，本次操作未执行");return null;}
   const parent = await tx.get("bot_runs", task.parent_run_id);
-  if (parent?.execution_policy === "mac_only" && (!conn?.capabilities?.includes("always-on-v1") || parent.cancel_requested || !ACTIVE.includes(parent.status))) return null;
+  if (parent?.execution_policy === "device_only" && (!conn?.capabilities?.includes("always-on-v1") || parent.cancel_requested || !ACTIVE.includes(parent.status))) return null;
   const run = await insertRun(tx, {
     userId: task.user_id,
     botId: target.bot_id,
     requestId: `task:${task.task_id}`,
     text: task.task,
-    mac: conn ? { deviceId: conn.deviceId } : null,
+    computer: task.execution === "device" && conn ? { deviceId: conn.deviceId } : null,
+    targetDeviceId: task.execution === "device" ? task.device_id : null,
+    operationTarget:task.operation_target,
     origin: "agent",
     taskId: task.task_id,
     fromBotId: task.parent_bot_id,
@@ -180,18 +207,21 @@ export async function readTask(tx: Tx, userId: string, claims: LlmClaims, taskId
   if (waiting && s && TERMINAL.includes(task.status)) {
     const parent = await tx.get("bot_runs", task.parent_run_id);
     if (parent?.waiting_on_task_id === taskId && !await resumeExecution(tx, parent, s))
-      return agentTaskOut({ ...task, status: "running", result: null });
+      return agentTaskOut({ ...task, status: "running", run_status: "running", result: null });
+  }
+  if(task.attachments?.length && task.mode === "wait") {
+    await tx.rows(`INSERT INTO message_artifacts(message_id,artifact_id) SELECT r.assistant_message_id,a.artifact_id FROM bot_runs r CROSS JOIN report_artifacts a WHERE r.run_id=$1 AND a.run_id=$2 ON CONFLICT DO NOTHING`,[task.parent_run_id,task.child_run_id]);
   }
   return agentTaskOut(task);
 }
 
 export async function listTasks(tx: Tx, userId: string, claims: LlmClaims, runId: string) {
   await callerRun(tx, userId, claims, runId);
-  const rows = await tx.rows(`SELECT t.*, b.name AS bot_name, m.progress, m.tools, m.updated_at AS activity_at
+  const rows = await tx.rows(`SELECT t.*, b.name AS bot_name, r.status AS run_status, r.error AS run_error, m.content AS run_result, m.progress, m.tools, m.updated_at AS activity_at
     FROM agent_tasks t JOIN bots b ON b.bot_id=t.target_bot_id
     LEFT JOIN bot_runs r ON r.run_id=t.child_run_id
     LEFT JOIN bot_messages m ON m.message_id=r.assistant_message_id
-    WHERE t.user_id=$1 AND (t.parent_bot_id=$2 OR t.target_bot_id=$2) ORDER BY (t.status IN ('running','waiting_approval')) DESC, (t.status='queued') DESC, t.created_at DESC LIMIT 30`, [userId, claims.bot]);
+    WHERE t.user_id=$1 AND (t.parent_bot_id=$2 OR t.target_bot_id=$2) ORDER BY (coalesce(r.status,t.status) IN ('running','waiting_approval')) DESC, (coalesce(r.status,t.status)='queued') DESC, t.created_at DESC LIMIT 30`, [userId, claims.bot]);
   return { tasks: rows.map(agentTaskOut) };
 }
 
@@ -201,8 +231,11 @@ export async function messageTask(tx: Tx, userId: string, claims: LlmClaims, tas
   if (TERMINAL.includes(task.status)) return { task: agentTaskOut(task), delivery: "finished" };
   await tx.rows(`INSERT INTO agent_task_instructions(instruction_id,task_id,request_id,text)
     VALUES($1,$2,$3,$4) ON CONFLICT(task_id,request_id) DO NOTHING`, [randomUUID(), taskId, body.request_id, body.text]);
+  const instruction = (await tx.one("SELECT instruction_id,delivered_at FROM agent_task_instructions WHERE task_id=$1 AND request_id=$2", [taskId, body.request_id]))!;
+  await taskMessage(tx, task, `instruction:${body.request_id}`, "instruction", body.text, true);
+  await tx.notify({ user_id: userId, bot_id: task.parent_bot_id });
   await tx.notify({ user_id: userId, bot_id: task.target_bot_id });
-  return { task: agentTaskOut(task), delivery: task.child_run_id ? "pending" : "queued" };
+  return { task: agentTaskOut(task), instruction_id: instruction.instruction_id, delivery: instruction.delivered_at ? "delivered" : task.child_run_id ? "pending" : "queued" };
 }
 /** The delegating tool gave up (its run stopped); nothing is reported back afterwards. */
 export async function cancelTask(tx: Tx, hub: Hub, userId: string, claims: LlmClaims, taskId: string) {
@@ -212,20 +245,23 @@ export async function cancelTask(tx: Tx, hub: Hub, userId: string, claims: LlmCl
   const t = await ownTask(tx, userId, claims, taskId, true);
   if (t.child_run_id !== snapshot.child_run_id) fail(409, "任务刚刚启动，请重新取消");
   let notify: { runId: string; send(m: Row): void } | null = null;
-  if (t.status === "queued" && !t.child_run_id)
-    await tx.rows("UPDATE agent_tasks SET status='cancelled', finished_at=now() WHERE task_id=$1", [taskId]);
+  if (t.status === "queued" && !t.child_run_id) {
+    await tx.rows("UPDATE agent_tasks SET status='cancelled', finished_at=now(), updated_at=now() WHERE task_id=$1", [taskId]);
+    await taskMessage(tx, t, "terminal", "error", "任务已取消");
+  }
   else if (["queued", "running", "waiting_approval"].includes(t.status) && t.child_run_id) {
     const r = await cancelRun(tx, hub, userId, t.child_run_id);
     if (r.notify) notify = { runId: t.child_run_id, send: (m) => r.notify!.send(m) };
   }
   await tx.notify({ user_id: userId, bot_id: t.parent_bot_id });
+  await tx.notify({ user_id: userId, bot_id: t.target_bot_id });
   return { task: agentTaskOut(await ownTask(tx, userId, claims, taskId)), notify };
 }
 /** A synchronous wait that ran too long becomes a hand-off reported back later. */
 export async function reportLater(tx: Tx, userId: string, claims: LlmClaims, taskId: string, s: Settings) {
   const t = await ownTask(tx, userId, claims, taskId, true);
   const parent = await tx.get("bot_runs", t.parent_run_id);
-  if (parent?.execution_policy === "mac_only") fail(422, "自动工作中的协作只能返回本轮，不能改为公开回报");
+  if (parent?.execution_policy === "device_only") fail(422, "目标检查中的协作只能返回本轮，不能改为公开回报");
   if (TERMINAL.includes(t.status) || t.mode === "report") {
     if (parent?.waiting_on_task_id && !await resumeExecution(tx, parent, s)) fail(409, "等待执行名额后继续");
     return agentTaskOut(t);
@@ -237,7 +273,7 @@ export async function reportLater(tx: Tx, userId: string, claims: LlmClaims, tas
 }
 
 function reportText(t: Row) {
-  const task = t.task.length > 500 ? `${t.task.slice(0, 499)}…` : t.task;
+  const task = (t.task.length > 500 ? `${t.task.slice(0, 499)}…` : t.task)+(t.operation_target&&t.operation_target!=="legacy"?`\n执行环境：${t.operation_target}`:"");
   if (t.status === "completed")
     return `「${t.bot_name}」完成了你委托的任务。\n\n任务：${task}\n\n结果：\n${String(t.result || "（没有文字结果）").slice(0, 20000)}`;
   if (t.status === "failed") return `「${t.bot_name}」没能完成你委托的任务：${t.error ?? "运行失败"}\n\n任务：${task}`;
@@ -245,9 +281,9 @@ function reportText(t: Row) {
 }
 
 /**
- * Lives in the API process because only it holds the Mac sockets. Starts queued
+ * Lives in the API process because only it holds the device sockets. Starts queued
  * tasks once their target is idle, reports finished hand-offs back to the
- * delegating bot, and forwards cascaded cancels to the Mac.
+ * delegating bot, and forwards cascaded cancels to the device.
  */
 export class AgentDispatcher {
   private timer?: NodeJS.Timeout;
@@ -256,12 +292,14 @@ export class AgentDispatcher {
   private again = false;
   private stopped = false;
   private cancelSent = new Set<string>();
+  private announcer?: VoiceAnnouncer;
   constructor(
     private db: Database,
     private s: Settings,
     private hub: Hub,
     private intervalMs = 5000,
   ) {}
+  setAnnouncer(announcer: VoiceAnnouncer) { this.announcer = announcer; }
   start() {
     this.timer = setInterval(() => this.kick(), this.intervalMs);
     this.kick();
@@ -293,17 +331,54 @@ export class AgentDispatcher {
       });
   }
   async once() {
+    await this.reconcile();
     await this.dispatchConversations();
     await this.startQueued();
     await this.deliverReports();
     await Promise.all([this.forwardCancels(), this.forwardInstructions()]);
     await new AutomationScheduler(this.db, this.s, this.hub).once();
   }
+  /** Reconcile durable records; elapsed silence alone never cancels queued work. */
+  private async reconcile() {
+    await this.db.tx(async tx => {
+      const expired = await tx.rows(`SELECT r.* FROM bot_runs r WHERE r.status IN ('running','waiting_approval')
+        AND ((r.executor='cloud' AND r.lease_until<now()) OR r.deadline_at<now())
+        FOR NO KEY UPDATE SKIP LOCKED`);
+      for (const run of expired) await finishRun(tx, run.run_id, "failed", "执行已中断，请核实结果后重新安排");
+      // A live execution must not be hidden or failed because its metadata/link drifted.
+      const repaired = await tx.rows(`UPDATE agent_tasks t SET child_run_id=r.run_id,updated_at=now()
+        FROM bot_runs r WHERE t.child_run_id IS NULL AND r.task_id=t.task_id AND r.origin='agent'
+          AND r.request_id='task:'||t.task_id::text AND r.bot_id=t.target_bot_id
+        RETURNING t.*`);
+      const live = await tx.rows(`UPDATE agent_tasks t SET status=r.status,finished_at=NULL,result=NULL,error=NULL,updated_at=now()
+        FROM bot_runs r WHERE r.run_id=t.child_run_id AND r.status IN ('queued','running','waiting_approval')
+          AND (t.status<>r.status OR t.finished_at IS NOT NULL)
+        RETURNING t.*`);
+      for (const t of [...repaired, ...live]) {
+        await tx.notify({ user_id: t.user_id, bot_id: t.parent_bot_id });
+        await tx.notify({ user_id: t.user_id, bot_id: t.target_bot_id });
+      }
+      const stale = await tx.rows(`SELECT t.*,CASE WHEN r.run_id IS NULL THEN 'failed' ELSE r.status END AS final_status,
+        CASE WHEN r.run_id IS NULL THEN '执行记录缺失，请核实结果后重新安排' ELSE r.error END AS run_error,m.content AS final_content
+        FROM agent_tasks t LEFT JOIN bot_runs r ON r.run_id=t.child_run_id
+        LEFT JOIN bot_messages m ON m.message_id=r.assistant_message_id
+        WHERE t.status IN ('queued','running','waiting_approval') AND (r.status IN ('completed','failed','cancelled') OR (r.run_id IS NULL AND t.status<>'queued'))
+        FOR NO KEY UPDATE OF t SKIP LOCKED`);
+      for (const t of stale) {
+        await tx.rows(`UPDATE agent_tasks SET status=$2,result=$3,error=$4,finished_at=coalesce(finished_at,now()),updated_at=now() WHERE task_id=$1`,
+          [t.task_id, t.final_status, t.final_status === "completed" ? t.final_content : null, t.run_error]);
+        await taskMessage(tx, t, "terminal", t.final_status === "completed" ? "answer" : "error", t.final_status === "completed" ? t.final_content ?? "" : t.run_error ?? "任务已结束");
+        await tx.notify({ user_id: t.user_id, bot_id: t.parent_bot_id });
+        await tx.notify({ user_id: t.user_id, bot_id: t.target_bot_id });
+      }
+    });
+  }
   private async startQueued() {
     const queued = await this.db.tx((tx) =>
       tx.rows(
         `SELECT t.task_id FROM agent_tasks t WHERE t.status='queued' AND t.child_run_id IS NULL
-         AND (SELECT count(*) FROM bot_runs r WHERE r.bot_id=t.target_bot_id AND r.lane='task' AND r.status = ANY($1) AND r.waiting_on_task_id IS NULL)<2
+         AND (SELECT count(*) FROM bot_runs r WHERE r.bot_id=t.target_bot_id AND r.lane='task' AND r.status = ANY($1) AND r.waiting_on_task_id IS NULL
+           AND NOT (t.execution='cloud' AND r.status='queued' AND r.executor='device'))<2
          ORDER BY t.created_at LIMIT 20`,
         [ACTIVE],
       ),
@@ -315,7 +390,7 @@ export class AgentDispatcher {
           const t = await tx.one("SELECT * FROM agent_tasks WHERE task_id=$1 AND status='queued' FOR NO KEY UPDATE SKIP LOCKED", [task_id]);
           return t ? startTask(tx, this.hub, t) : null;
         });
-        if (run?.executor === "mac") await dispatchMac(this.db, this.s, this.hub, run.run_id);
+        if (run?.executor === "device") await dispatchDevice(this.db, this.s, this.hub, run.run_id);
       } catch {
         console.error("agent task start failed");
       }
@@ -326,8 +401,8 @@ export class AgentDispatcher {
       tx.rows(
         `SELECT t.task_id FROM agent_tasks t
          WHERE t.mode='report' AND t.delivered_at IS NULL AND t.status IN ('completed','failed','cancelled')
-           AND NOT EXISTS (SELECT 1 FROM bot_runs p WHERE p.run_id=t.parent_run_id AND p.execution_policy='mac_only')
-           AND NOT EXISTS (SELECT 1 FROM bot_runs r WHERE r.bot_id=t.parent_bot_id AND r.lane='conversation' AND r.status = ANY($1))
+           AND NOT EXISTS (SELECT 1 FROM bot_runs p WHERE p.run_id=t.parent_run_id AND p.execution_policy='device_only')
+           AND NOT EXISTS (SELECT 1 FROM bot_runs r WHERE r.bot_id=t.parent_bot_id AND r.lane='conversation' AND r.status = ANY($1) AND r.origin<>'voice')
          ORDER BY t.finished_at LIMIT 20`,
         [ACTIVE],
       ),
@@ -343,33 +418,38 @@ export class AgentDispatcher {
           );
           if (!t) return null;
           const bot = await tx.one("SELECT * FROM bots WHERE bot_id=$1 FOR NO KEY UPDATE", [t.parent_bot_id]);
-          if (bot && !bot.archived_at && (await tx.one("SELECT 1 FROM bot_runs WHERE bot_id=$1 AND lane='conversation' AND status = ANY($2)", [bot.bot_id, ACTIVE])))
-            return null;
           if (!bot || bot.archived_at) {
             await tx.rows("UPDATE agent_tasks SET delivered_at=now() WHERE task_id=$1", [task_id]);
             return null;
           }
+          const activeConversation = await tx.one("SELECT origin FROM bot_runs WHERE bot_id=$1 AND lane='conversation' AND status = ANY($2)", [bot.bot_id, ACTIVE]);
+          if (activeConversation?.origin === "voice") {
+            this.announcer?.announce(bot.bot_id, t);
+            return null;
+          }
+          if (activeConversation) return null;
           if (!(await resolveModel(tx, bot))) return null;
           await tx.rows("UPDATE agent_tasks SET delivered_at=now() WHERE task_id=$1", [task_id]);
-          const conn = this.hub.device(t.user_id);
+          const conn = await botConnection(tx,this.hub,t.user_id,bot.bot_id);
           const report = await insertRun(tx, {
             userId: t.user_id,
             botId: bot.bot_id,
             requestId: `report:${t.task_id}`,
             text: reportText(t),
-            mac: conn ? { deviceId: conn.deviceId } : null,
+            computer: conn ? { deviceId: conn.deviceId } : null,
             origin: "report",
             taskId: t.task_id,
             fromBotId: t.kind === "background" ? undefined : t.target_bot_id,
           });
           await tx.rows("UPDATE agent_tasks SET report_run_id=$2 WHERE task_id=$1", [task_id, report.run_id]);
           if (t.child_run_id) {
+            await tx.rows("INSERT INTO message_artifacts(message_id,artifact_id) SELECT $1,artifact_id FROM report_artifacts WHERE run_id=$2 ON CONFLICT DO NOTHING", [report.assistant_message_id,t.child_run_id]);
             const output = await tx.one("SELECT m.ui FROM bot_messages m JOIN bot_runs r ON r.assistant_message_id=m.message_id WHERE r.run_id=$1", [t.child_run_id]);
             if (output?.ui) await tx.update("bot_messages", report.assistant_message_id, { ui: output.ui });
           }
           return report;
         });
-        if (run?.executor === "mac") await dispatchMac(this.db, this.s, this.hub, run.run_id);
+        if (run?.executor === "device") await dispatchDevice(this.db, this.s, this.hub, run.run_id);
       } catch {
         console.error("agent report delivery failed");
       }
@@ -393,7 +473,7 @@ export class AgentDispatcher {
         } catch { /* Retry on the next pass. */ }
         return;
       }
-      const conn = this.hub.device(r.user_id);
+      const conn = this.hub.device(r.user_id,r.device_id);
       if (!conn || conn.deviceId !== r.device_id) return;
       conn.send({ type: "cancel", run_id: r.run_id });
       this.cancelSent.add(r.run_id);
@@ -401,8 +481,8 @@ export class AgentDispatcher {
   }
 
   private async dispatchConversations() {
-    const runs = await this.db.tx(tx => tx.rows("SELECT run_id FROM bot_runs WHERE executor='mac' AND status='queued' ORDER BY (execution_policy='mac_only'), (origin='report'), created_at LIMIT 100"));
-    for (const r of runs) await dispatchMac(this.db, this.s, this.hub, r.run_id).catch(() => {});
+    const runs = await this.db.tx(tx => tx.rows("SELECT run_id FROM bot_runs WHERE executor='device' AND status='queued' ORDER BY (execution_policy='device_only'), (origin='report'), created_at LIMIT 100"));
+    for (const r of runs) await dispatchDevice(this.db, this.s, this.hub, r.run_id).catch(() => {});
   }
   private async forwardInstructions() {
     const pending = await this.db.tx(tx => tx.rows(`SELECT i.*, r.run_id, r.executor, r.device_id, r.user_id
@@ -415,8 +495,8 @@ export class AgentDispatcher {
     // Preserve each run's instruction order without blocking other runs on a failed transport.
     await Promise.all([...byRun.values()].map(async instructions => {
       for (const i of instructions) {
-        if (i.executor === "mac") {
-          const conn = this.hub.device(i.user_id);
+        if (i.executor === "device") {
+          const conn = this.hub.device(i.user_id,i.device_id);
           if (!conn || conn.deviceId !== i.device_id) return;
           conn.send({ type: "task_message", run_id: i.run_id, instruction_id: i.instruction_id, text: i.text });
         } else {

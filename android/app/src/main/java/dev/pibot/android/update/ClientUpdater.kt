@@ -40,7 +40,7 @@ class ClientUpdater(context: Context) {
         var best: UpdateCandidate? = null
         // Paginate: do not let newer prereleases hide the stable channel.
         for (page in 1..5) {
-            val releases = json("https://api.github.com/repos/TYzzt/PI-BOT/releases?per_page=100&page=$page", 8L * 1024 * 1024).jsonArray
+            val releases = json("https://api.github.com/repos/lhx692135353/PI-BOT/releases?per_page=100&page=$page", 8L * 1024 * 1024).jsonArray
             for (element in releases) {
                 val release = element.jsonObject
                 if (!releaseMatches(release, channel)) continue

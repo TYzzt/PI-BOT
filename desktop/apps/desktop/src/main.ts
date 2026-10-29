@@ -1,5 +1,6 @@
 import { ClientUpdater } from './client-updater.js';
 import { hasActiveWork } from './update-policy.js';
+import { errorInfo, httpErrorInfo } from "@pi-bot/runtime-contracts";
 import { protectWindowsDirectory } from '../../../packages/service/src/windows.js';
 import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage } from 'electron';
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -96,11 +97,12 @@ else {
     });
     ipcMain.handle('agent:computerName', event => { validSender(event); return computerName(); });
     ipcMain.handle('agent:defaultServerUrl', event => { validSender(event); return process.env.PI_BOT_SERVER_URL || DEFAULT_SERVER_URL; });
-    ipcMain.handle('agent:call', async (event, method: Method, input: unknown) => { validSender(event); return client.call(method, parseInput(method, input)); });
+    ipcMain.handle('agent:call', async (event, method: Method, input: unknown) => { validSender(event); try { return {__runtime_reply:2,ok:true,result:await client.call(method, parseInput(method,input))}; } catch(error) { return {__runtime_reply:2,ok:false,error_info:errorInfo(error)??httpErrorInfo(500,error instanceof Error?error.message:"操作失败","ipc")}; } });
     ipcMain.handle('agent:openExternal', async (event, url: string) => { validSender(event); const parsed = new URL(url); if (!['https:', 'http:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error('不支持此链接'); await shell.openExternal(parsed.href); });
-    ipcMain.handle('agent:openLibrary', async (event, slug: unknown) => {
+    ipcMain.handle('agent:openLibrary', async (event, botId: unknown) => {
       validSender(event);
-      if (typeof slug !== 'string') throw new Error('资料库无效');
+      if (typeof botId !== 'string') throw new Error('资料库无效');
+      const {slug} = await client.call('openLibrary',{id:botId}) as {slug:string};
       const error = await shell.openPath(await libraryDir(libraryRoot, slug));
       if (error) throw new Error('无法在文件管理器中打开资料库');
     });

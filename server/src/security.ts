@@ -9,7 +9,7 @@ import {
 import { readFileSync } from "node:fs";
 import { SignJWT, jwtVerify, type JWTPayload } from "jose";
 import { hash, verify as verifyPassword, argon2id } from "argon2";
-import { fail, type Tx, type Row } from "./db.js";
+import { HttpError, fail, type Tx, type Row } from "./db.js";
 import type { Settings } from "./config.js";
 export const sha256 = (value: string | Buffer) =>
   createHash("sha256").update(value).digest("hex");
@@ -28,6 +28,21 @@ export async function passwordMatches(hashed: string, password: string) {
   }
 }
 const secret = (s: Settings) => new TextEncoder().encode(s.jwtSecret);
+/** One-minute credential so a desktop renderer can open `/ws/voice` without the provider key. */
+export const issueVoiceTicket = (userId: string, botId: string, s: Settings, source?:{client:string;deviceId?:string}) =>
+  new SignJWT({ typ: "voice", bot: botId, client:source?.client, did:source?.deviceId })
+    .setProtectedHeader({ alg: "HS256" })
+    .setSubject(userId)
+    .setIssuedAt()
+    .setExpirationTime(Math.floor(Date.now() / 1000) + 60)
+    .sign(secret(s));
+export async function readVoiceTicket(token: string, s: Settings) {
+  const payload = await verifyToken(token, s, "voice");
+  const botId = payload.bot;
+  const userId = payload.sub;
+  if (typeof botId !== "string" || typeof userId !== "string") throw new HttpError(401, "认证失败");
+  return { userId, botId, client:typeof payload.client==="string"?payload.client:"legacy", deviceId:typeof payload.did==="string"?payload.did:undefined };
+}
 export const issueToken = (u: Row, s: Settings) =>
   new SignJWT({ typ: "user", role: u.role })
     .setProtectedHeader({ alg: "HS256" })
@@ -37,7 +52,7 @@ export const issueToken = (u: Row, s: Settings) =>
     .sign(secret(s));
 export interface LlmClaims {
   sub: string;
-  src: "mac" | "cloud" | "memory" | "test";
+  src: "device" | "cloud" | "memory" | "test";
   bot?: string;
   did?: string;
 }
@@ -79,6 +94,8 @@ export async function llmCaller(tx: Tx, headers: Row, s: Settings) {
   if (!token) fail(401, "需要认证");
   const payload = await verifyToken(token!, s, "llm");
   const u = await activeUser(tx, payload.sub!);
+  if (!["device","cloud","memory","test"].includes(String(payload.src))) fail(401,"请升级执行端并重新登录");
+  if (payload.src === "device" && !await tx.one("SELECT 1 FROM devices WHERE device_id=$1 AND user_id=$2 AND revoked_at IS NULL",[payload.did,payload.sub])) fail(401,"设备已解绑");
   return { user: u, claims: payload as unknown as LlmClaims };
 }
 export function decodeBase64(value: string, size?: number) {
@@ -161,7 +178,7 @@ export async function device(
 export class Vault {
   private keys!: Record<string, string>;
   private active!: string;
-  constructor(path?: string) {
+  constructor(path?: string, private domain = "model") {
     try {
       const d = JSON.parse(readFileSync(path!, "utf8"));
       this.keys = d.keys;
@@ -182,7 +199,7 @@ export class Vault {
         decodeBase64(this.keys[this.active], 32),
         nonce,
       );
-    c.setAAD(Buffer.from(`model:${id}`));
+    c.setAAD(Buffer.from(`${this.domain}:${id}`));
     const ciphertext = Buffer.concat([
       c.update(value, "utf8"),
       c.final(),
@@ -202,7 +219,7 @@ export class Vault {
           decodeBase64(this.keys[value.key_id], 32),
           decodeBase64(value.nonce, 12),
         );
-      d.setAAD(Buffer.from(`model:${id}`));
+      d.setAAD(Buffer.from(`${this.domain}:${id}`));
       d.setAuthTag(b.subarray(-16));
       return Buffer.concat([d.update(b.subarray(0, -16)), d.final()]).toString(
         "utf8",

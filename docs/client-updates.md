@@ -32,7 +32,26 @@ only from the configured public repository release. No GitHub token is embedded.
 SHA256 authenticates package bytes against the HTTPS release metadata, not an
 independent signing authority. Protect repository write permissions.
 
-## Fixed Android signing — required before publishing
+## Upstream CI and signing integration
+
+The update source is `lhx692135353/PI-BOT`, not the contributor fork. Existing
+upstream Android and desktop workflows remain intact. PRs only test/build; they
+do not publish and do not need signing secrets. Release publishing uses the
+built-in `GITHUB_TOKEN` with job-scoped `contents: write`, not a personal token.
+
+At integration time, upstream's Android workflow builds `assembleDebug` on a
+fresh hosted runner and does not restore a fixed keystore. Reusing that workflow
+alone therefore does not guarantee the same signing certificate across builds.
+The optional configuration below is one implementation of persistent signing,
+not an intrinsic requirement for online updates or for opening/merging this PR.
+If maintainers already have another protected signing mechanism, adapt the signed
+APK step to reuse it and retain the certificate verification. Do not generate a
+replacement key or publish a random debug-signed package as a compatible update.
+Without persistent signing, validation still runs, but the main publishing job
+is deliberately blocked; maintainer signing setup/reuse is needed before an
+actual Android update release. No secrets need to be supplied to a fork PR.
+
+## Fixed Android signing — current publishing implementation
 
 **Do not generate a new key. Do not upload a debug keystore from a different
 machine and assume compatibility.** Use the existing keystore that signed the

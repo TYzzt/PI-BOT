@@ -14,6 +14,17 @@ export interface Observation {
   incomplete?: boolean;
   phase?: "start" | "end";
 }
+/** Image tool results go to the model, never into diagnostic events. */
+function diagnosticValue(value: unknown, depth = 0): unknown {
+  if (depth > 12) return '[nested value]';
+  if (Array.isArray(value)) return value.map(item => diagnosticValue(item, depth + 1));
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    if (record.type === 'image') return { type: 'image', mimeType: record.mimeType, omitted: true };
+    return Object.fromEntries(Object.entries(record).map(([key, item]) => [key, diagnosticValue(item, depth + 1)]));
+  }
+  return value;
+}
 export function observationExtension(
   runId: string,
   onObservation?: (event: Observation) => void,
@@ -35,6 +46,7 @@ export function observationExtension(
         const bound = (value: unknown) => {
           if (value === undefined) return value;
           try {
+            value = diagnosticValue(value);
             const text = JSON.stringify(value);
             return Buffer.byteLength(text) > 65536
               ? {
@@ -61,7 +73,7 @@ export function observationExtension(
       const started = new Date().toISOString();
       running.set(e.toolCallId, {
         name: e.toolName,
-        input: e.args,
+        input: e.toolName === "publish_report" ? { title: (e.args as any)?.title, summary: (e.args as any)?.summary, content: "[report body omitted]" } : e.args,
         started,
         generation,
       });
@@ -72,7 +84,7 @@ export function observationExtension(
         generation_id: generation,
         started_at: started,
         ended_at: started,
-        input: e.args,
+        input: e.toolName === "publish_report" ? { title: (e.args as any)?.title, summary: (e.args as any)?.summary, content: "[report body omitted]" } : e.args,
         incomplete: true,
         phase: "start",
       });

@@ -1,21 +1,23 @@
 import { useState, type FormEvent } from 'react';
 import { PiBot } from '@pi-bot/bot-face/react';
 import { avatarFor, COLORS, SHAPES, spec, type Avatar } from '@pi-bot/bot-face';
-import type { Bot, ModelOption } from '../../../packages/protocol/src/index.js';
+import type { Bot, Device, ModelOption } from '../../../packages/protocol/src/index.js';
 import { call, errorText } from './bridge.js';
 
-export function BotEditor({ bot, models, onClose, onSaved }: { bot?: Bot; models: ModelOption[]; onClose(): void; onSaved(bot: Bot): void }) {
+export function BotEditor({ bot, models, devices = [], currentDeviceId, onClose, onSaved }: { bot?: Bot; models: ModelOption[]; devices?: Device[]; currentDeviceId?: string | null; onClose(): void; onSaved(bot: Bot): void }) {
   const [name, setName] = useState(bot?.name ?? '');
   const [persona, setPersona] = useState(bot?.persona ?? '');
   const [modelId, setModelId] = useState<string>(bot?.model_id ?? '');
   const [avatar, setAvatar] = useState<Avatar>(bot?.avatar ?? avatarFor(crypto.randomUUID()));
+  const [deviceId,setDeviceId] = useState(bot ? bot.execution_device_id ?? '' : currentDeviceId ?? devices.find(d=>!d.revoked_at)?.id ?? '');
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setSaving(true);
     try {
-      const body = { name, persona, model_id: modelId || null, avatar };
+      if (bot && deviceId !== (bot.execution_device_id ?? '') && !confirm('更换执行电脑后使用目标电脑自己的资料库，不会复制文件；目标检查将暂停，需要重新确认后恢复。')) { setSaving(false); return; }
+      const body = { name, persona, model_id: modelId || null, execution_device_id: deviceId || null, avatar };
       onSaved(bot ? await call<Bot>('botUpdate', { id: bot.id, ...body }) : await call<Bot>('botCreate', body));
     } catch (err) {
       setError(errorText(err));
@@ -41,6 +43,13 @@ export function BotEditor({ bot, models, onClose, onSaved }: { bot?: Bot; models
               {models.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
             </select>
           </label>
+          <label>执行电脑
+            <select value={deviceId} onChange={e=>setDeviceId(e.target.value)}>
+              <option value="">未绑定 · 仅云端聊天</option>
+              {devices.filter(d=>!d.revoked_at || d.id===deviceId).map(d=><option key={d.id} value={d.id} disabled={!!d.revoked_at}>{d.label} · {d.platform === 'linux' ? 'Linux' : d.platform === 'darwin' ? 'macOS' : d.platform === 'win32' ? 'Windows' : '未知平台'} · {d.revoked_at ? '已解绑' : d.online ? '在线' : '离线'}</option>)}
+            </select>
+          </label>
+          <p className="muted small">文件留在所选电脑；离线时本地任务等待，云端仍可聊天和搜索。</p>
           <div className="field">
             <span>造型</span>
             <div className="shapes">

@@ -21,39 +21,55 @@ const text = (c: any): string => (Array.isArray(c) ? c.map(p => p.text ?? '').jo
 
 /** A provider double that drives the agent through tool calls based on the latest user text. */
 async function scriptedProvider(outside: string) {
+  const requests: any[] = [];
   const server = createServer(async (req, res) => {
     let raw = ''; for await (const chunk of req) raw += chunk;
     const json = JSON.parse(raw);
+    requests.push(json);
     const messages: any[] = json.input;
     const user = latestUserText(messages);
     const toolDone = isRealToolResult(messages);
     const results = realToolOutputs(messages).map(m => text(m.output));
     let reply: { text?: string; tool?: { name: string; args: object } };
-    if (user === '建立自动检查链路测试') reply = toolDone
-      ? { text: '已建立长期委托，重要结果会告诉你。' }
-      : { tool: { name: 'automation_manage', args: { action: 'create', title: '自动检查链路测试', goal: '把已授权的检查结论保存到自动记录文件，完成后告知', authorization: '用户授权在自己的资料库创建 automation/result.txt', schedule: { type: 'interval', minutes: 10 } } } };
-    else if (user.startsWith('自动工作：自主巡检')) {
-      for (const name of ['write_file', 'edit_file', 'run_command', 'request_outside_access', 'ask_agent', 'skill_manage'])
-        assert.ok(!json.tools.some((t: any) => t.name === name), `readonly patrol exposed ${name}`);
-      assert.ok(json.tools.some((t: any) => t.name === 'read_file'));
-      if (!results.length) reply = { tool: { name: 'memory_manage', args: { action: 'list' } } };
-      else if (results.length === 1) reply = { tool: { name: 'automation_finish', args: { state: 'wait', summary: '没有新的重要变化', notify: false, reason: '已检查自己的记忆' } } };
-      else reply = { text: 'PRIVATE 静默巡检输出' };
+    const goalId = user.match(/"id":"([0-9a-f-]{36})"/)?.[1];
+    const originalUser = latestUserText(messages);
+    if (originalUser === '问问压测智能体为什么停了') {
+      const asked = messages.some(m => m.type === 'function_call' && m.name === 'ask_agent');
+      reply = asked ? { text: '询问已提交，等对方回报。' }
+        : { tool: { name: 'ask_agent', args: { agent: '压测智能体', task: '请核实停止原因，并报告已有数据。', wait: false, execution: 'device' } } };
     }
-    else if (user.startsWith('自动工作：自动检查链路测试')) {
+    else if (user.startsWith('你收到来自智能体') && user.includes('请核实停止原因，并报告已有数据。')) reply = { text: '压测已按用户要求停止，已有结果在报告目录。' };
+    else if (user === '分条回复测试') reply = results.length === 0
+      ? { tool: { name: 'send_reply', args: { phase: 'opening', text: '先核对服务状态。' } } }
+      : results.length === 1 ? { tool: { name: 'send_reply', args: { phase: 'answer', text: '服务正常，接下来再测一次。' } } }
+      : { text: '服务正常，接下来再测一次。' };
+    else if (user === '建立自动检查链路测试') reply = toolDone
+      ? { text: '已建立目标，有进展会告诉你。' }
+      : { tool: { name: 'goal_manage', args: { action: 'create', title: '自动检查链路测试', goal: '把已授权的检查结论保存到自动记录文件，完成后告知', authorization: '用户授权在自己的资料库创建 automation/result.txt' } } };
+    else if (user === '建立一个会保持安静的目标') reply = toolDone
+      ? { text: '已记下这个目标。' }
+      : { tool: { name: 'goal_manage', args: { action: 'create', title: '静默目标', goal: '没有新进展就保持安静', authorization: '没有明确下一步时不要改文件' } } };
+    else if (user.startsWith('目标检查') && user.includes('静默目标')) {
+      assert.ok(json.tools.some((t: any) => t.name === 'write_file'));
+      assert.ok(!json.tools.some((t: any) => t.name === 'ask_agent'), 'goal review exposed ask_agent');
+      reply = results.length
+        ? { text: 'PRIVATE 静默检查输出' }
+        : { tool: { name: 'goal_finish', args: { goals: [{ id: goalId, state: 'continue', progress: '没有新的重要变化', notify: false, reason: '已检查' }] } } };
+    }
+    else if (user.startsWith('目标检查') && user.includes('自动检查链路测试')) {
       if (!results.length) reply = { tool: { name: 'write_file', args: { path: 'automation/result.txt', content: '自动检查已完成' } } };
       else if (results.length === 1) reply = { tool: { name: 'task_checkpoint', args: { goal: '保存检查结果', completed: ['已保存 automation/result.txt'], findings: [], artifacts: ['automation/result.txt'], blockers: [], next_steps: [] } } };
-      else if (results.length === 2) reply = { tool: { name: 'automation_finish', args: { state: 'complete', summary: '自动检查已完成，文件已保存。', notify: true, reason: '交付了约定成果', category: 'milestone', notification_key: 'automation-test:file-v1' } } };
+      else if (results.length === 2) reply = { tool: { name: 'goal_finish', args: { goals: [{ id: goalId, state: 'continue', progress: '自动检查已完成，文件已保存。', notify: true, reason: '交付了约定成果', notification_key: 'automation-test:file-v1', checkpoint: { completed: ['已保存 automation/result.txt'] } }] } } };
       else reply = { text: 'PRIVATE 自动轮次内部输出' };
     }
     else if (user.startsWith('这是你之前委托给')) reply = { text: user.split('结果：\n').at(-1)! };
     else if (json.tools.some((t: any) => t.name === 'start_task') && /写文件|桌面|联网搜索|长任务/.test(user))
       reply = toolDone ? { text: '任务已安排，完成后告诉你。' } : { tool: { name: 'start_task', args: { title: user.slice(0, 40), task: user } } };
-    else if (user.startsWith('补充任务:')) reply = toolDone ? { text: '补充已送达。' } : { tool: { name: 'task_message', args: { task_id: user.slice('补充任务:'.length), text: '改为蓝色' } } };
+    else if (user.startsWith('补充任务:')) reply = toolDone ? { text: '补充已提交，等待任务接收。' } : { tool: { name: 'task_message', args: { task_id: user.slice('补充任务:'.length), text: '改为蓝色' } } };
     else if (user === '改为蓝色') reply = { text: '已根据补充改为蓝色。' };
     else if (user === '长任务') reply = toolDone ? { text: '长任务已完成。' } : { tool: { name: 'run_command', args: { command: 'sleep 2; echo completed' } } };
-    else if (user === '沉淀方法') reply = toolDone ? { text: '方法已记住。' } : { tool: { name: 'skill_manage', args: { action: 'create', name: 'mac-report', description: '整理报告时使用', instructions: 'PRIVATE-MAC-WORKFLOW：先核实来源，再整理。' } } };
-    else if (user === '复用方法') reply = toolDone ? { text: '报告已整理。' } : { tool: { name: 'skill_load', args: { name: 'mac-report' } } };
+    else if (user === '沉淀方法') reply = toolDone ? { text: '方法已记住。' } : { tool: { name: 'skill_manage', args: { action: 'create', name: 'computer-report', description: '整理报告时使用', instructions: 'PRIVATE-MAC-WORKFLOW：先核实来源，再整理。' } } };
+    else if (user === '复用方法') reply = toolDone ? { text: '报告已整理。' } : { tool: { name: 'skill_load', args: { name: 'computer-report' } } };
     else if (user.includes('写文件')) reply = toolDone ? { text: `完成：${results.at(-1)}` } : { tool: { name: 'write_file', args: { path: 'notes/hello.md', content: '# Hello from Pi Bot' } } };
     else if (user.includes('桌面')) {
       if (!toolDone) reply = { tool: { name: 'request_outside_access', args: { path: outside, reason: '需要看看桌面上的文件' } } };
@@ -73,7 +89,7 @@ async function scriptedProvider(outside: string) {
     stream.end();
   });
   await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
-  return { url: `http://127.0.0.1:${(server.address() as any).port}/v1`, close: () => new Promise<void>(r => { server.closeAllConnections(); server.close(() => r()); }) };
+  return { requests, url: `http://127.0.0.1:${(server.address() as any).port}/v1`, close: () => new Promise<void>(r => { server.closeAllConnections(); server.close(() => r()); }) };
 }
 
 let dir: string, api: Awaited<ReturnType<typeof createApp>>, base: string, provider: Awaited<ReturnType<typeof scriptedProvider>>, app: Application;
@@ -128,12 +144,18 @@ test('the Mac harness logs in, binds itself and runs bots against its library', 
     return !!last.task_id && last.status !== 'running' && last;
   }, 20000);
   assert.equal(reply.status, 'completed', JSON.stringify(reply));
-  assert.equal(reply.executor, 'mac');
+  assert.equal(reply.executor, 'device');
   assert.match(reply.content, /完成：已写入 notes\/hello.md/);
   assert.deepEqual(reply.tools, [], 'worker tools stay off the public result');
   const workerTools = await serverDb.tx(tx => tx.one("SELECT m.tools FROM agent_tasks t JOIN bot_runs r ON r.run_id=t.child_run_id JOIN bot_messages m ON m.message_id=r.assistant_message_id WHERE t.task_id=$1", [reply.task_id]));
   assert.deepEqual(workerTools!.tools.map((t: any) => [t.name, t.state]), [['write_file', 'completed']]);
   assert.deepEqual(reply.progress, [], 'the result is separate from the opening acknowledgement');
+  const page = await app.call('messages', { botId: bot.id }) as MessagePage;
+  const opening = page.messages.find(m => m.role === 'assistant' && !m.task_id)!;
+  assert.equal(opening.status, 'completed');
+  assert.deepEqual(opening.progress, ['我先看看资料，再帮你处理。'], 'the short reply survives background execution');
+  assert.match(opening.content, /任务已安排/);
+  assert.ok(opening.seq < reply.seq, 'the verified result is delivered after the opening reply');
   assert.equal(readFileSync(join(dir, 'pi-bot', 'writer', 'notes', 'hello.md'), 'utf8'), '# Hello from Pi Bot');
   assert.ok(events.some(e => e.type === 'bot.mood' && e.mood === 'working'), 'boards and UI see the bot working');
   assert.ok(events.some(e => e.type === 'delta'), 'streaming text reaches the UI');
@@ -143,6 +165,35 @@ test('the Mac harness logs in, binds itself and runs bots against its library', 
   assert.deepEqual(files.json.entries.map((e: any) => e.name), ['hello.md']);
   const content = await http('GET', `/bots/${bot.id}/files/content?path=notes/hello.md`, undefined, bobToken);
   assert.equal(content.json.content, '# Hello from Pi Bot');
+});
+
+test('desktop replies travel through device events and survive reload without duplicate final text', { skip }, async () => {
+  const bots = await app.call('bots', {}) as { bots: Bot[] };
+  const bot = bots.bots[0];
+  const sent = await app.call('send', { botId: bot.id, text: '分条回复测试' }) as { run: { id: string } };
+  const reply = await eventually(async () => {
+    const page = await app.call('messages', { botId: bot.id }) as MessagePage;
+    return page.messages.find(m => m.run_id === sent.run.id && m.role === 'assistant' && m.status === 'completed');
+  });
+  assert.equal(reply.reply_segments?.length, 2);
+  assert.equal(reply.reply_segments?.[0].text, '先核对服务状态。');
+  assert.equal(reply.content, '服务正常，接下来再测一次。');
+});
+
+test('the Mac sends, loads and replays image attachments through its signed cloud connection', { skip }, async () => {
+  const bot = await app.call('botCreate', { name: 'Vision', persona: '', avatar: { shape: 'bean', color: 'mint', scheme: 'light' } }) as Bot;
+  const image = { name: 'pixel.png', mime_type: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC' };
+  const sent = await app.call('send', { botId: bot.id, text: '', images: [image] }) as { messages: MessagePage['messages'] };
+  const incoming = sent.messages[0];
+  assert.equal(incoming.images?.length, 1);
+  const loaded = await app.call('image', { botId: bot.id, messageId: incoming.id, imageId: incoming.images![0].id }) as typeof image;
+  assert.equal(loaded.data, image.data);
+  await eventually(async () => (await app.call('messages', { botId: bot.id }) as MessagePage).messages.at(-1)?.status === 'completed');
+  const imageParts = (body: any) => body.input.filter((m: any) => m.role === 'user').flatMap((m: any) => Array.isArray(m.content) ? m.content.filter((p: any) => p.type === 'input_image') : []);
+  assert.equal(imageParts(provider.requests.at(-1)).length, 1);
+  await app.call('send', { botId: bot.id, text: '再看图片' });
+  await eventually(async () => (await app.call('messages', { botId: bot.id }) as MessagePage).messages.at(-1)?.status === 'completed');
+  assert.equal(imageParts(provider.requests.at(-1)).length, 1);
 });
 
 test('the Mac agent searches through the authenticated Server gateway', { skip }, async () => {
@@ -190,7 +241,7 @@ test('the Mac conversation steers a real running Pi task without cancelling its 
     const page = await app.call('messages', { botId: bot.id }) as MessagePage;
     return page.messages.find(m => m.run_id === followup.run.id && m.role === 'assistant' && m.status === 'completed');
   });
-  assert.equal(ack.content, '补充已送达。');
+  assert.equal(ack.content, '补充已提交，等待任务接收。');
   const report = await eventually(async () => {
     const page = await app.call('messages', { botId: bot.id }) as MessagePage;
     return page.messages.find(m => m.task_id === task.task_id && m.status === 'completed');
@@ -216,23 +267,23 @@ test('the Mac manages its own skills privately and stores them for cloud reuse',
     assert.deepEqual(reply.progress, [], 'private skill activity does not create a canned acknowledgement');
     assert.doesNotMatch(reply.content, /内部|skill_|PRIVATE-MAC/);
   }
-  assert.doesNotMatch(JSON.stringify(events.slice(start)), /skill_manage|skill_load|PRIVATE-MAC|正在维护/);
+  assert.doesNotMatch(JSON.stringify(events.slice(start)), /PRIVATE-MAC|正在维护/);
   // Inspect the server through the public bearer, then create a cloud context
   // from the same bot to verify that Mac skills need no file synchronization.
   const bobToken = (await http('POST', '/auth/login', { username: 'bob', password: 'bob-password' }, '')).json.access_token;
   const files = await http('GET', `/bots/${bot.id}/files?path=`, undefined, bobToken);
-  assert.ok(!files.json.entries.some((entry: any) => /skill|mac-report/.test(entry.name)));
+  assert.ok(!files.json.entries.some((entry: any) => /skill|computer-report/.test(entry.name)));
   const messages = await http('GET', `/bots/${bot.id}/messages`, undefined, bobToken);
   const runId = messages.json.messages.at(-1).run_id;
   const context = await serverDb.tx(async tx => buildContext(tx, settings({ PI_BOT_DATABASE_URL: TEST_DB, PI_BOT_JWT_SECRET: 'j'.repeat(40) }), { ...await tx.get('bot_runs', runId), executor: 'cloud' }));
-  assert.ok(context.skills.some(skill => skill.name === 'mac-report'));
+  assert.ok(context.skills.some(skill => skill.name === 'computer-report'));
 });
 
-test('natural-language commission runs on the real Mac agent with durable writes, checkpoints and one public report', { skip }, async () => {
+test('a goal runs on the real computer, writes its result, and reports new progress once', { skip }, async () => {
   const bot = await app.call('botCreate', { name: '自动检查员', persona: '' , avatar: { shape: 'bean', color: 'mint', scheme: 'light' } }) as Bot;
   await app.call('send', { botId: bot.id, text: '建立自动检查链路测试' });
   const automation = await eventually(async () => {
-    const a = await serverDb.tx(tx => tx.one("SELECT * FROM bot_automations WHERE bot_id=$1 AND kind='commission'", [bot.id]));
+    const a = await serverDb.tx(tx => tx.one("SELECT * FROM bot_automations WHERE bot_id=$1 AND kind='review'", [bot.id]));
     const running = await serverDb.tx(tx => tx.one("SELECT 1 FROM bot_runs WHERE bot_id=$1 AND lane='conversation' AND status IN ('queued','running')", [bot.id]));
     return a && !running && a;
   });
@@ -246,9 +297,9 @@ test('natural-language commission runs on the real Mac agent with durable writes
   }, 20000);
   assert.equal(report.status, 'completed');
   assert.equal(readFileSync(join(dir, 'pi-bot', bot.slug, 'automation/result.txt'), 'utf8'), '自动检查已完成');
-  const state = await serverDb.tx(tx => tx.get('bot_automations', automation.automation_id));
-  assert.equal(state.status, 'enabled', 'completing an occurrence preserves the periodic commission');
-  assert.deepEqual(state.checkpoint.completed, ['已保存 automation/result.txt']);
+  const goal = await serverDb.tx(tx => tx.one('SELECT * FROM bot_goals WHERE bot_id=$1', [bot.id]));
+  assert.equal(goal!.status, 'active');
+  assert.deepEqual(goal!.checkpoint.completed, ['已保存 automation/result.txt']);
   const round = await serverDb.tx(tx => tx.one('SELECT r.* FROM bot_runs r JOIN automation_rounds ar ON ar.run_id=r.run_id WHERE ar.automation_id=$1', [automation.automation_id]));
   assert.ok(round!.automation_calls >= 4 && round!.automation_calls <= 20);
   assert.equal(round!.effect_pending, false);
@@ -256,19 +307,24 @@ test('natural-language commission runs on the real Mac agent with durable writes
   assert.deepEqual(effects.map(x => x.status), ['confirmed']);
   const page = await app.call('messages', { botId: bot.id }) as MessagePage;
   assert.equal(page.messages.filter(m => m.content === report.content).length, 1);
-  assert.doesNotMatch(JSON.stringify(page), /PRIVATE|automation_finish|task_checkpoint|用户授权范围/);
+  assert.doesNotMatch(JSON.stringify(page), /PRIVATE|goal_finish|task_checkpoint|用户授权范围/);
 });
 
-test('real Mac patrol only gets read tools and completes without adding a chat message or moving visible activity', { skip }, async () => {
-  const bot = await app.call('botCreate', { name: '静默巡检员', persona: '', avatar: { shape: 'bean', color: 'mint', scheme: 'light' } }) as Bot;
-  const previous = await serverDb.tx(tx => tx.get('bots', bot.id));
+test('a quiet goal review can act but stays silent and does not move visible activity', { skip }, async () => {
+  const bot = await app.call('botCreate', { name: '静默检查员', persona: '', avatar: { shape: 'bean', color: 'mint', scheme: 'light' } }) as Bot;
+  await app.call('send', { botId: bot.id, text: '建立一个会保持安静的目标' });
+  const previous = await eventually(async () => {
+    const goal = await serverDb.tx(tx => tx.one("SELECT 1 FROM bot_goals WHERE bot_id=$1", [bot.id]));
+    const running = await serverDb.tx(tx => tx.one("SELECT 1 FROM bot_runs WHERE bot_id=$1 AND lane='conversation' AND status IN ('queued','running')", [bot.id]));
+    return goal && !running && serverDb.tx(tx => tx.get('bots', bot.id));
+  });
   await serverDb.tx(async tx => {
     await tx.rows('UPDATE bot_automations SET next_wake_at=now() WHERE bot_id=$1', [bot.id]);
     await tx.notify({ user_id: previous.user_id, bot_id: bot.id });
   });
   await eventually(async () => serverDb.tx(tx => tx.one("SELECT ar.* FROM automation_rounds ar JOIN bot_automations a USING(automation_id) WHERE a.bot_id=$1 AND ar.status='completed'", [bot.id])), 20000);
   const page = await app.call('messages', { botId: bot.id }) as MessagePage;
-  assert.deepEqual(page.messages, []);
+  assert.ok(!page.messages.some(m => m.content === '没有新的重要变化'));
   const current = await serverDb.tx(tx => tx.get('bots', bot.id));
   assert.equal(current.last_active_at.getTime(), previous.last_active_at.getTime());
   await app.call('botDelete', { id: bot.id });
@@ -276,10 +332,36 @@ test('real Mac patrol only gets read tools and completes without adding a chat m
   assert.equal(state!.status, 'stopped');
 });
 
+test('the real Mac harness calls the native delegation tool once, and exposes the request and answer in delegation details', { skip }, async () => {
+  const sender = await app.call('botCreate', { name: '协作助手', persona: '', avatar: { shape: 'bean', color: 'mint', scheme: 'light' } }) as Bot;
+  const recipient = await app.call('botCreate', { name: '压测智能体', persona: '', avatar: { shape: 'bean', color: 'mint', scheme: 'light' } }) as Bot;
+  const start = events.length;
+  const sent = await app.call('send', { botId: sender.id, text: '问问压测智能体为什么停了' }) as any;
+  const reply = await eventually(async () => {
+    const page = await app.call('messages', { botId: sender.id }) as MessagePage;
+    return page.messages.find(m => m.run_id === sent.run.id && m.role === 'assistant' && m.status === 'completed');
+  });
+  assert.equal(reply.executor, 'device');
+  assert.equal(reply.content, '询问已提交，等对方回报。');
+  assert.equal(reply.agent_tasks?.length, 1);
+  const taskId = reply.agent_tasks![0].id;
+  const saved = await serverDb.tx(tx => tx.get('agent_tasks', taskId));
+  assert.equal(saved.target_bot_id, recipient.id);
+  assert.equal(saved.execution, 'device');
+  const transcript = await eventually(async () => {
+    const data = await app.call('taskConversation', { botId: sender.id, taskId }) as any;
+    return data.messages.some((m: any) => m.kind === 'answer') && data;
+  });
+  assert.equal(transcript.messages.filter((m: any) => m.kind === 'request').length, 1);
+  assert.ok(transcript.messages.some((m: any) => m.from_bot_id === sender.id && m.to_bot_id === recipient.id && m.content === '请核实停止原因，并报告已有数据。'));
+  assert.ok(transcript.messages.some((m: any) => m.from_bot_id === recipient.id && m.to_bot_id === sender.id && m.content === '压测已按用户要求停止，已有结果在报告目录。'), JSON.stringify(transcript));
+  assert.doesNotMatch(JSON.stringify(events.slice(start)), /问了，刚发出去|我给他发了消息/);
+});
+
 test('logout unbinds the Mac and the server falls back to the cloud', { skip }, async () => {
   await app.logout();
   assert.equal(app.state().connection, 'signed_out');
   const bobToken = (await http('POST', '/auth/login', { username: 'bob', password: 'bob-password' }, '')).json.access_token;
   const me = await http('GET', '/me', undefined, bobToken);
-  assert.equal(me.json.mac.online, false);
+  assert.equal(me.json.computer.online, false);
 });

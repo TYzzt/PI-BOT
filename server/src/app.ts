@@ -1,3 +1,7 @@
+import { reportViewer } from "./reports.js";
+import {RemoteService} from "./remote/service.js";
+import { firebaseTransport, loadAndroidPushConfig, PushDispatcher } from "./push.js";
+import {remoteWeb} from "./remote/web.js";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import websocket from "@fastify/websocket";
 import { randomUUID } from "node:crypto";
@@ -12,9 +16,10 @@ import { settings, type Settings } from "./config.js";
 import { Hub } from "./hub.js";
 import { routes, type Context, type Route } from "./routes.js";
 import { sockets } from "./sockets.js";
-import { failOrphanedMacRuns } from "./runs.js";
+import { failOrphanedDeviceRuns } from "./runs.js";
 import { WebSearch } from "./search.js";
 import { AgentDispatcher } from "./agents.js";
+import { VoiceHub } from "./voice.js";
 
 export async function bootstrapAdmin(db: Database, s: Settings) {
   await db.tx(async (tx) => {
@@ -96,11 +101,17 @@ export async function createApp(
   db = new Database(s.databaseUrl),
   hub = new Hub(),
   webSearch = new WebSearch(s),
+  remoteFactory=(db:Database,s:Settings)=>new RemoteService(db,s),
+  pushFactory = firebaseTransport,
 ) {
+  const pushConfig = await loadAndroidPushConfig(s);
+  const pushTransport = await pushFactory(s);
+  db.pushEnabled = !!s.fcmProjectId;
   await migrate(db);
   await bootstrapAdmin(db, s);
-  await failOrphanedMacRuns(db);
-  const app = Fastify({ logger: false, bodyLimit: 8 * 1024 * 1024 });
+  await failOrphanedDeviceRuns(db);
+  const app = Fastify({ logger: false, bodyLimit: 16 * 1024 * 1024 });
+  const push = pushTransport ? new PushDispatcher(db, pushTransport) : undefined;
   app.removeContentTypeParser("application/json");
   app.addContentTypeParser(
     "application/json",
@@ -109,7 +120,7 @@ export async function createApp(
   );
   app.setErrorHandler((error, _req, reply) => {
     if (error instanceof HttpError)
-      return reply.code(error.status).send({ detail: error.detail });
+      return reply.code(error.status).send({ detail: error.detail, error_info: error.info });
     const e = error as Row;
     if (e.code === "23505") return reply.code(409).send({ detail: "记录冲突" });
     if (e.statusCode === 413) return reply.code(413).send({ detail: "请求体过大" });
@@ -117,10 +128,13 @@ export async function createApp(
     reply.code(500).send({ detail: "服务暂时不可用" });
   });
 
+  const remote = remoteFactory(db,s);
+  app.addHook("onClose",async()=>remote.close());
   for (const route of routes)
     app.route({
       method: route.method,
       url: route.path,
+      bodyLimit: route.path === "/agent/reports" ? 64 * 1024 * 1024 : 16 * 1024 * 1024,
       handler: async (req, reply) => {
         const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
         let json: unknown = {};
@@ -135,7 +149,7 @@ export async function createApp(
         for (const [k, v] of Object.entries(params))
           if (k === "id" && !/^[0-9a-f-]{36}$/i.test(v)) fail(404, "记录不存在");
         const after: (() => unknown)[] = [];
-        const base = { db, s, hub, webSearch, query, params, req, reply, after: (fn: () => unknown) => void after.push(fn) };
+        const base = { db, s, hub, webSearch, remote, pushConfig, query, params, req, reply, after: (fn: () => unknown) => void after.push(fn) };
         let result: unknown;
         if (route.tx === false) {
           const who = await db.tx((tx) => authenticate(tx, route, req, raw, s));
@@ -155,6 +169,8 @@ export async function createApp(
       },
     });
 
+  app.get("/reports/view/:id", async (_req, reply) => reply.header("cache-control","no-store").header("content-security-policy", "default-src 'self'; style-src 'unsafe-inline'; script-src 'self'; frame-ancestors 'none'; base-uri 'none'").type("text/html").send(reportViewer));
+  app.get("/reports/view/viewer.js", async (_req, reply) => reply.type("text/javascript").send(await readFile(new URL("../dist/report-viewer.js",import.meta.url))));
   app.get("/openapi.json", async () => openapi());
 
   const root = adminRoot(s);
@@ -175,8 +191,15 @@ export async function createApp(
   app.get("/admin/*", serveAdmin);
 
   await app.register(websocket, { options: { maxPayload: 8 * 1024 * 1024 } });
-  await sockets(app, db, s, hub, new AgentDispatcher(db, s, hub));
-  return Object.assign(app, { hub, db });
+  await remoteWeb(app,remote);
+  const dispatcher = new AgentDispatcher(db, s, hub);
+  const voice = new VoiceHub(db, s, hub, dispatcher);
+  dispatcher.setAnnouncer(voice);
+  await sockets(app, db, s, hub, dispatcher, voice);
+  // onClose runs in reverse registration order; stop sends before sockets close the database.
+  app.addHook("onClose", async () => { await push?.stop(); });
+  push?.start();
+  return Object.assign(app, { hub, db, remote });
 }
 
 export function openapi() {
@@ -210,6 +233,8 @@ export function openapi() {
       responses: { "200": { description: "OK" }, default: { description: "{ detail }" } },
     };
   }
+  paths["/remote/artifacts/{id}"]={get:{tags:["remote"],summary:"读取自己的云端生成结果",security:[{UserBearer:[]}],parameters:[{name:"id",in:"path",required:true,schema:{type:"string",format:"uuid"}}],responses:{"200":{description:"文件流"}}}};
+  paths["/bots/{id}/remote/file"] = Object.fromEntries(["get","post"].map(method=>[method,{tags:["remote"],summary:method==="get"?"下载云端资料库文件":"流式上传云端文件（最多 100MiB）",security:[{UserBearer:[]}],parameters:[{name:"id",in:"path",required:true,schema:{type:"string",format:"uuid"}},{name:"path",in:"query",required:true,schema:{type:"string"}}],...(method==="post"?{requestBody:{required:true,content:{"application/octet-stream":{schema:{type:"string",format:"binary"}}}}}:{}),responses:{"200":{description:method==="get"?"文件流":"上传完成"}}}]));
   return {
     openapi: "3.1.0",
     info: { title: "Pi Bot API", version: "0.4.0" },

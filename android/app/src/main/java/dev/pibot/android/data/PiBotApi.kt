@@ -2,6 +2,7 @@ package dev.pibot.android.data
 
 import dev.pibot.android.domain.ServerUrl
 import dev.pibot.android.face.Avatar
+import dev.pibot.android.push.PushConfigResponse
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -30,15 +31,17 @@ data class LoginResponse(@SerialName("access_token") val accessToken: String, @S
 data class Device(
     val id: String,
     val label: String,
+    val platform: String = "darwin",
+    @SerialName("revoked_at") val revokedAt: String? = null,
     @SerialName("last_seen_at") val lastSeenAt: String? = null,
     val online: Boolean = false,
 )
 
 @Serializable
-data class MacStatus(val online: Boolean = false, val device: Device? = null)
+data class ComputerStatus(val online: Boolean = false, val device: Device? = null)
 
 @Serializable
-data class Me(val user: User, val mac: MacStatus = MacStatus())
+data class Me(val user: User, val computer: ComputerStatus = ComputerStatus(), val devices: List<Device> = emptyList())
 
 @Serializable
 data class Model(val id: String, val name: String, @SerialName("is_default") val isDefault: Boolean = false)
@@ -53,6 +56,7 @@ data class Run(
     @SerialName("assistant_message_id") val assistantMessageId: String? = null,
     @SerialName("created_at") val createdAt: String,
     @SerialName("finished_at") val finishedAt: String? = null,
+    @SerialName("operation_target") val operationTarget: String? = null,
 ) {
     val active: Boolean get() = status in ACTIVE_RUNS
 }
@@ -89,6 +93,7 @@ data class Bot(
     @SerialName("active_tasks") val activeTasks: List<AgentTaskRef> = emptyList(),
     val activity: BotActivity? = null,
     @SerialName("pending_approvals") val pendingApprovals: List<Approval> = emptyList(),
+    @SerialName("execution_device_id") val executionDeviceId: String? = null,
 )
 
 @Serializable
@@ -101,13 +106,21 @@ data class BotActivity(
 )
 
 @Serializable
-data class BotList(val bots: List<Bot>, val mac: MacStatus = MacStatus())
+data class BotList(val bots: List<Bot>, val computer: ComputerStatus = ComputerStatus(), val devices: List<Device> = emptyList())
 
 @Serializable
 data class ToolEntry(val id: String, val name: String, val state: String, val summary: String? = null)
 
 @Serializable
+data class ChatImage(val name: String, @SerialName("mime_type") val mimeType: String, val data: String)
+
+@Serializable
+data class MessageImage(val id: String, val name: String, @SerialName("mime_type") val mimeType: String)
+
+
+@Serializable
 data class Message(
+    val attachments: List<ReportAttachment> = emptyList(),
     val id: String,
     @SerialName("bot_id") val botId: String,
     @SerialName("run_id") val runId: String? = null,
@@ -115,10 +128,12 @@ data class Message(
     val seq: Int,
     val role: String,
     val content: String,
+    val images: List<MessageImage> = emptyList(),
     val status: String,
     val executor: String? = null,
     val tools: List<ToolEntry> = emptyList(),
     val progress: List<String> = emptyList(),
+    @SerialName("reply_segments") val replySegments: List<ReplySegment> = emptyList(),
     val ui: JsonObject? = null,
     @SerialName("from_bot") val fromBot: FromBot? = null,
     @SerialName("agent_tasks") val agentTasks: List<AgentTaskRef> = emptyList(),
@@ -139,7 +154,24 @@ data class AgentTaskRef(
     val kind: String = "delegation",
     val title: String = "",
     @SerialName("updated_at") val updatedAt: String? = null,
+    @SerialName("message_count") val messageCount: Int = 0,
+    @SerialName("operation_target") val operationTarget: String? = null,
 )
+
+@Serializable
+data class ReplySegment(val id: String, val text: String, val phase: String, @SerialName("created_at") val createdAt: String)
+
+@Serializable
+data class ConversationBot(val id: String, val name: String, val avatar: Avatar = Avatar())
+
+@Serializable
+data class ConversationMessage(val id: String, val seq: Long, @SerialName("from_bot_id") val fromBotId: String,
+    @SerialName("to_bot_id") val toBotId: String, val kind: String, val content: String, @SerialName("created_at") val createdAt: String? = null)
+
+@Serializable
+data class TaskConversation(@SerialName("task_id") val taskId: String, val status: String,
+    val bots: List<ConversationBot>, val messages: List<ConversationMessage>, val total: Int,
+    @SerialName("has_more") val hasMore: Boolean, @SerialName("next_after") val nextAfter: Long)
 
 @Serializable
 data class MessagePage(val messages: List<Message>, @SerialName("has_more") val hasMore: Boolean = false)
@@ -172,13 +204,14 @@ data class BotInput(
     val persona: String,
     @SerialName("model_id") val modelId: String? = null,
     val avatar: Avatar,
+    @SerialName("execution_device_id") val executionDeviceId: String? = null,
 )
 
 @Serializable
 private data class LoginBody(val username: String, val password: String)
 
 @Serializable
-private data class SendBody(val text: String, @SerialName("request_id") val requestId: String)
+private data class SendBody(val text: String, @SerialName("request_id") val requestId: String, val images: List<ChatImage> = emptyList(), val client: String = "android")
 
 @Serializable
 private data class DecisionBody(val decision: String)
@@ -190,11 +223,24 @@ private data class PasswordBody(@SerialName("old_password") val oldPassword: Str
 private class EmptyBody
 
 /** Server-side errors carry a Chinese `detail`; [unauthorized] means the session is gone. */
-class ApiException(val status: Int, message: String) : Exception(message) {
+class ApiException(val status: Int, message: String, val code: String? = null) : Exception(message) {
     val unauthorized: Boolean get() = status == 401
 }
 
 class PiBotApi(private val http: OkHttpClient, private val json: Json = API_JSON) {
+    fun pushConfig(session: Session): PushConfigResponse = call(ServerUrl(session.serverUrl), "GET", "/push/config", session.token)
+
+    fun registerPush(session: Session, installationId: String, fcmToken: String, projectId: String): JsonObject =
+        call(ServerUrl(session.serverUrl), "PUT", "/push/installations/$installationId", session.token,
+            kotlinx.serialization.json.buildJsonObject {
+                put("fcm_token", JsonPrimitive(fcmToken)); put("binding_id", JsonPrimitive(session.pushBindingId))
+                put("firebase_project_id", JsonPrimitive(projectId))
+            })
+
+    fun unregisterPush(session: Session, installationId: String): JsonObject =
+        call(ServerUrl(session.serverUrl), "DELETE", "/push/installations/$installationId", session.token,
+            query = listOf("binding_id" to session.pushBindingId))
+
     fun login(url: ServerUrl, username: String, password: String): LoginResponse =
         call(url, "POST", "/auth/login", null, LoginBody(username, password))
 
@@ -202,6 +248,16 @@ class PiBotApi(private val http: OkHttpClient, private val json: Json = API_JSON
         call(url, "POST", "/auth/password", token, PasswordBody(old, new))
 
     fun me(url: ServerUrl, token: String): Me = call(url, "GET", "/me", token)
+
+    fun devices(url: ServerUrl, token: String): List<Device> = call(url, "GET", "/devices", token)
+
+    fun revokeDevice(url: ServerUrl, token: String, id: String): Device = call(url, "POST", "/devices/$id/revoke", token, EmptyBody())
+
+    fun phone(url: ServerUrl, token: String, deviceId: String, action: String, body: JsonObject): JsonObject {
+        require(action in setOf("status", "preview", "acquire", "frame", "input", "release"))
+        require(runCatching { java.util.UUID.fromString(deviceId) }.isSuccess)
+        return call(url, "POST", "/devices/$deviceId/phone/$action", token, body)
+    }
 
     fun models(url: ServerUrl, token: String): List<Model> = call(url, "GET", "/models", token)
 
@@ -218,14 +274,26 @@ class PiBotApi(private val http: OkHttpClient, private val json: Json = API_JSON
     fun messages(url: ServerUrl, token: String, botId: String, before: Int? = null): MessagePage =
         call(url, "GET", "/bots/$botId/messages", token, query = listOfNotNull("limit" to "50", before?.let { "before" to it.toString() }))
 
-    fun send(url: ServerUrl, token: String, botId: String, text: String, requestId: String): SendResult =
-        call(url, "POST", "/bots/$botId/messages", token, SendBody(text, requestId))
+    fun taskConversation(url: ServerUrl, token: String, botId: String, taskId: String, after: Long = 0): TaskConversation =
+        call(url, "GET", "/bots/$botId/tasks/$taskId/conversation", token, query = listOf("after" to after.toString()))
+
+    fun send(url: ServerUrl, token: String, botId: String, text: String, requestId: String, images: List<ChatImage> = emptyList()): SendResult =
+        call(url, "POST", "/bots/$botId/messages", token, SendBody(text, requestId, images))
+
+    fun image(url: ServerUrl, token: String, botId: String, messageId: String, imageId: String): ChatImage =
+        call(url, "GET", "/bots/$botId/messages/$messageId/images/$imageId", token)
 
     fun uiState(url: ServerUrl, token: String, botId: String, messageId: String, body: JsonObject): Message =
         call(url, "POST", "/bots/$botId/messages/$messageId/ui-state", token, body)
 
     fun uiAction(url: ServerUrl, token: String, botId: String, messageId: String, body: JsonObject): SendResult =
-        call(url, "POST", "/bots/$botId/messages/$messageId/ui-actions", token, body)
+        call(url, "POST", "/bots/$botId/messages/$messageId/ui-actions", token, JsonObject(body + ("client" to kotlinx.serialization.json.JsonPrimitive("android"))))
+
+    fun reportOpen(url: ServerUrl, token: String, id: String): JsonObject = call(url,"POST","/reports/$id/open",token,EmptyBody())
+
+    fun remoteArtifact(url: ServerUrl, token: String, id: String): JsonObject = call(url,"POST","/remote/artifacts/$id/open",token,EmptyBody())
+
+    fun remoteDesktop(url: ServerUrl, token: String, botId: String): JsonObject = call(url,"POST","/remote/desktop/open",token, kotlinx.serialization.json.buildJsonObject { put("bot_id", kotlinx.serialization.json.JsonPrimitive(botId)) })
 
     fun cancel(url: ServerUrl, token: String, runId: String): Run = call(url, "POST", "/runs/$runId/cancel", token, EmptyBody())
 
@@ -259,7 +327,7 @@ class PiBotApi(private val http: OkHttpClient, private val json: Json = API_JSON
         }
         response.use {
             val text = it.body.string()
-            if (!it.isSuccessful) throw ApiException(it.code, errorMessage(it.code, text))
+            if (!it.isSuccessful) throw ApiException(it.code, errorMessage(it.code, text), runCatching { (API_JSON.parseToJsonElement(text) as? JsonObject)?.get("error_info")?.let { info -> (info as? JsonObject)?.get("code")?.let { code -> (code as? JsonPrimitive)?.contentOrNull } } }.getOrNull())
             return json.decodeFromString(text)
         }
     }
@@ -272,7 +340,7 @@ fun errorMessage(status: Int, body: String): String {
     }.getOrNull()
     return detail?.takeIf { it.isNotBlank() } ?: when (status) {
         401 -> "登录已过期，请重新登录"
-        503 -> "Mac 离线，资料库不可用"
+        503 -> "电脑离线，资料库不可用"
         else -> "请求失败（$status）"
     }
 }

@@ -33,25 +33,38 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import dev.pibot.android.voice.VoiceCallService
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.pibot.android.BuildConfig
+import dev.pibot.android.PiBotApp
+import android.content.Intent
+import android.provider.Settings
 import dev.pibot.android.data.Device
 import dev.pibot.android.data.PiBotRepository
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(repository: PiBotRepository, onBack: () -> Unit) {
+fun SettingsScreen(repository: PiBotRepository, onBack: () -> Unit, onPhone: (String) -> Unit = {}) {
     val session by repository.session.collectAsStateWithLifecycle()
-    val mac by repository.mac.collectAsStateWithLifecycle()
+    val computer by repository.computer.collectAsStateWithLifecycle()
     val live by repository.live.collectAsStateWithLifecycle()
-    var device by remember { mutableStateOf<Device?>(mac.device) }
+    val devices by repository.devices.collectAsStateWithLifecycle()
+    val call by repository.liveCall.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val push = (context.applicationContext as PiBotApp).push
+    val pushStatus by push.status.collectAsStateWithLifecycle()
+    val pushRestartRequired by push.restartRequired.collectAsStateWithLifecycle()
+    val scope = rememberCoroutineScope()
+    var removing by remember { mutableStateOf<Device?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
     var changing by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { runCatching { device = repository.refreshMe().mac.device } }
+    LaunchedEffect(Unit) { runCatching { repository.refreshMe() }.onFailure { error = errorText(it) } }
 
     Scaffold(
         topBar = {
@@ -69,26 +82,42 @@ fun SettingsScreen(repository: PiBotRepository, onBack: () -> Unit) {
                 Item("服务器", session?.serverUrl ?: "")
                 Item("实时连接", if (live) "已连接" else "未连接", last = true)
             }
-            Group("Mac") {
-                val d = device
-                if (d == null) {
-                    Text("还没有绑定 Mac。在 Mac 上安装 Pi Bot 并用同一个账号登录，Bot 就能在 Mac 上读写资料库、执行命令。", color = Muted, fontSize = 14.sp, modifier = Modifier.padding(vertical = 8.dp))
-                } else {
-                    Item("设备", d.label)
-                    Item("状态", if (mac.online) "在线" else "离线" + (d.lastSeenAt?.let { " · 最后在线 ${dayLabel(it)} ${clockTime(it)}" } ?: ""), last = true)
+            Group("通知") {
+                Item("推送状态", pushStatus, last = true)
+                if (pushRestartRequired) TextButton(onClick = push::restart) { Text("重新启动应用以启用通知") }
+                TextButton(onClick = {
+                    context.startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName))
+                }) { Text("系统通知设置") }
+            }
+            Group("执行电脑") {
+                if (devices.none { it.revokedAt == null }) Text("在 Mac 或 Linux 上安装 Pi Bot，并用同一个账号登录，即可添加执行电脑。", color = Muted, fontSize = 14.sp)
+                for (d in devices.filter { it.revokedAt == null }) {
+                    Item(d.label, "${when (d.platform) { "linux" -> "Linux"; "darwin" -> "macOS"; "win32" -> "Windows"; else -> "未知平台" }} · ${if (d.online) "在线" else "离线"}")
+                    TextButton(onClick = { onPhone(d.id) }) { Text("手机画面与控制") }
+                    TextButton(onClick = { removing = d }) { Text("解绑", color = Danger) }
                 }
-                Text("Mac 离线时，发给 Bot 的消息在云端回复：只能聊天和联网搜索，看不到资料库。", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
+                Text("每个 Bot 可选择一台执行电脑；文件各自保存，离线时本地任务等待。", color = Muted, fontSize = 12.sp)
+                error?.let { Text(it, color = Danger) }
             }
             Spacer(Modifier.height(20.dp))
             OutlinedButton(onClick = { changing = true }, modifier = Modifier.fillMaxWidth()) { Text("修改密码") }
             Spacer(Modifier.height(10.dp))
-            OutlinedButton(onClick = { repository.logout() }, modifier = Modifier.fillMaxWidth()) { Text("退出登录", color = Danger) }
+            OutlinedButton(onClick = {
+                if (call?.local == true) VoiceCallService.hangup(context)
+                repository.logout()
+            }, modifier = Modifier.fillMaxWidth()) { Text("退出登录", color = Danger) }
             Spacer(Modifier.height(20.dp))
             ClientUpdateSettings(repository)
             Spacer(Modifier.height(20.dp))
             Text("Pi Bot ${BuildConfig.VERSION_NAME}", color = Muted, fontSize = 12.sp, modifier = Modifier.fillMaxWidth())
         }
     }
+    removing?.let { d -> AlertDialog(
+        onDismissRequest = { removing = null }, title = { Text("解绑「${d.label}」？") },
+        text = { Text("文件会保留，绑定它的 Bot 需要重新选择执行电脑。") },
+        confirmButton = { TextButton(onClick = { removing = null; scope.launch { runCatching { repository.revokeDevice(d.id) }.onFailure { error = errorText(it) } } }) { Text("解绑", color = Danger) } },
+        dismissButton = { TextButton(onClick = { removing = null }) { Text("取消") } },
+    ) }
     if (changing) PasswordDialog(repository) { changing = false }
 }
 

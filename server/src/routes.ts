@@ -1,6 +1,14 @@
+import { reportRoutes } from "./reports.js";
+import { conversation } from "./task-conversation.js";
+import { remoteRoutes } from './remote/routes.js';
+import type {RemoteService} from './remote/service.js';
+import { phoneRoutes } from './phone-routes.js';
+import { pushRoutes, type AndroidPushConfig } from './push.js';
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import type { ChatImage } from '@pi-bot/agent/images';
+import { imagesSchema } from './images.js';
 import { fail, type Database, type Row, type Tx } from "./db.js";
 import type { Settings } from "./config.js";
 import type { Hub } from "./hub.js";
@@ -8,6 +16,7 @@ import {
   decodeBase64,
   issueLlmToken,
   issueToken,
+  issueVoiceTicket,
   passwordHash,
   passwordMatches,
   Vault,
@@ -26,13 +35,15 @@ import {
   runOut,
   updateBot,
 } from "./bots.js";
-import { cancelRun, decideApproval, dispatchMac } from "./runs.js";
+import { cancelRun, decideApproval, dispatchDevice, failDeviceRuns } from "./runs.js";
 import { cancelTask, createTask, readTask, reportLater, TERMINAL, listTasks, messageTask, callerRun } from "./agents.js";
+import { deviceOut, deviceList, botConnection } from './devices.js';
 import { complete, findModel, proxyResponses, recordUsage } from "./llm.js";
+import { listCatalog, providerBase } from "./providers.js";
 import type { WebSearch } from "./search.js";
 import { manageSkill, skillRequest } from "./skills.js";
 
-import { automationRequest, automationFinishRequest, manageAutomation, saveAutomationDecision, recordAutomationEffect } from "./automations.js";
+import { goalRequest, goalFinishRequest, listGoals, manageGoals, saveGoalDecision, recordAutomationEffect } from "./automations.js";
 import {saveUiState,submitUiAction} from "./ui.js";
 import { manageMemory, memoryRequest, searchHistory, directory, checkpoint, checkpointSchema, resumeTask } from "./memory.js";
 
@@ -43,6 +54,8 @@ export interface Context {
   s: Settings;
   hub: Hub;
   webSearch: WebSearch;
+  remote: RemoteService;
+  pushConfig?: AndroidPushConfig;
   user: Row;
   device?: Row;
   llm?: LlmClaims;
@@ -55,7 +68,7 @@ export interface Context {
   after(fn: () => unknown): void;
 }
 export interface Route {
-  method: "GET" | "POST" | "PATCH" | "DELETE";
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   path: string;
   auth: Auth;
   tag: string;
@@ -82,10 +95,16 @@ const httpUrl = z
     const u = new URL(v);
     return ["https:", "http:"].includes(u.protocol) && !u.username && !u.password && !u.search && !u.hash;
   }, "需要 HTTP(S) 根地址，不包含账号、查询参数或片段");
+const providerName = z.enum(["xai", "bailian", "custom"]);
+const modelCapabilities = z.object({chat:z.boolean(),vision:z.boolean(),voice:z.boolean(),tools:z.boolean(),reasoning:z.enum(["none","configurable","required","unknown"]),reasoning_off:z.record(z.string(),z.unknown()).optional()}).strict();
 const modelFields = z.object({
+  capabilities: modelCapabilities.optional(),
   name: z.string().trim().min(1).max(80),
-  base_url: httpUrl,
+  provider: providerName.optional(),
+  base_url: httpUrl.optional(),
   provider_model: z.string().trim().min(1).max(200),
+  voice_model: z.string().trim().max(200).nullable().optional(),
+  provider_search: z.boolean().optional(),
   api_key: z.string().min(1).max(8192),
   context_window: z.number().int().min(1024).max(4000000),
   max_tokens: z.number().int().min(16).max(1000000),
@@ -105,8 +124,12 @@ export const userOut = (u: Row) => ({
 const modelOut = (m: Row) => ({
   id: m.model_id,
   name: m.name,
+  provider: m.provider ?? "custom",
   base_url: m.base_url,
   provider_model: m.provider_model,
+  voice_model: m.voice_model ?? null,
+  provider_search: m.provider_search === true,
+  capabilities: m.capabilities,
   context_window: m.context_window,
   max_tokens: m.max_tokens,
   enabled: m.enabled,
@@ -114,21 +137,27 @@ const modelOut = (m: Row) => ({
   created_at: m.created_at,
   updated_at: m.updated_at,
 });
-const deviceOut = (d: Row, online: boolean) => ({
-  id: d.device_id,
-  user_id: d.user_id,
-  label: d.label,
-  created_at: d.created_at,
-  last_seen_at: d.last_seen_at,
-  revoked_at: d.revoked_at,
-  online,
-});
-async function macStatus(tx: Tx, hub: Hub, userId: string) {
-  const d = await tx.one(
-    "SELECT * FROM devices WHERE user_id=$1 AND revoked_at IS NULL",
-    [userId],
-  );
-  return { online: hub.online(userId), device: d ? deviceOut(d, hub.online(userId)) : null };
+function normalizeModel(body: { provider?: string; base_url?: string; voice_model?: string | null; provider_search?: boolean }, current?: Row) {
+  const provider = body.provider ?? current?.provider ?? "custom";
+  if (provider !== "xai" && provider !== "bailian" && provider !== "custom") fail(422, "不支持的服务商");
+  const fixed = providerBase(provider);
+  const raw = fixed ?? String(body.base_url ?? current?.base_url ?? "").trim().replace(/\/+$/, "");
+  if (!fixed) {
+    const parsed = httpUrl.safeParse(raw);
+    if (!parsed.success) fail(422, "需要 HTTP(S) 接口地址");
+  }
+  const voice = body.voice_model === undefined ? current?.voice_model ?? null : body.voice_model;
+  const requested = body.provider_search === undefined ? current?.provider_search === true : body.provider_search;
+  return {
+    provider,
+    base_url: fixed ?? raw,
+    voice_model: typeof voice === "string" && voice.trim() ? voice.trim() : null,
+    provider_search: (provider === "xai" || provider === "bailian") && requested,
+  };
+}
+async function computerStatus(tx: Tx, hub: Hub, userId: string) {
+  const devices = await deviceList(tx, hub, userId);
+  return { online: devices.some(d => d.online), device: devices.find(d => !d.revoked_at) ?? null };
 }
 async function setDefault(tx: Tx, id: string) {
   await tx.rows("UPDATE models SET is_default=false WHERE is_default AND model_id<>$1", [id]);
@@ -147,17 +176,22 @@ async function deviceFiles(ctx: Context, method: "list" | "read") {
     `files.${method}`,
     { slug: bot.slug, path: ctx.query.path },
     ctx.s.rpcTimeoutMs,
+    bot.execution_device_id,
   );
 }
 
 export const routes: Route[] = [
-  {method:"POST",path:"/agent/automations/effect",auth:"llm",tag:"agents",summary:"自动工作操作日志",internal:true,
+  ...pushRoutes,
+  ...reportRoutes,
+  ...phoneRoutes,
+  ...remoteRoutes,
+  {method:"POST",path:"/agent/automations/effect",auth:"llm",tag:"agents",summary:"目标检查操作日志",internal:true,
     body:z.object({run_id:uuid,tool_call_id:z.string().min(1).max(200),phase:z.enum(["start","end"]),confirmed:z.boolean().optional(),tool_name:z.enum(["write_file","edit_file","run_command"]).optional(),summary:z.string().max(2000).optional(),result:z.string().max(4000).optional()}).strict(),
     handler:async({tx,user,llm,body})=>recordAutomationEffect(tx,user.user_id,llm!,body)},
-  { method:"POST",path:"/agent/automations",auth:"llm",tag:"agents",summary:"管理长期委托与自主巡检",internal:true,body:automationRequest,
-    handler:async({tx,user,llm,body})=>manageAutomation(tx,user.user_id,llm!,body) },
-  { method:"POST",path:"/agent/automations/finish",auth:"llm",tag:"agents",summary:"提交自动轮次结果",internal:true,body:automationFinishRequest,
-    handler:async({tx,user,llm,body})=>saveAutomationDecision(tx,user.user_id,llm!,body) },
+  { method:"POST",path:"/agent/automations",auth:"llm",tag:"agents",summary:"管理目标",internal:true,body:goalRequest,
+    handler:async({tx,s,hub,user,llm,body})=>manageGoals(tx,user.user_id,llm!,body,undefined,s,hub) },
+  { method:"POST",path:"/agent/automations/finish",auth:"llm",tag:"agents",summary:"提交目标检查结果",internal:true,body:goalFinishRequest,
+    handler:async({tx,user,llm,body})=>saveGoalDecision(tx,user.user_id,llm!,body) },
   {method:"POST",path:"/agent/memory",auth:"llm",tag:"memory",summary:"当前 Bot 的私有记忆",internal:true,body:memoryRequest,
     handler:async({tx,user,llm,body})=>manageMemory(tx,user.user_id,llm!,body)},
   {method:"POST",path:"/agent/history/search",auth:"llm",tag:"memory",summary:"检索当前 Bot 历史",internal:true,
@@ -170,7 +204,7 @@ export const routes: Route[] = [
     handler:async({tx,user,llm,body})=>checkpoint(tx,user.user_id,llm!,body.run_id,body.checkpoint,body.expected_version)},
   {method:"POST",path:"/agent/tasks/resume",auth:"llm",tag:"agents",summary:"用户要求后续接已结束任务",internal:true,
     body:z.object({run_id:uuid,task_id:uuid,request_id:z.string().min(1).max(200),text:z.string().max(8000).optional()}).strict(),
-    handler:async({tx,db,s,hub,user,llm,body,after})=>{const r=await resumeTask(tx,hub,user.user_id,llm!,body);if(r.run?.executor==="mac") after(()=>dispatchMac(db,s,hub,r.run!.run_id));return r.task;}},
+    handler:async({tx,db,s,hub,user,llm,body,after})=>{const r=await resumeTask(tx,hub,user.user_id,llm!,body,s);if(r.run?.executor==="device") after(()=>dispatchDevice(db,s,hub,r.run!.run_id));return r.task;}},
   {
     method: "POST", path: "/agent/skills", auth: "llm", tag: "skills", summary: "智能体私有能力管理",
     internal: true,
@@ -178,7 +212,7 @@ export const routes: Route[] = [
     handler: async ({ tx, user, llm, body }) => manageSkill(tx, user.user_id, llm!, body),
   },
   {
-    method: "POST", path: "/web/search", auth: "llm", tag: "web", summary: "联网搜索：Mac 与云端共用（短期智能体令牌）",
+    method: "POST", path: "/web/search", auth: "llm", tag: "web", summary: "联网搜索：电脑与云端共用（短期智能体令牌）",
     tx: false,
     body: z.object({ query: z.string().trim().min(1).max(2000), language: z.string().regex(/^(auto|all|[a-z]{2,3}(-[A-Za-z]{2,4})?)$/).default("auto") }),
     handler: async ({ webSearch, body, reply }) => {
@@ -193,6 +227,8 @@ export const routes: Route[] = [
     method: "POST", path: "/agent/tasks", auth: "llm", tag: "agents", summary: "智能体把任务委托给同一用户的另一个 Bot（短期智能体令牌）",
     body: z.object({
       run_id: uuid,
+      execution: z.enum(["device","cloud","remote"]).optional(),
+      device_id:uuid.optional(),
       agent: z.string().trim().min(1).max(100).optional(),
       kind: z.enum(["background", "delegation"]).default("delegation"),
       title: z.string().trim().min(1).max(80).optional(),
@@ -201,8 +237,8 @@ export const routes: Route[] = [
       wait: z.boolean().default(true),
     }),
     handler: async ({ db, tx, s, hub, user, llm, body, after }) => {
-      const { task, run } = await createTask(tx, hub, user.user_id, llm!, body);
-      if (run?.executor === "mac") after(() => dispatchMac(db, s, hub, run.run_id));
+      const { task, run } = await createTask(tx, hub, user.user_id, llm!, body, s);
+      if (run?.executor === "device") after(() => dispatchDevice(db, s, hub, run.run_id));
       return task;
     },
   },
@@ -291,29 +327,46 @@ export const routes: Route[] = [
     },
   },
   {
-    method: "GET", path: "/me", auth: "actor", tag: "auth", summary: "当前用户与 Mac 在线状态",
-    handler: async ({ tx, hub, user }) => ({ user: userOut(user), mac: await macStatus(tx, hub, user.user_id) }),
+    method: "GET", path: "/me", auth: "actor", tag: "auth", summary: "当前用户与电脑在线状态",
+    handler: async ({ tx, hub, user }) => ({ user: userOut(user), computer: await computerStatus(tx, hub, user.user_id), devices: await deviceList(tx, hub, user.user_id) }),
   },
   {
-    method: "POST", path: "/devices/register", auth: "user", tag: "device", summary: "把这台 Mac 绑定为当前用户的 harness（替换旧设备）",
-    body: z.object({ public_key: z.string(), label: z.string().trim().min(1).max(80) }),
+    method: "POST", path: "/devices/register", auth: "user", tag: "device", summary: "注册或更新当前用户的一台执行电脑",
+    body: z.object({ public_key: z.string(), label: z.string().trim().min(1).max(80), platform: z.enum(["darwin","linux","win32"]).default("darwin") }),
     handler: async ({ tx, hub, user, body, after }) => {
       try {
         decodeBase64(body.public_key, 32);
       } catch {
         fail(422, "公钥必须是 32 字节 Ed25519 的标准 Base64");
       }
-      const old = await tx.rows("UPDATE devices SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL RETURNING device_id", [user.user_id]);
-      after(() => old.forEach((d) => hub.kick(d.device_id)));
-      const d = await tx.insert("devices", { device_id: randomUUID(), user_id: user.user_id, public_key: body.public_key, label: body.label });
+      await tx.one("SELECT user_id FROM users WHERE user_id=$1 FOR UPDATE", [user.user_id]);
+      const prior = await tx.one("SELECT * FROM devices WHERE user_id=$1 AND public_key=$2 AND revoked_at IS NULL", [user.user_id,body.public_key]);
+      const first = !await tx.one("SELECT 1 FROM devices WHERE user_id=$1", [user.user_id]);
+      const d = prior ? await tx.update("devices",prior.device_id,{label:body.label,platform:body.platform}) : await tx.insert("devices", { device_id: randomUUID(), user_id: user.user_id, public_key: body.public_key, label: body.label, platform: body.platform });
+      if (first) await tx.rows("UPDATE bots SET execution_device_id=$2 WHERE user_id=$1 AND execution_device_id IS NULL", [user.user_id,d.device_id]);
+      after(() => hub.publish(user.user_id, {type:'bots'}));
       return { device: deviceOut(d, false), user: userOut(user) };
     },
   },
   {
-    method: "POST", path: "/device/llm-token", auth: "device", tag: "device", summary: "Mac 换取访问模型代理的短期令牌",
+    method: 'GET', path: '/devices', auth: 'actor', tag: 'device', summary: '我的执行电脑',
+    handler: ({tx,hub,user}) => deviceList(tx,hub,user.user_id),
+  },
+  {
+    method: 'POST', path: '/devices/:id/revoke', auth: 'actor', tag: 'device', summary: '解绑自己的执行电脑',
+    handler: async ({tx,db,hub,user,params,after}) => {
+      const d = await tx.one('SELECT * FROM devices WHERE device_id=$1 AND user_id=$2 FOR UPDATE',[params.id,user.user_id]);
+      if (!d) fail(404,'设备不存在');
+      const updated = await tx.update('devices',params.id,{revoked_at:new Date()});
+      after(async () => { hub.kick(params.id); await failDeviceRuns(db,params.id,'执行电脑已解绑',false); hub.publish(user.user_id,{type:'bots'}); });
+      return deviceOut(updated,false);
+    },
+  },
+  {
+    method: "POST", path: "/device/llm-token", auth: "device", tag: "device", summary: "电脑换取访问模型代理的短期令牌",
     body: z.object({ bot_id: uuid.optional() }),
     handler: async ({ s, user, device, body }) => ({
-      token: await issueLlmToken({ sub: user.user_id, src: "mac", did: device!.device_id, bot: body.bot_id }, s),
+      token: await issueLlmToken({ sub: user.user_id, src: "device", did: device!.device_id, bot: body.bot_id }, s),
       expires_in: s.llmTokenTtl,
       base_path: "/llm/v1",
     }),
@@ -332,13 +385,13 @@ export const routes: Route[] = [
       const rows = await tx.rows("SELECT * FROM bots WHERE user_id=$1 AND archived_at IS NULL ORDER BY is_main DESC,last_active_at DESC", [user.user_id]);
       const bots = [];
       for (const b of rows) bots.push(await botOut(tx, b));
-      return { bots, mac: await macStatus(tx, hub, user.user_id) };
+      return { bots, computer: await computerStatus(tx, hub, user.user_id), devices: await deviceList(tx, hub, user.user_id) };
     },
   },
   {
     method: "POST", path: "/bots", auth: "actor", tag: "bots", summary: "新建 Bot", body: botInput,
-    handler: async ({ tx, user, body }) => {
-      const b = await createBot(tx, user.user_id, body);
+    handler: async ({ tx, user, device, body }) => {
+      const b = await createBot(tx, user.user_id, { ...body, execution_device_id: body.execution_device_id === undefined ? device?.device_id : body.execution_device_id });
       await tx.notify({ user_id: user.user_id, bot_id: b.bot_id });
       return botOut(tx, b);
     },
@@ -348,7 +401,11 @@ export const routes: Route[] = [
     handler: async ({ tx, user, params }) => botOut(tx, await ownBot(tx, user.user_id, params.id)),
   },
   {
-    method: "PATCH", path: "/bots/:id", auth: "actor", tag: "bots", summary: "修改 Bot（名称、人设、模型、形象）", body: botPatch,
+    method: "GET", path: "/bots/:id/goals", auth: "actor", tag: "bots", summary: "这个 Bot 自己记下的目标",
+    handler: async ({ tx, user, params }) => listGoals(tx, user.user_id, params.id),
+  },
+  {
+    method: "PATCH", path: "/bots/:id", auth: "actor", tag: "bots", summary: "修改 Bot（名称、人设、模型、形象、执行电脑）", body: botPatch,
     handler: async ({ tx, user, params, body }) => {
       const b = await updateBot(tx, user.user_id, params.id, body);
       await tx.notify({ user_id: user.user_id, bot_id: b.bot_id });
@@ -356,7 +413,7 @@ export const routes: Route[] = [
     },
   },
   {
-    method: "DELETE", path: "/bots/:id", auth: "actor", tag: "bots", summary: "归档 Bot（Mac 上的资料库文件保留）",
+    method: "DELETE", path: "/bots/:id", auth: "actor", tag: "bots", summary: "归档 Bot（电脑上的资料库文件保留）",
     handler: async ({ tx, user, params }) => {
       const bot = await ownBot(tx, user.user_id, params.id);
       if (bot.is_main) fail(409, "主智能体不能删除");
@@ -364,10 +421,27 @@ export const routes: Route[] = [
         fail(409, "请先停止正在进行的任务");
       await tx.rows("UPDATE bot_runs r SET cancel_requested=true FROM bot_automations a WHERE r.automation_id=a.automation_id AND (a.bot_id=$1 OR r.bot_id=$1) AND r.status IN ('queued','running','waiting_approval')", [params.id]);
       await tx.rows("UPDATE bot_automations SET status='stopped',version=version+1,next_wake_at=NULL WHERE bot_id=$1", [params.id]);
+      await tx.rows("UPDATE bot_goals SET status='stopped',updated_at=now() WHERE bot_id=$1 AND status NOT IN ('done','stopped')", [params.id]);
       await tx.rows("UPDATE automation_reports p SET discarded_at=now() FROM bot_automations a WHERE p.automation_id=a.automation_id AND a.bot_id=$1 AND p.delivered_at IS NULL", [params.id]);
       await tx.update("bots", params.id, { archived_at: new Date() });
       await tx.notify({ user_id: user.user_id, bot_id: params.id });
       return { ok: true };
+    },
+  },
+  {
+    method: "POST", path: "/bots/:id/voice/ticket", auth: "actor", tag: "bots", summary: "签发一分钟语音通话票据，桌面端用它连接 /ws/voice",
+    body:z.object({client:z.enum(["desktop","android"]).optional()}),
+    handler: async ({ tx, s, user, device, params, body }) => {
+      const bot = await ownBot(tx, user.user_id, params.id);
+      return { ticket: await issueVoiceTicket(user.user_id, bot.bot_id, s,body.client?{client:device?"desktop":"android",deviceId:device?.device_id}:undefined), expires_in: 60 };
+    },
+  },
+  {
+    method: "GET", path: "/bots/:id/tasks/:taskId/conversation", auth: "actor", tag: "bots", summary: "本次委托的双方传话记录",
+    query: z.object({ after: z.coerce.number().int().nonnegative().default(0), limit: z.coerce.number().int().min(1).max(100).default(50) }),
+    handler: async ({ tx, user, params, query }) => {
+      await ownBot(tx, user.user_id, params.id);
+      return conversation(tx, user.user_id, params.id, params.taskId, query.after, query.limit);
     },
   },
   {
@@ -379,14 +453,25 @@ export const routes: Route[] = [
     },
   },
   {
-    method: "POST", path: "/bots/:id/messages", auth: "actor", tag: "bots", summary: "给 Bot 发消息；Mac 在线时在 Mac 上运行，否则在云端运行",
-    body: z.object({ text: z.string().trim().min(1).max(100000), request_id: z.string().min(8).max(80) }),
-    handler: async ({ db, tx, s, hub, user, params, body, after }) => {
-      const conn = hub.device(user.user_id);
-      const { run, created } = await postMessage(tx, user.user_id, params.id, body.text, body.request_id, conn ? { deviceId: conn.deviceId } : null);
-      if (created && run.executor === "mac") after(() => dispatchMac(db, s, hub, run.run_id));
+    method: "POST", path: "/bots/:id/messages", auth: "actor", tag: "bots", summary: "给 Bot 发消息；电脑在线时在电脑上运行，否则在云端运行",
+    body: z.object({ text: z.string().trim().max(100000).default(''), images: imagesSchema.default([]), request_id: z.string().min(8).max(80), client:z.enum(['android','desktop']).optional() }).refine(body => body.text.length > 0 || body.images.length > 0, '请填写消息或选择图片'),
+    handler: async ({ db, tx, s, hub, user, device, params, body, after }) => {
+      await ownBot(tx,user.user_id,params.id,true);
+      const conn = body.client ? (device ? hub.device(user.user_id,device.device_id) : undefined) : await botConnection(tx,hub,user.user_id,params.id);
+      const { run, created } = await postMessage(tx, user.user_id, params.id, body.text, body.request_id, conn ? { deviceId: conn.deviceId } : null, body.images, body.client ? {client:device?"desktop":"android",deviceId:device?.device_id} : {});
+      if (created && run.executor === "device") after(() => dispatchDevice(db, s, hub, run.run_id));
       const messages = await tx.rows("SELECT * FROM bot_messages WHERE message_id = ANY($1) ORDER BY seq", [[run.user_message_id, run.assistant_message_id]]);
       return { run: runOut(run), messages: messages.map((m) => messageOut(m)) };
+    },
+  },
+  {
+    method: 'GET', path: '/bots/:id/messages/:messageId/images/:imageId', auth: 'actor', tag: 'bots', summary: '读取消息图片',
+    handler: async ({ tx, user, params }) => {
+      await ownBot(tx, user.user_id, params.id);
+      const message = await tx.one("SELECT images FROM bot_messages WHERE message_id=$1 AND bot_id=$2 AND visibility='public'", [params.messageId, params.id]);
+      const image = message?.images.find((image: ChatImage & { id: string }) => image.id === params.imageId);
+      if (!image) fail(404, '图片不存在');
+      return image;
     },
   },
   {
@@ -396,11 +481,12 @@ export const routes: Route[] = [
   },
   {
     method:"POST",path:"/bots/:id/messages/:messageId/ui-actions",auth:"actor",tag:"bots",summary:"提交界面操作并启动下一次 Bot 任务",
-    body:z.object({revision:z.number().int().positive(),request_id:z.string().uuid(),states:z.array(z.object({surfaceId:z.string().min(1).max(80),data:z.record(z.string(),z.unknown())})).max(4),action:z.object({name:z.string().min(1).max(80),surfaceId:z.string().min(1).max(80),sourceComponentId:z.string().min(1).max(80),context:z.record(z.string(),z.unknown())})}),
-    handler:async({db,tx,s,hub,user,params,body,after})=>{
-      const conn=hub.device(user.user_id);
-      const {run,created}=await submitUiAction(tx,user.user_id,params.id,params.messageId,body,conn?{deviceId:conn.deviceId}:null);
-      if(created&&run.executor==='mac')after(()=>dispatchMac(db,s,hub,run.run_id));
+    body:z.object({client:z.enum(["desktop","android"]).optional(),revision:z.number().int().positive(),request_id:z.string().uuid(),states:z.array(z.object({surfaceId:z.string().min(1).max(80),data:z.record(z.string(),z.unknown())})).max(4),action:z.object({name:z.string().min(1).max(80),surfaceId:z.string().min(1).max(80),sourceComponentId:z.string().min(1).max(80),context:z.record(z.string(),z.unknown())})}),
+    handler:async({db,tx,s,hub,user,device,params,body,after})=>{
+      await ownBot(tx,user.user_id,params.id,true);
+      const conn=body.client ? (device?hub.device(user.user_id,device.device_id):undefined) : await botConnection(tx,hub,user.user_id,params.id);
+      const {run,created}=await submitUiAction(tx,user.user_id,params.id,params.messageId,body,conn?{deviceId:conn.deviceId}:null,body.client?{client:device?"desktop":"android",deviceId:device?.device_id}:{});
+      if(created&&run.executor==='device')after(()=>dispatchDevice(db,s,hub,run.run_id));
       const messages=await tx.rows("SELECT * FROM bot_messages WHERE message_id=ANY($1) ORDER BY seq",[[run.user_message_id,run.assistant_message_id]]);
       return {run:runOut(run),messages:messages.map(m=>messageOut(m))};
     },
@@ -423,11 +509,11 @@ export const routes: Route[] = [
     },
   },
   {
-    method: "GET", path: "/bots/:id/files", auth: "actor", tag: "files", summary: "列出 Mac 上的 Bot 资料库目录（Mac 离线时 503）",
+    method: "GET", path: "/bots/:id/files", auth: "actor", tag: "files", summary: "列出电脑上的 Bot 资料库目录（电脑离线时 503）",
     query: libraryPath, tx: false, handler: (ctx) => deviceFiles(ctx, "list"),
   },
   {
-    method: "GET", path: "/bots/:id/files/content", auth: "actor", tag: "files", summary: "读取 Mac 上的资料库文件（文本或小图片）",
+    method: "GET", path: "/bots/:id/files/content", auth: "actor", tag: "files", summary: "读取电脑上的资料库文件（文本或小图片）",
     query: libraryPath, tx: false, handler: (ctx) => deviceFiles(ctx, "read"),
   },
   {
@@ -474,16 +560,15 @@ export const routes: Route[] = [
         (SELECT count(*) FROM models WHERE enabled) AS models,
         (SELECT count(*) FROM bot_runs WHERE created_at > now() - interval '1 day') AS runs_today,
         (SELECT coalesce(sum(input_tokens+output_tokens),0) FROM usage_logs WHERE created_at > now() - interval '1 day') AS tokens_today`);
-      return { ...counts, macs_online: users.filter((u) => hub.online(u.user_id)).length };
+      return { ...counts, devices_online: hub.count() };
     },
   },
   {
     method: "GET", path: "/admin/api/users", auth: "admin", tag: "admin", summary: "用户列表",
     handler: async ({ tx, hub }) => {
-      const rows = await tx.rows(`SELECT u.*, (SELECT count(*) FROM bots b WHERE b.user_id=u.user_id AND b.archived_at IS NULL) AS bot_count,
-        d.label AS mac_label, d.last_seen_at AS mac_last_seen_at FROM users u
-        LEFT JOIN devices d ON d.user_id=u.user_id AND d.revoked_at IS NULL ORDER BY u.created_at`);
-      return rows.map((u) => ({ ...userOut(u), bot_count: u.bot_count, mac: u.mac_label ? { label: u.mac_label, last_seen_at: u.mac_last_seen_at, online: hub.online(u.user_id) } : null }));
+      const rows = await tx.rows(`SELECT u.*, (SELECT count(*) FROM bots b WHERE b.user_id=u.user_id AND b.archived_at IS NULL) AS bot_count FROM users u ORDER BY u.created_at`);
+      return Promise.all(rows.map(async u => ({ ...userOut(u), bot_count: u.bot_count, devices: await deviceList(tx,hub,u.user_id), computer: await computerStatus(tx,hub,u.user_id) })));
+
     },
   },
   {
@@ -505,8 +590,8 @@ export const routes: Route[] = [
         display_name: body.display_name, role: body.role, disabled: body.disabled, updated_at: new Date(),
       });
       if (body.disabled) {
-        const d = await tx.one("SELECT device_id FROM devices WHERE user_id=$1 AND revoked_at IS NULL", [params.id]);
-        if (d) after(() => hub.kick(d.device_id));
+        const devices = await tx.rows("SELECT device_id FROM devices WHERE user_id=$1 AND revoked_at IS NULL", [params.id]);
+        after(() => devices.forEach(d => hub.kick(d.device_id)));
       }
       return userOut(updated);
     },
@@ -515,10 +600,10 @@ export const routes: Route[] = [
     method: "DELETE", path: "/admin/api/users/:id", auth: "admin", tag: "admin", summary: "删除用户及其 Bot 记录",
     handler: async ({ tx, hub, user, params, after }) => {
       if (params.id === user.user_id) fail(400, "不能删除自己");
-      const d = await tx.one("SELECT device_id FROM devices WHERE user_id=$1 AND revoked_at IS NULL", [params.id]);
+      const devices = await tx.rows("SELECT device_id FROM devices WHERE user_id=$1 AND revoked_at IS NULL", [params.id]);
       await tx.get("users", params.id, true);
       await tx.rows("DELETE FROM users WHERE user_id=$1", [params.id]);
-      if (d) after(() => hub.kick(d.device_id));
+      after(() => devices.forEach(d => hub.kick(d.device_id)));
       return { ok: true };
     },
   },
@@ -527,12 +612,27 @@ export const routes: Route[] = [
     handler: async ({ tx }) => (await tx.rows("SELECT * FROM models ORDER BY created_at")).map(modelOut),
   },
   {
+    method: "POST", path: "/admin/api/model-catalog", auth: "admin", tag: "admin", summary: "按服务商密钥拉取可选的对话模型和语音模型", tx: false,
+    body: z.object({ provider: z.enum(["xai", "bailian"]), api_key: z.string().min(1).max(8192).optional(), model_id: uuid.optional() }).refine((body) => body.api_key || body.model_id, "需要 API Key"),
+    handler: async ({ db, s, body }) => {
+      let key = body.api_key?.trim();
+      if (!key && body.model_id) {
+        const saved = await db.tx((tx) => tx.get("models", body.model_id!, true));
+        key = new Vault(s.vaultFile).open(saved!.secret, saved!.model_id);
+      }
+      if (!key) fail(422, "请先填写 API Key");
+      return listCatalog(body.provider, key);
+    },
+  },
+  {
     method: "POST", path: "/admin/api/models", auth: "admin", tag: "admin", summary: "添加模型", body: modelFields,
     handler: async ({ tx, s, body }) => {
       if (body.max_tokens >= body.context_window) fail(422, "输出上限必须小于上下文长度");
+      const normalized = normalizeModel(body);
       const id = randomUUID();
       const m = await tx.insert("models", {
-        model_id: id, name: body.name, base_url: body.base_url, provider_model: body.provider_model,
+        model_id: id, capabilities: body.capabilities ? JSON.stringify(body.capabilities) : undefined, name: body.name, provider: normalized.provider, base_url: normalized.base_url, provider_model: body.provider_model,
+        voice_model: normalized.voice_model, provider_search: normalized.provider_search,
         context_window: body.context_window, max_tokens: body.max_tokens, secret: new Vault(s.vaultFile).seal(body.api_key, id),
         enabled: body.enabled, is_default: false,
       });
@@ -546,10 +646,14 @@ export const routes: Route[] = [
     body: modelFields.partial(),
     handler: async ({ tx, s, params, body }) => {
       const m = await tx.get("models", params.id, true);
-      const next = { ...m, ...Object.fromEntries(Object.entries(body).filter(([, v]) => v !== undefined)) };
-      if (next.max_tokens >= next.context_window) fail(422, "输出上限必须小于上下文长度");
+      const normalized = normalizeModel(body, m);
+      if ((body.max_tokens ?? m!.max_tokens) >= (body.context_window ?? m!.context_window)) fail(422, "输出上限必须小于上下文长度");
+      const placed = body.provider !== undefined || body.base_url !== undefined || body.voice_model !== undefined;
       await tx.update("models", params.id, {
-        name: body.name, base_url: body.base_url, provider_model: body.provider_model, context_window: body.context_window,
+        capabilities: body.capabilities ? JSON.stringify(body.capabilities) : undefined, name: body.name, provider: placed ? normalized.provider : undefined, base_url: placed ? normalized.base_url : undefined,
+        provider_model: body.provider_model, voice_model: body.voice_model === undefined ? undefined : normalized.voice_model,
+        provider_search: body.provider_search !== undefined || placed ? normalized.provider_search : undefined,
+        context_window: body.context_window,
         max_tokens: body.max_tokens, enabled: body.enabled, updated_at: new Date(),
         secret: body.api_key ? new Vault(s.vaultFile).seal(body.api_key, params.id) : undefined,
         is_default: body.enabled === false ? false : undefined,
@@ -585,17 +689,17 @@ export const routes: Route[] = [
     },
   },
   {
-    method: "GET", path: "/admin/api/devices", auth: "admin", tag: "admin", summary: "全部 Mac 设备",
+    method: "GET", path: "/admin/api/devices", auth: "admin", tag: "admin", summary: "全部电脑设备",
     handler: async ({ tx, hub }) => {
       const rows = await tx.rows("SELECT d.*, u.username FROM devices d JOIN users u USING(user_id) ORDER BY d.revoked_at NULLS FIRST, d.created_at DESC LIMIT 500");
-      return rows.map((d) => ({ ...deviceOut(d, !d.revoked_at && hub.device(d.user_id)?.deviceId === d.device_id), username: d.username }));
+      return rows.map((d) => ({ ...deviceOut(d, !d.revoked_at && !!hub.device(d.user_id,d.device_id)), username: d.username }));
     },
   },
   {
     method: "POST", path: "/admin/api/devices/:id/revoke", auth: "admin", tag: "admin", summary: "吊销设备",
-    handler: async ({ tx, hub, params, after }) => {
+    handler: async ({ tx, db, hub, params, after }) => {
       const d = await tx.update("devices", params.id, { revoked_at: new Date() });
-      after(() => hub.kick(d.device_id));
+      after(async () => { hub.kick(d.device_id); await failDeviceRuns(db,d.device_id,"执行电脑已解绑",false); });
       return deviceOut(d, false);
     },
   },

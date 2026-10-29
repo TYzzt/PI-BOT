@@ -1,18 +1,23 @@
+import { httpErrorInfo, type AppError } from "@pi-bot/runtime-contracts";
 import { Pool, types, type PoolClient } from "pg";
 types.setTypeParser(20, (value) => Number(value));
 export type Row = Record<string, any>;
 export class HttpError extends Error {
+  readonly info: AppError;
   constructor(
     public status: number,
     public detail: unknown,
   ) {
     super(typeof detail === "string" ? detail : "请求失败");
+    this.info = httpErrorInfo(status, this.message);
   }
 }
 export const fail = (status: number, detail: unknown): never => {
   throw new HttpError(status, detail);
 };
 const keys: Record<string, string> = {
+  remote_environments: "environment_id",
+  remote_artifacts: "artifact_id",
   users: "user_id",
   devices: "device_id",
   models: "model_id",
@@ -24,6 +29,7 @@ const keys: Record<string, string> = {
   agent_tasks: "task_id",
   bot_skills: "skill_id",
   bot_automations: "automation_id",
+  bot_goals: "goal_id",
   automation_rounds: "round_id",
   automation_reports: "report_id",
 };
@@ -37,7 +43,7 @@ export interface Change {
 }
 export class Tx {
   private queue: Promise<unknown> = Promise.resolve();
-  constructor(readonly client: PoolClient) {}
+  constructor(readonly client: PoolClient, readonly pushEnabled = false) {}
   async rows(sql: string, args: unknown[] = []): Promise<Row[]> {
     const result = this.queue.then(
       async () => (await this.client.query(sql, args)).rows as Row[],
@@ -89,6 +95,7 @@ function encode(v: unknown) {
 }
 export class Database {
   readonly pool: Pool;
+  pushEnabled = !!process.env.PI_BOT_FCM_PROJECT_ID?.trim();
   constructor(url: string) {
     this.pool = new Pool({ connectionString: url });
   }
@@ -96,7 +103,7 @@ export class Database {
     const c = await this.pool.connect();
     try {
       await c.query("BEGIN");
-      const result = await fn(new Tx(c));
+      const result = await fn(new Tx(c, this.pushEnabled));
       await c.query("COMMIT");
       return result;
     } catch (e) {

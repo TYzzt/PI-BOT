@@ -10,14 +10,16 @@
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "build": "node scripts/build.mjs",
-    "pack:mac": "node scripts/pack-mac.mjs",
-    "typecheck": "tsc --noEmit",
-    "test": "node_modules/node/bin/node --import tsx --test --test-timeout=120000 tests/*.test.ts",
-    "postinstall": "node node_modules/electron/install.js",
     "build:service": "node scripts/build-service.mjs",
+    "service": "node packages/service/dist/cli.mjs",
+    "pack:linux": "node scripts/pack-linux.mjs",
     "pack:win": "node scripts/pack-win.mjs",
     "build:windows-helper": "node scripts/build-windows-helper.mjs",
-    "test:windows": "node --import tsx --test --test-timeout=120000 tests/windows.test.ts"
+    "test:windows": "node --import tsx --test --test-timeout=120000 tests/windows.test.ts",
+    "pack:mac": "node scripts/pack-mac.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test --test-timeout=120000 tests/*.test.ts",
+    "postinstall": "node node_modules/electron/install.js"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "0.87.1",
@@ -31,7 +33,8 @@
     "typebox": "1.3.27",
     "ws": "8.21.3",
     "zod": "4.6.5",
-    "@pi-bot/a2ui": "*"
+    "@pi-bot/a2ui": "*",
+    "@pi-bot/runtime-contracts": "*"
   },
   "devDependencies": {
     "@electron-forge/cli": "7.11.2",

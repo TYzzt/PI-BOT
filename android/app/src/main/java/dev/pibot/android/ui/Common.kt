@@ -74,7 +74,7 @@ fun rememberNow(periodMs: Long = 2_000): Long {
 }
 
 @Composable
-fun MacChip(online: Boolean, modifier: Modifier = Modifier) {
+fun ComputerChip(online: Boolean, modifier: Modifier = Modifier) {
     Row(
         modifier
             .background(if (online) Good.copy(alpha = 0.12f) else Muted.copy(alpha = 0.14f), RoundedCornerShape(50))
@@ -83,7 +83,7 @@ fun MacChip(online: Boolean, modifier: Modifier = Modifier) {
     ) {
         Box(Modifier.size(7.dp).background(if (online) Good else Muted, CircleShape))
         Spacer(Modifier.width(6.dp))
-        Text(if (online) "Mac 在线" else "Mac 离线", fontSize = 12.sp, lineHeight = 16.sp, color = if (online) Good else Muted)
+        Text(if (online) "电脑在线" else "电脑离线", fontSize = 12.sp, lineHeight = 16.sp, color = if (online) Good else Muted)
     }
 }
 

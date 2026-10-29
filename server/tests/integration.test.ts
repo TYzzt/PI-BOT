@@ -8,7 +8,7 @@ import { Worker } from "../src/worker.js";
 import { createRunner } from "../src/runner.js";
 import { SseUsage } from "../src/llm.js";
 import { insertRun } from "../src/bots.js";
-import { dispatchMac } from "../src/runs.js";
+import { dispatchDevice } from "../src/runs.js";
 import { createBotAgent } from "@pi-bot/agent";
 import { WebSearch } from "../src/search.js";
 import { Hub } from "../src/hub.js";
@@ -52,14 +52,14 @@ before(async () => {
   search = await mockSearch();
   runner = await createRunner({ token: RUNNER_TOKEN, dir: dir.path, factory: async options => {
     const agent = await createBotAgent(options);
-    return { ...agent, tools: agent.tools, setApiKey: key => agent.setApiKey(key), abort: () => agent.abort(), dispose: () => agent.dispose(), prompt: async (text, onText) => {
+    return { ...agent, tools: agent.tools, setApiKey: key => agent.setApiKey(key), abort: () => agent.abort(), dispose: () => agent.dispose(), prompt: async (text, onText, images) => {
       if (text === "进度链路测试") {
         onText("我先查查资料。");
         options.onProgress?.(["我先查查资料。"]);
         onText("");
         options.onProgress?.(["我先查查资料。", "信息已核对，开始整理。"]);
       }
-      return agent.prompt(text, onText);
+      return agent.prompt(text, onText, images);
     } };
   } });
   await runner.listen({ port: 0, host: "127.0.0.1" });
@@ -154,7 +154,7 @@ test("bots are per user with unique library slugs and a default avatar", { skip 
   state.bot2 = c.json.id;
   const list = await api("GET", "/bots", { token: state.alice });
   assert.equal(list.json.bots.length, 4);
-  assert.equal(list.json.mac.online, false);
+  assert.equal(list.json.computer.online, false);
 });
 
 test("each account gets one pinned main bot, including concurrent first loads and an existing Pi Bot slug", { skip }, async () => {
@@ -241,16 +241,16 @@ test("the model proxy injects the provider key, rewrites the model and records u
 });
 
 test("Mac online: runs execute on the Mac with tools, approvals and file RPC", { skip }, async () => {
-  const mac = socket(base.replace("http", "ws") + "/ws/device", state.keys.headers("GET", "/ws/device"));
-  await mac.next((m) => m.type === "hello");
+  const computer = socket(base.replace("http", "ws") + "/ws/device", state.keys.headers("GET", "/ws/device"));
+  await computer.next((m) => m.type === "hello");
   const events = socket(base.replace("http", "ws") + "/ws/events", { authorization: `Bearer ${state.alice}` });
-  await events.next((m) => m.type === "hello" && m.mac_online === true);
-  assert.equal((await api("GET", "/me", { token: state.alice })).json.mac.online, true);
+  await events.next((m) => m.type === "hello" && m.device_online === true);
+  assert.equal((await api("GET", "/me", { token: state.alice })).json.computer.online, true);
 
   const requestId = randomUUID();
   const posted = await api("POST", `/bots/${state.bot}/messages`, { token: state.alice, body: { text: "整理一下桌面", request_id: requestId } });
   assert.equal(posted.status, 200, JSON.stringify(posted.json));
-  assert.equal(posted.json.run.executor, "mac");
+  assert.equal(posted.json.run.executor, "device");
   assert.deepEqual(posted.json.messages.at(-1).progress, [], "queued replies wait for model text instead of inserting a canned acknowledgement");
   const again = await api("POST", `/bots/${state.bot}/messages`, { token: state.alice, body: { text: "整理一下桌面", request_id: requestId } });
   assert.equal(again.json.run.id, posted.json.run.id, "request_id is idempotent");
@@ -258,7 +258,7 @@ test("Mac online: runs execute on the Mac with tools, approvals and file RPC", {
   assert.equal(busy.status, 200, "a second conversation is accepted and queued");
   await api("POST", `/runs/${busy.json.run.id}/cancel`, { token: state.alice });
 
-  const { run } = await mac.next((m) => m.type === "run");
+  const { run } = await computer.next((m) => m.type === "run");
   assert.equal(run.bot.slug, "research-bot");
   assert.match(run.system, /~\/pi-bot\/research-bot/);
   assert.match(run.system, /帮我整理资料/);
@@ -266,12 +266,12 @@ test("Mac online: runs execute on the Mac with tools, approvals and file RPC", {
   assert.doesNotMatch(run.system, /最多三句/);
   assert.equal(run.text, "整理一下桌面");
   const runId = run.run_id;
-  mac.send({ type: "run_event", run_id: runId, event: { kind: "started" } });
-  mac.send({ type: "run_event", run_id: runId, event: { kind: "tool", id: "t1", name: "list_files", state: "running", summary: "." } });
-  mac.send({ type: "run_event", run_id: runId, event: { kind: "text", text: "正在查看" } });
+  computer.send({ type: "run_event", run_id: runId, event: { kind: "started" } });
+  computer.send({ type: "run_event", run_id: runId, event: { kind: "tool", id: "t1", name: "list_files", state: "running", summary: "." } });
+  computer.send({ type: "run_event", run_id: runId, event: { kind: "text", text: "正在查看" } });
   const delta = await events.next((m) => m.event?.type === "delta");
   assert.equal(delta.event.content, "正在查看");
-  mac.send({ type: "run_event", run_id: runId, event: { kind: "progress", lines: ["我先看看桌面上的文件。"] } });
+  computer.send({ type: "run_event", run_id: runId, event: { kind: "progress", lines: ["我先看看桌面上的文件。"] } });
   const progressPage = await eventually(async () => {
     const p = await api("GET", `/bots/${state.bot}/messages`, { token: state.alice });
     const m = p.json.messages.find((m: any) => m.run_id === runId && m.role === "assistant");
@@ -279,8 +279,8 @@ test("Mac online: runs execute on the Mac with tools, approvals and file RPC", {
   });
   assert.deepEqual(progressPage.progress, ["我先看看桌面上的文件。"]);
   assert.equal(progressPage.content, "", "remarks move above the answer instead of remaining in its body");
-  mac.send({ type: "run_event", run_id: runId, event: { kind: "approval", request_id: "q1", path: "/Users/alice/Desktop", reason: "需要整理桌面" } });
-  const created = await mac.next((m) => m.type === "approval_created");
+  computer.send({ type: "run_event", run_id: runId, event: { kind: "approval", request_id: "q1", path: "/Users/alice/Desktop", reason: "需要整理桌面" } });
+  const created = await computer.next((m) => m.type === "approval_created");
   const detail = await eventually(async () => {
     const b = await api("GET", `/bots/${state.bot}`, { token: state.alice });
     return b.json.pending_approvals?.length && b.json;
@@ -289,42 +289,42 @@ test("Mac online: runs execute on the Mac with tools, approvals and file RPC", {
   assert.equal(detail.pending_approvals[0].path, "/Users/alice/Desktop");
   const decided = await api("POST", `/approvals/${created.approval_id}`, { token: state.alice, body: { decision: "approve" } });
   assert.equal(decided.json.status, "approved");
-  const decision = await mac.next((m) => m.type === "approval");
+  const decision = await computer.next((m) => m.type === "approval");
   assert.equal(decision.decision, "approve");
   assert.equal((await api("POST", `/approvals/${created.approval_id}`, { token: state.alice, body: { decision: "reject" } })).status, 409);
 
   const listing = api("GET", `/bots/${state.bot}/files?path=notes`, { token: state.alice });
-  const rpc = await mac.next((m) => m.type === "rpc");
+  const rpc = await computer.next((m) => m.type === "rpc");
   assert.equal(rpc.method, "files.list");
   assert.deepEqual(rpc.params, { slug: "research-bot", path: "notes" });
-  mac.send({ type: "rpc_result", id: rpc.id, ok: true, result: { entries: [{ name: "a.md", type: "file", size: 3 }] } });
+  computer.send({ type: "rpc_result", id: rpc.id, ok: true, result: { entries: [{ name: "a.md", type: "file", size: 3 }] } });
   assert.deepEqual((await listing).json.entries[0].name, "a.md");
   const slow = await api("GET", `/bots/${state.bot}/files/content?path=a.md`, { token: state.alice });
   assert.equal(slow.status, 504);
 
-  mac.send({ type: "run_event", run_id: runId, event: { kind: "tool", id: "t1", name: "list_files", state: "completed" } });
-  mac.send({ type: "run_event", run_id: runId, event: { kind: "done", state: "completed", text: "桌面已整理好。" } });
+  computer.send({ type: "run_event", run_id: runId, event: { kind: "tool", id: "t1", name: "list_files", state: "completed" } });
+  computer.send({ type: "run_event", run_id: runId, event: { kind: "done", state: "completed", text: "桌面已整理好。" } });
   const page = await eventually(async () => {
     const p = await api("GET", `/bots/${state.bot}/messages`, { token: state.alice });
     return p.json.messages.find((m: any) => m.run_id === runId && m.role === "assistant")?.status === "completed" && p.json;
   });
   const reply = page.messages.find((m: any) => m.run_id === runId && m.role === "assistant");
   assert.equal(reply.content, "桌面已整理好。");
-  assert.equal(reply.executor, "mac");
+  assert.equal(reply.executor, "device");
   assert.deepEqual(reply.progress, ["我先看看桌面上的文件。"], "progress survives the final answer and reloading history");
   assert.deepEqual(reply.tools.map((t: any) => [t.name, t.state]), [["list_files", "completed"]]);
 
   await api("POST", `/bots/${state.bot}/messages`, { token: state.alice, body: { text: "再做一件事", request_id: randomUUID() } });
-  const second = await mac.next((m) => m.type === "run");
+  const second = await computer.next((m) => m.type === "run");
   assert.deepEqual(second.run.history.filter((m: any) => m.role === "assistant").map((m: any) => m.content), ["我先看看桌面上的文件。", "桌面已整理好。"]);
   assert.ok(second.run.history.some((m: any) => m.role === "user" && m.content === "整理一下桌面"));
   assert.equal(JSON.stringify(second.run.history).includes("list_files"), false, "tool execution stays out of later context");
-  mac.send({ type: "run_event", run_id: second.run.run_id, event: { kind: "started" } });
+  computer.send({ type: "run_event", run_id: second.run.run_id, event: { kind: "started" } });
   const cancelled = await api("POST", `/runs/${second.run.run_id}/cancel`, { token: state.alice });
   assert.equal(cancelled.status, 200);
-  await mac.next((m) => m.type === "cancel" && m.run_id === second.run.run_id);
+  await computer.next((m) => m.type === "cancel" && m.run_id === second.run.run_id);
 
-  mac.close();
+  computer.close();
   await events.next((m) => m.event?.type === "presence" && m.event.online === false);
   const failed = await eventually(async () => {
     const b = await api("GET", `/bots/${state.bot}`, { token: state.alice });
@@ -353,8 +353,8 @@ test("Mac offline: runs fall back to the cloud runner through the proxy, with me
   assert.equal(first.content, "好的，我记住了蓝鲸。");
   const forwarded = provider.requests.findLast(r => r.body.stream && latestUserText(r.body.input).includes("记住蓝鲸"))!.body;
   assert.equal(forwarded.model, "upstream-model");
-  assert.match(forwarded.input[0].content, /Mac 当前离线/);
-  assert.deepEqual(forwarded.tools.map((t: any) => t.name), ["start_task", "task_status", "task_message", "cancel_task", "automation_manage", "ask_agent", "get_ui_catalog", "show_ui", "skill_manage", "skill_load", "memory_manage", "history_search", "agent_directory", "resume_task"], "cloud conversation runs get memory and collaboration, never file or shell tools");
+  assert.match(forwarded.input[0].content, /当前运行在云端，绑定电脑的资料库文件和终端在本次运行中不可用/);
+  assert.deepEqual(forwarded.tools.map((t: any) => t.name), ["start_task", "task_status", "task_message", "cancel_task", "goal_manage", "ask_agent", "report_read", "get_ui_catalog", "show_ui", "send_reply", "skill_manage", "skill_load", "memory_manage", "history_search", "agent_directory", "resume_task"], "cloud conversation runs get memory and collaboration, never file or shell tools");
   const second = await send("之前说了什么？");
   assert.equal(second.content, "你之前说的是蓝鲸。");
   assert.deepEqual(second.progress, [], "direct answers have no extra acknowledgement");
@@ -375,6 +375,41 @@ test("Mac offline: runs fall back to the cloud runner through the proxy, with me
   assert.equal(memory.summary, "用户喜欢蓝鲸。");
   const after = await send("之前说了什么？");
   assert.equal(after.content, "你之前说的是蓝鲸。", "memory summary reaches the prompt");
+});
+
+test('image-only messages persist, load with authorization, replay and reach the cloud model', { skip }, async () => {
+  const bot = await api('POST', '/bots', { token: state.alice, body: { name: '图片测试' } });
+  const path = `/bots/${bot.json.id}/messages`;
+  const image = { name: 'pixel.png', mime_type: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC' };
+  const body = { images: [image], request_id: randomUUID() };
+  const posted = await api('POST', path, { token: state.alice, body });
+  assert.equal(posted.status, 200, JSON.stringify(posted.json));
+  const incoming = posted.json.messages[0];
+  assert.equal(incoming.content, '');
+  assert.equal(incoming.images.length, 1);
+  assert.equal('data' in incoming.images[0], false);
+  const again = await api('POST', path, { token: state.alice, body });
+  assert.equal(again.json.run.id, posted.json.run.id);
+  assert.equal(again.json.messages[0].images[0].id, incoming.images[0].id);
+  const picturePath = `${path}/${incoming.id}/images/${incoming.images[0].id}`;
+  assert.equal((await api('GET', picturePath, { token: state.alice })).json.data, image.data);
+  const charlie = (await api('POST', '/auth/login', { body: { username: 'charlie', password: 'charlie-password' } })).json.access_token;
+  assert.equal((await api('GET', picturePath, { token: charlie })).status, 404);
+  assert.equal((await api('GET', `${path}/${incoming.id}/images/${randomUUID()}`, { token: state.alice })).status, 404);
+  await eventually(async () => {
+    const page = await api('GET', path, { token: state.alice });
+    return page.json.messages.at(-1)?.status === 'completed';
+  });
+  const imageTurns = (body: any) => (Array.isArray(body.input) ? body.input : []).filter((m: any) => m.role === 'user').flatMap((m: any) => Array.isArray(m.content) ? m.content.filter((p: any) => p.type === 'input_image') : []);
+  assert.ok(provider.requests.some(r => imageTurns(r.body).some((p: any) => /^data:image\/(png|jpeg|webp);base64,/.test(p.image_url))));
+  const follow = await api('POST', path, { token: state.alice, body: { text: '继续分析图片', request_id: randomUUID() } });
+  await eventually(async () => {
+    const page = await api('GET', path, { token: state.alice });
+    return page.json.messages.find((m: any) => m.id === follow.json.run.assistant_message_id)?.status === 'completed';
+  });
+  const request = provider.requests.findLast(r => latestUserText(r.body.input) === '继续分析图片')!;
+  assert.equal(imageTurns(request.body).length, 1, 'image-only user history is replayed');
+  assert.equal((await api('POST', path, { token: state.alice, body: { images: [{ ...image, mime_type: 'text/html' }], request_id: randomUUID() } })).status, 422);
 });
 
 test("the main bot can chat using the default model and stays pinned after other bots run", { skip }, async () => {
@@ -419,8 +454,8 @@ test("conversation delegation is asynchronous and reports a private specialist r
 });
 
 test("delegation rules: other users, cycles, depth, mutual waits, quotas and cascading cancels", { skip }, async () => {
-  const mac = socket(base.replace("http", "ws") + "/ws/device", state.keys.headers("GET", "/ws/device"));
-  await mac.next((m) => m.type === "hello");
+  const computer = socket(base.replace("http", "ws") + "/ws/device", state.keys.headers("GET", "/ws/device"));
+  await computer.next((m) => m.type === "hello");
   const bot = async (name: string) => (await api("POST", "/bots", { token: state.alice, body: { name } })).json.id as string;
   const [A, B, C, D] = [await bot("甲"), await bot("乙"), await bot("丙"), await bot("丁")];
   const charlie = (await api("POST", "/auth/login", { body: { username: "charlie", password: "charlie-password" } })).json.access_token;
@@ -435,13 +470,13 @@ test("delegation rules: other users, cycles, depth, mutual waits, quotas and cas
     const run = await workerDb.tx(async tx => {
       const b = await tx.get("bots", botId);
       const d = await tx.one("SELECT device_id FROM devices WHERE user_id=$1 AND revoked_at IS NULL", [b.user_id]);
-      return insertRun(tx, { userId: b.user_id, botId, text, requestId: randomUUID(), mac: { deviceId: d!.device_id }, lane: "task" });
+      return insertRun(tx, { userId: b.user_id, botId, text, requestId: randomUUID(), computer: { deviceId: d!.device_id }, lane: "task" });
     });
-    await dispatchMac(workerDb, s, (app as any).hub, run.run_id);
-    return (await mac.next((m) => m.type === "run" && m.run.run_id === run.run_id)).run;
+    await dispatchDevice(workerDb, s, (app as any).hub, run.run_id);
+    return (await computer.next((m) => m.type === "run" && m.run.run_id === run.run_id)).run;
   };
   const done = (runId: string, state: string, text?: string) =>
-    mac.send({ type: "run_event", run_id: runId, event: { kind: "done", state, text } });
+    computer.send({ type: "run_event", run_id: runId, event: { kind: "done", state, text } });
 
   const runA = await start(A, "开始协作");
   assert.equal(runA.agents_enabled, true);
@@ -457,14 +492,14 @@ test("delegation rules: other users, cycles, depth, mutual waits, quotas and cas
   const ab = await delegate(tA, runA.run_id, "乙");
   assert.equal(ab.status, 200, JSON.stringify(ab.json));
   assert.equal(ab.json.status, "queued", "creation returns before execution starts");
-  const runB = (await mac.next((m) => m.type === "run" && m.run.bot.id === B)).run;
+  const runB = (await computer.next((m) => m.type === "run" && m.run.bot.id === B)).run;
   assert.match(runB.text, /你收到来自智能体「甲」的委托/);
   assert.equal(runB.agents_enabled, true);
   assert.equal((await delegate(tB, runB.run_id, "甲")).status, 422, "delegating back up the chain would be a cycle");
   assert.equal((await delegate(tB, runB.run_id, "丙", false)).status, 422, "nested delegation must wait");
   const bc = await delegate(tB, runB.run_id, "丙");
   assert.equal(bc.status, 200);
-  const runC = (await mac.next((m) => m.type === "run" && m.run.bot.id === C)).run;
+  const runC = (await computer.next((m) => m.type === "run" && m.run.bot.id === C)).run;
   assert.equal(runC.agents_enabled, false, "the deepest level gets no ask_agent tool");
   assert.doesNotMatch(runC.system, /ask_agent/);
   assert.equal((await delegate(tC, runC.run_id, "丁")).status, 422, "depth limit is enforced by the server too");
@@ -484,17 +519,17 @@ test("delegation rules: other users, cycles, depth, mutual waits, quotas and cas
   assert.equal((await delegate(tA, runA.run_id, "丙", false)).status, 422, "five delegations per run");
 
   await api("POST", `/runs/${runA.run_id}/cancel`, { token: state.alice });
-  await mac.next((m) => m.type === "cancel" && m.run_id === runA.run_id);
+  await computer.next((m) => m.type === "cancel" && m.run_id === runA.run_id);
   done(runA.run_id, "cancelled");
-  await mac.next((m) => m.type === "cancel" && m.run_id === runB.run_id);
+  await computer.next((m) => m.type === "cancel" && m.run_id === runB.run_id);
   done(runB.run_id, "cancelled");
-  await mac.next((m) => m.type === "cancel" && m.run_id === runC.run_id);
+  await computer.next((m) => m.type === "cancel" && m.run_id === runC.run_id);
   done(runC.run_id, "cancelled");
   const extraChildren = await workerDb.tx(tx => tx.rows("SELECT t.child_run_id FROM agent_tasks t WHERE t.parent_run_id=$1 AND t.child_run_id IS NOT NULL AND t.child_run_id<>$2", [runA.run_id, runB.run_id]));
   for (const child of extraChildren) {
     const r = await workerDb.tx(tx => tx.get("bot_runs", child.child_run_id));
     if (r.status !== "cancelled") {
-      await mac.next(m => m.type === "cancel" && m.run_id === child.child_run_id);
+      await computer.next(m => m.type === "cancel" && m.run_id === child.child_run_id);
       done(child.child_run_id, "cancelled");
     }
   }
@@ -504,24 +539,24 @@ test("delegation rules: other users, cycles, depth, mutual waits, quotas and cas
   });
   assert.equal(cancelled[0].bot_name, "乙");
 
-  const runA2 = (await mac.next((m) => m.type === "run" && m.run.bot.id === A)).run;
+  const runA2 = (await computer.next((m) => m.type === "run" && m.run.bot.id === A)).run;
   assert.match(runA2.text, /来自智能体「丁」的委托/, "the queued task starts once its target is idle");
   done(runA2.run_id, "completed", "甲完成了");
   const finished = await api("GET", `/agent/tasks/${da.json.id}?wait=5`, { token: tD });
   assert.deepEqual([finished.json.status, finished.json.result, finished.json.agent.name], ["completed", "甲完成了", "甲"]);
   done(runD.run_id, "completed", "丁完成了");
   await eventually(async () => (await workerDb.tx(tx => tx.get("bot_runs", runD.run_id))).status === "completed");
-  mac.close();
-  await eventually(async () => !(await api("GET", "/me", { token: state.alice })).json.mac.online);
+  computer.close();
+  await eventually(async () => !(await api("GET", "/me", { token: state.alice })).json.computer.online);
 });
 
 test("users only see their own bots and Mac; a Mac dropping mid-run fails the run", { skip }, async () => {
   await api("POST", "/admin/api/users", { token: state.admin, body: { username: "bob", password: "bob-password" } });
   const bob = (await api("POST", "/auth/login", { body: { username: "bob", password: "bob-password" } })).json.access_token;
-  const mac = socket(base.replace("http", "ws") + "/ws/device", state.keys.headers("GET", "/ws/device"));
-  await mac.next((m) => m.type === "hello");
+  const computer = socket(base.replace("http", "ws") + "/ws/device", state.keys.headers("GET", "/ws/device"));
+  await computer.next((m) => m.type === "hello");
   const bobEvents = socket(base.replace("http", "ws") + "/ws/events", { authorization: `Bearer ${bob}` });
-  assert.equal((await bobEvents.next((m) => m.type === "hello")).mac_online, false, "presence is per user");
+  assert.equal((await bobEvents.next((m) => m.type === "hello")).device_online, false, "presence is per user");
   const bobBots = (await api("GET", "/bots", { token: bob })).json.bots;
   assert.equal(bobBots.length, 1);
   assert.equal(bobBots[0].is_main, true, "each user sees their own main bot");
@@ -538,18 +573,18 @@ test("users only see their own bots and Mac; a Mac dropping mid-run fails the ru
   assert.equal(posted.status, 404);
 
   const mine = await api("POST", `/bots/${state.bot}/messages`, { token: state.alice, body: { text: "长任务", request_id: randomUUID() } });
-  assert.equal(mine.json.run.executor, "mac");
+  assert.equal(mine.json.run.executor, "device");
   assert.equal((await api("POST", `/runs/${mine.json.run.id}/cancel`, { token: bob })).status, 404);
-  const { run } = await mac.next((m) => m.type === "run");
-  mac.send({ type: "run_event", run_id: run.run_id, event: { kind: "started" } });
-  mac.send({ type: "run_event", run_id: run.run_id, event: { kind: "text", text: "做到一半" } });
+  const { run } = await computer.next((m) => m.type === "run");
+  computer.send({ type: "run_event", run_id: run.run_id, event: { kind: "started" } });
+  computer.send({ type: "run_event", run_id: run.run_id, event: { kind: "text", text: "做到一半" } });
   await eventually(async () => (await api("GET", `/bots/${state.bot}`, { token: state.alice })).json.latest_run.status === "running");
-  mac.close();
+  computer.close();
   const failed = await eventually(async () => {
     const b = await api("GET", `/bots/${state.bot}`, { token: state.alice });
     return b.json.latest_run.status === "failed" && b.json.latest_run;
   });
-  assert.equal(failed.error, "Mac 已离线，可重新发送（将在云端运行）");
+  assert.equal(failed.error, "执行电脑已离线，本次运行已中断；请核实结果后重新安排任务");
   const page = await api("GET", `/bots/${state.bot}/messages`, { token: state.alice });
   assert.equal(page.json.messages.at(-1).content, "做到一半", "partial text is kept");
   bobEvents.close();

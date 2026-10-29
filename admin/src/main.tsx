@@ -2,7 +2,7 @@ import { StrictMode, useCallback, useEffect, useState, type FormEvent, type Reac
 import { createRoot } from "react-dom/client";
 import { PiBot } from "@pi-bot/bot-face/react";
 import type { Mood } from "@pi-bot/bot-face";
-import { api, ApiError, session, type Device, type Model, type ModelInput, type Overview, type Usage, type User } from "./api.js";
+import { api, ApiError, session, type CatalogModel, type Device, type Model, type ModelInput, type Overview, type ProviderName, type Usage, type User } from "./api.js";
 import "./style.css";
 
 type Page = "overview" | "users" | "models" | "devices" | "usage";
@@ -10,7 +10,7 @@ const PAGES: { id: Page; label: string }[] = [
   { id: "overview", label: "概览" },
   { id: "users", label: "用户" },
   { id: "models", label: "模型" },
-  { id: "devices", label: "Mac 设备" },
+  { id: "devices", label: "电脑设备" },
   { id: "usage", label: "用量" },
 ];
 
@@ -108,7 +108,7 @@ function OverviewPage() {
   const stats = [
     ["用户", data.users],
     ["Bot", data.bots],
-    ["在线 Mac", data.macs_online],
+    ["在线电脑", data.devices_online],
     ["启用模型", data.models],
     ["今日运行", data.runs_today],
     ["今日 Token", data.tokens_today],
@@ -186,7 +186,24 @@ function UserForm({ user, onClose, onSaved }: { user?: User; onClose: () => void
   );
 }
 
+function EnvironmentForm({user,onClose}:{user:User;onClose():void}) {
+ const [environment,setEnvironment]=useState<any>();
+ const [form,setForm]=useState({host:'',port:22,username:'pibot',fingerprint:'',work_root:'/home/pibot/workspaces'});
+ const [privateKey,setPrivateKey]=useState(''),[password,setPassword]=useState(''),[passphrase,setPassphrase]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false);
+ useEffect(()=>{void api.environment(user.id).then(e=>{setEnvironment(e);if(e.config)setForm(e.config);}).catch(e=>setError(message(e)));},[user.id]);
+ const perform=async(test:boolean)=>{setBusy(true);setError('');try{if(!test){await api.saveEnvironment(user.id,{config:form,...(privateKey||password?{secret:{private_key:privateKey||undefined,password:password||undefined,passphrase:passphrase||undefined}}:{})});setPrivateKey('');setPassword('');setPassphrase('');}setEnvironment(test?await api.testEnvironment(user.id):await api.environment(user.id));}catch(e){setError(message(e));}finally{setBusy(false);}};
+ return <Modal title={`${user.display_name} 的云端环境`} onClose={onClose}><p>模式：{environment?.backend??'加载中'} · 状态：{environment?.status??''}</p><p className="muted small">每用户一台虚机。SSH 环境请先按部署文档安装 Ubuntu 24.04 操作组件，再录入主机指纹。</p>{environment?.backend==='ssh'&&<form onSubmit={e=>{e.preventDefault();void perform(false);}}>
+ {(['host','port','username','fingerprint','work_root'] as const).map(key=><label key={key}>{({host:'地址',port:'端口',username:'SSH 用户名',fingerprint:'SHA256 主机指纹',work_root:'工作根目录'})[key]}<input required value={form[key]} type={key==='port'?'number':'text'} onChange={e=>setForm({...form,[key]:key==='port'?Number(e.target.value):e.target.value})}/></label>)}
+ <label>私钥（留空保留原凭据）<textarea value={privateKey} onChange={e=>setPrivateKey(e.target.value)} autoComplete="off"/></label>
+ <label>私钥口令<input type="password" value={passphrase} onChange={e=>setPassphrase(e.target.value)} autoComplete="new-password"/></label>
+ <label>或 SSH 密码<input type="password" value={password} onChange={e=>setPassword(e.target.value)} autoComplete="new-password"/></label>
+ <button className="primary" disabled={busy}>保存</button></form>}
+ {environment?.error&&<p className="error">{environment.error}</p>}{error&&<p className="error">{error}</p>}
+ <p className="muted small">能力：{environment?.capabilities?.join('、')||'尚未检测'}</p><footer><button className="ghost" onClick={onClose}>关闭</button><button className="primary" disabled={busy||!environment||environment.backend==='none'} onClick={()=>void perform(true)}>{busy?'处理中…':'连接和能力检测'}</button></footer></Modal>;
+}
+
 function UsersPage({ me }: { me: User }) {
+  const [environmentUser,setEnvironmentUser]=useState<User|null>(null);
   const load = useCallback(() => api.users(), []);
   const { data, error, reload } = useLoad<User[]>(load);
   const [editing, setEditing] = useState<User | "new" | null>(null);
@@ -201,7 +218,7 @@ function UsersPage({ me }: { me: User }) {
   return (
     <>
       <div className="toolbar">
-        <p className="muted">用户由管理员创建，没有自助注册。每个用户可以绑定一台 Mac。</p>
+        <p className="muted">用户由管理员创建，没有自助注册。每个用户可以同时绑定多台 Mac 或 Linux 执行电脑。</p>
         <button className="primary" onClick={() => setEditing("new")}>
           新建用户
         </button>
@@ -213,7 +230,7 @@ function UsersPage({ me }: { me: User }) {
             <th>用户</th>
             <th>角色</th>
             <th>Bot</th>
-            <th>Mac</th>
+            <th>电脑</th>
             <th>状态</th>
             <th />
           </tr>
@@ -228,18 +245,11 @@ function UsersPage({ me }: { me: User }) {
               <td>{u.role === "admin" ? <span className="badge accent">管理员</span> : "用户"}</td>
               <td>{u.bot_count ?? 0}</td>
               <td>
-                {u.mac ? (
-                  <span className="device">
-                    <i className={u.mac.online ? "dot on" : "dot"} />
-                    {u.mac.label}
-                    <span className="muted small">{u.mac.online ? "在线" : ago(u.mac.last_seen_at)}</span>
-                  </span>
-                ) : (
-                  <span className="muted">未绑定</span>
-                )}
+                {u.devices?.filter(d=>!d.revoked_at).length ? u.devices.filter(d=>!d.revoked_at).map(d=><div key={d.id} className="device"><i className={d.online ? 'dot on' : 'dot'}/>{d.label} · {d.platform === 'linux' ? 'Linux' : d.platform === 'darwin' ? 'macOS' : d.platform === 'win32' ? 'Windows' : '未知平台'} · {d.online ? '在线' : '离线'}</div>) : <span className="muted">未绑定</span>}
               </td>
               <td>{u.disabled ? <span className="badge">已禁用</span> : <span className="badge ok">正常</span>}</td>
               <td className="actions">
+                <button className="ghost" onClick={()=>setEnvironmentUser(u)}>云端环境</button>
                 <button className="ghost" onClick={() => setEditing(u)}>
                   编辑
                 </button>
@@ -248,7 +258,7 @@ function UsersPage({ me }: { me: User }) {
                     <button className="ghost" onClick={() => act(() => api.updateUser(u.id, { disabled: !u.disabled }))}>
                       {u.disabled ? "启用" : "禁用"}
                     </button>
-                    <button className="ghost danger" onClick={() => confirm(`删除用户 ${u.username}？其 Bot 记录会一并删除（Mac 上的资料库文件保留）。`) && act(() => api.deleteUser(u.id))}>
+                    <button className="ghost danger" onClick={() => confirm(`删除用户 ${u.username}？其 Bot 记录会一并删除（电脑上的资料库文件保留）。`) && act(() => api.deleteUser(u.id))}>
                       删除
                     </button>
                   </>
@@ -258,21 +268,53 @@ function UsersPage({ me }: { me: User }) {
           ))}
         </tbody>
       </table>
+      {environmentUser&&<EnvironmentForm user={environmentUser} onClose={()=>setEnvironmentUser(null)}/>}
       {editing && <UserForm user={editing === "new" ? undefined : editing} onClose={() => setEditing(null)} onSaved={reload} />}
     </>
   );
 }
 
-const EMPTY_MODEL: ModelInput = { name: "", base_url: "", provider_model: "", api_key: "", context_window: 128000, max_tokens: 8192, enabled: true, is_default: false };
+const EMPTY_MODEL: ModelInput = { name: "", provider: "xai", base_url: "", provider_model: "", voice_model: null, provider_search: false, api_key: "", context_window: 128000, max_tokens: 8192, enabled: true, is_default: false };
+const PROVIDER_LABEL: Record<ProviderName, string> = { xai: "xAI", bailian: "百炼", custom: "自定义" };
 
 function ModelForm({ model, onClose, onSaved }: { model?: Model; onClose: () => void; onSaved: () => void }) {
   const [form, setForm] = useState<ModelInput>(model ? { ...model, api_key: "" } : EMPTY_MODEL);
+  const [catalog, setCatalog] = useState<{ chat: CatalogModel[]; voice: CatalogModel[] } | null>(null);
+  const [manual, setManual] = useState(form.provider === "custom");
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const set = (patch: Partial<ModelInput>) => setForm({ ...form, ...patch });
+  const known = form.provider === "xai" || form.provider === "bailian";
+  const chat = [...(catalog?.chat ?? [])];
+  if (form.provider_model && !chat.some((item) => item.id === form.provider_model)) chat.unshift({ id: form.provider_model, context_window: form.context_window, max_tokens: form.max_tokens });
+  const voice = [...(catalog?.voice ?? [])];
+  if (form.voice_model && !voice.some((item) => item.id === form.voice_model)) voice.unshift({ id: form.voice_model, context_window: null, max_tokens: null });
+  const picked = chat.find((item) => item.id === form.provider_model);
+  const locked = Boolean(catalog && picked?.context_window && picked.max_tokens);
+  const pull = async () => {
+    if (!known) return;
+    if (!form.api_key && !model) { setError("请先填写 API Key"); return; }
+    setLoading(true);
+    setError("");
+    try {
+      const result = await api.modelCatalog({ provider: form.provider as "xai" | "bailian", api_key: form.api_key || undefined, model_id: model?.id });
+      setCatalog(result);
+      setManual(false);
+    } catch (err) {
+      setManual(true);
+      setError(message(err));
+    } finally {
+      setLoading(false);
+    }
+  };
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     try {
-      const body = { ...form, base_url: form.base_url.trim().replace(/\/+$/, "") };
+      const body: ModelInput = {
+        ...form,
+        voice_model: form.voice_model || null,
+        base_url: known ? (form.provider === "xai" ? "https://api.x.ai/v1" : "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1") : form.base_url.trim().replace(/\/+$/, ""),
+      };
       if (model) {
         if (!body.api_key) delete body.api_key;
         await api.updateModel(model.id, body);
@@ -291,27 +333,88 @@ function ModelForm({ model, onClose, onSaved }: { model?: Model; onClose: () => 
           <input value={form.name} onChange={(e) => set({ name: e.target.value })} placeholder="例如：Grok" />
         </label>
         <label>
-          接口地址（Responses API Base URL）
-          <input value={form.base_url} onChange={(e) => set({ base_url: e.target.value })} placeholder="https://api.x.ai/v1" />
+          服务商
+          <select value={form.provider} onChange={(e) => { const provider = e.target.value as ProviderName; setCatalog(null); setManual(provider === "custom"); set({ provider, provider_model: "", voice_model: provider === "bailian" ? "qwen-audio-3.0-realtime-plus" : null, provider_search: false }); }}>
+            <option value="xai">xAI</option>
+            <option value="bailian">百炼</option>
+            <option value="custom">自定义</option>
+          </select>
         </label>
-        <label>
-          服务商模型名
-          <input value={form.provider_model} onChange={(e) => set({ provider_model: e.target.value })} placeholder="填写服务商模型 ID" />
-        </label>
+        {known ? <p className="muted small">{form.provider === "xai" ? "接口使用 https://api.x.ai/v1，不用填写域名。" : "接口使用 https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1，不用填写域名。"}</p> : (
+          <label>
+            接口地址（Responses API Base URL）
+            <input value={form.base_url} onChange={(e) => set({ base_url: e.target.value })} placeholder="https://example.com/v1" />
+          </label>
+        )}
         <label>
           API Key{model && "（留空则保持不变）"}
           <input type="password" value={form.api_key} onChange={(e) => set({ api_key: e.target.value })} autoComplete="off" />
         </label>
-        <div className="row">
+        {known && (
+          <button type="button" className="ghost" disabled={loading} onClick={pull}>
+            {loading ? "拉取中…" : "拉取模型"}
+          </button>
+        )}
+        <label>
+          对话模型
+          {known && !manual ? (
+            <select value={form.provider_model} disabled={!catalog} onChange={(e) => {
+              const item = chat.find((option) => option.id === e.target.value);
+              set({
+                provider_model: e.target.value,
+                ...(item?.context_window ? { context_window: item.context_window } : {}),
+                ...(item?.max_tokens ? { max_tokens: item.max_tokens } : {}),
+                name: !form.name || form.name === form.provider_model ? e.target.value : form.name,
+              });
+            }}>
+              <option value="">{catalog ? "选择模型" : "先拉取模型"}</option>
+              {chat.map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}
+            </select>
+          ) : (
+            <input value={form.provider_model} onChange={(e) => set({ provider_model: e.target.value })} placeholder={known ? "拉取失败时可手填模型 ID" : "填写服务商模型 ID"} />
+          )}
+        </label>
+        {known && (
           <label>
-            上下文长度
-            <input type="number" value={form.context_window} onChange={(e) => set({ context_window: Number(e.target.value) })} />
+            语音模型
+            <select value={form.voice_model ?? ""} onChange={(e) => set({ voice_model: e.target.value || null })}>
+              <option value="">不开通语音</option>
+              {voice.map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}
+            </select>
           </label>
-          <label>
-            单次输出上限
-            <input type="number" value={form.max_tokens} onChange={(e) => set({ max_tokens: Number(e.target.value) })} />
+        )}
+        {known && <p className="muted small">语音模型可以不选。不选则这个模型不能打电话。</p>}
+        {known && (
+          <label className="check">
+            <input type="checkbox" checked={form.provider_search} onChange={(e) => set({ provider_search: e.target.checked })} />
+            使用服务商搜索
           </label>
-        </div>
+        )}
+        {known && <p className="muted small">{form.provider === "xai" ? "打开后，任务里的联网搜索使用 xAI，检索网页和 X。" : "打开后，任务里的联网搜索使用百炼的网页检索。模型需要支持这项能力。"}</p>}
+        <label className="check"><input type="checkbox" checked={form.capabilities?.vision ?? true} onChange={e=>set({capabilities:{chat:true,voice:false,tools:true,reasoning:"unknown",...form.capabilities,vision:e.target.checked}})}/>支持图片输入</label>
+        <label className="check"><input type="checkbox" checked={form.capabilities?.tools ?? true} onChange={e=>set({capabilities:{chat:true,vision:true,voice:false,reasoning:"unknown",...form.capabilities,tools:e.target.checked}})}/>支持原生工具调用</label>
+        <label>推理模式
+          <select value={form.capabilities?.reasoning ?? "unknown"} onChange={e => set({capabilities:{chat:true,vision:true,voice:false,tools:true,...form.capabilities,reasoning:e.target.value as "none"|"configurable"|"required"|"unknown"}})}>
+            <option value="unknown">未确认，遵循服务商默认</option><option value="none">无推理模式</option><option value="configurable">可配置</option><option value="required">必须开启</option>
+          </select>
+        </label>
+        {form.capabilities?.reasoning === "configurable" && <label>聊天关闭推理的参数（JSON，按服务商文档填写）
+          <input defaultValue={JSON.stringify(form.capabilities.reasoning_off ?? {})} onBlur={e=>{try{const value=JSON.parse(e.target.value);if(value && typeof value==="object"&&!Array.isArray(value))set({capabilities:{...form.capabilities!,reasoning_off:value}});}catch{e.target.setCustomValidity("请输入 JSON 对象");}}}/>
+        </label>}
+        {locked ? (
+          <p className="muted small">上下文 {fmt(form.context_window)}，单次输出上限 {fmt(form.max_tokens)}。这两项来自所选模型。</p>
+        ) : (
+          <div className="row">
+            <label>
+              上下文长度
+              <input type="number" value={form.context_window} onChange={(e) => set({ context_window: Number(e.target.value) })} />
+            </label>
+            <label>
+              单次输出上限
+              <input type="number" value={form.max_tokens} onChange={(e) => set({ max_tokens: Number(e.target.value) })} />
+            </label>
+          </div>
+        )}
         <div className="row checks">
           <label className="check">
             <input type="checkbox" checked={form.enabled} onChange={(e) => set({ enabled: e.target.checked })} /> 启用
@@ -326,7 +429,7 @@ function ModelForm({ model, onClose, onSaved }: { model?: Model; onClose: () => 
           <button type="button" className="ghost" onClick={onClose}>
             取消
           </button>
-          <button className="primary" disabled={!form.name || !form.base_url || !form.provider_model || (!model && !form.api_key)}>
+          <button className="primary" disabled={!form.name || !form.provider_model || (!known && !form.base_url) || (!model && !form.api_key)}>
             保存
           </button>
         </footer>
@@ -339,11 +442,11 @@ function ModelsPage() {
   const load = useCallback(() => api.models(), []);
   const { data, error, reload } = useLoad<Model[]>(load);
   const [editing, setEditing] = useState<Model | "new" | null>(null);
-  const [tests, setTests] = useState<Record<string, string>>({});
+  const [tests, setTests] = useState<Record<string, {state:"pending"|"ok"|"error";text:string}>>({});
   const test = async (m: Model) => {
-    setTests((t) => ({ ...t, [m.id]: "测试中…" }));
+    setTests((t) => ({ ...t, [m.id]: {state:"pending",text:"测试中…"} }));
     const r = await api.testModel(m.id).catch((e) => ({ ok: false, error: message(e), latency_ms: 0 }));
-    setTests((t) => ({ ...t, [m.id]: r.ok ? `✓ 可用 · ${r.latency_ms} ms` : `✗ ${"error" in r ? r.error : "失败"}` }));
+    setTests((t) => ({ ...t, [m.id]: {state:r.ok?"ok":"error",text:r.ok?`可用 · ${r.latency_ms} ms` : `${"error" in r ? r.error : "失败"}`} }));
   };
   return (
     <>
@@ -363,16 +466,22 @@ function ModelsPage() {
               {!m.enabled && <span className="badge">已停用</span>}
             </div>
             <dl>
+              <dt>服务商</dt>
+              <dd>{PROVIDER_LABEL[m.provider] ?? m.provider}</dd>
               <dt>模型</dt>
               <dd>{m.provider_model}</dd>
-              <dt>接口</dt>
-              <dd className="mono">{m.base_url}</dd>
+              <dt>语音</dt>
+              <dd>{m.voice_model || "未开通"}</dd>
+              {(m.provider === "xai" || m.provider === "bailian") && <><dt>搜索</dt>
+              <dd>{m.provider_search ? "服务商" : "关闭"}</dd></>}
+              {m.provider === "custom" && <><dt>接口</dt>
+              <dd className="mono">{m.base_url}</dd></>}
               <dt>上下文</dt>
               <dd>
                 {fmt(m.context_window)} / 输出 {fmt(m.max_tokens)}
               </dd>
             </dl>
-            {tests[m.id] && <p className={tests[m.id].startsWith("✗") ? "error small" : "ok small"}>{tests[m.id]}</p>}
+            {tests[m.id] && <p className={tests[m.id].state === "error" ? "error small" : "ok small"}>{tests[m.id].text}</p>}
             <div className="actions">
               <button className="ghost" onClick={() => test(m)}>
                 测试
@@ -398,7 +507,7 @@ function DevicesPage() {
   const { data, error, reload } = useLoad<Device[]>(load);
   return (
     <>
-      <p className="muted">用户在 Mac 客户端登录即绑定设备；重新绑定会自动吊销旧设备。吊销后该 Mac 立即断开，需要重新登录。</p>
+      <p className="muted">用户在 Mac、Linux 客户端或命令行登录即可添加设备。吊销只断开所选设备，其他电脑继续工作。</p>
       {error && <p className="error">{error}</p>}
       <table>
         <thead>
@@ -416,7 +525,7 @@ function DevicesPage() {
               <td>
                 <span className="device">
                   <i className={d.online ? "dot on" : "dot"} />
-                  {d.label}
+                  {d.label} · {d.platform === 'linux' ? 'Linux' : d.platform === 'darwin' ? 'macOS' : d.platform === 'win32' ? 'Windows' : '未知平台'}
                 </span>
               </td>
               <td>{d.username}</td>
@@ -439,7 +548,7 @@ function DevicesPage() {
   );
 }
 
-const SOURCES: Record<string, string> = { mac: "Mac", cloud: "云端", memory: "记忆整理", test: "测试" };
+const SOURCES: Record<string, string> = { device: "电脑", cloud: "云端", memory: "记忆整理", test: "测试" };
 
 function SearchUsagePanel() {
   const load = useCallback(() => api.searchUsage(), []);

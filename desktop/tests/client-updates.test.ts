@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { assetURL, channel, releaseMatches, parseCandidate, manifestURL, hasActiveWork } from '../apps/desktop/src/update-policy.js';
 import { ClientUpdater, verifyPackage } from '../apps/desktop/src/client-updater.js';
-const root = 'https://github.com/TYzzt/PI-BOT/releases/download/';
+const root = 'https://github.com/lhx692135353/PI-BOT/releases/download/';
 const file = 'Pi-Bot-Windows-x64-Setup.exe';
 const release = { draft: false, prerelease: true, tag_name: 'client-test-1001', assets: [
   { name: file, size: 3, browser_download_url: `${root}client-test-1001/${file}` },

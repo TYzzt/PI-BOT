@@ -10,12 +10,13 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { createBotAgent, redactor, summarize, automationTools, type ToolActivity } from "../src/index.js";
 
 const SECRET = "proxy-token-123456";
+const picture = { name: 'pixel.png', mime_type: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC' };
 const text = (c: any): string => (Array.isArray(c) ? c.map((p) => p.text ?? "").join("") : String(c ?? ""));
 const requests: any[] = [];
 const checkpoints: any[] = [];
 let server: ReturnType<typeof createServer>, url: string, dir: string;
 
-test("readonly patrol activates its finish and checkpoint tools without skill management or execution tools", async () => {
+test("a goal review exposes its finish and checkpoint tools without skill management when read only", async () => {
   const agent = await createBotAgent({
     model: { id: "patrol", name: "巡检", baseUrl: url, modelId: "test", contextWindow: 32000, maxTokens: 1000 },
     apiKey: SECRET, cwd: dir, agentDir: join(dir, "patrol"), systemPrompt: "只读巡检", history: [], readonly: true,
@@ -24,7 +25,7 @@ test("readonly patrol activates its finish and checkpoint tools without skill ma
     memory: { baseUrl: url, token: () => SECRET, runId: "patrol", lane: "task", context: "", readonly: true },
   });
   try {
-    assert.ok(agent.tools.includes("automation_finish"));
+    assert.ok(agent.tools.includes("goal_finish"));
     assert.ok(agent.tools.includes("task_checkpoint"));
     assert.ok(agent.tools.includes("skill_load"));
     for (const name of ["skill_manage", "resume_task", "run_command", "write_file", "edit_file", "ask_agent"])
@@ -38,6 +39,10 @@ before(async () => {
     let raw = "";
     for await (const chunk of req) raw += chunk;
     const json = JSON.parse(raw);
+    if (req.url === "/agent/automations") {
+      res.writeHead(200, { "content-type": "application/json" });
+      return void res.end(JSON.stringify({ goals: [] }));
+    }
     if (req.url === "/agent/checkpoint") {
       checkpoints.push(json);
       res.writeHead(200, { "content-type": "application/json" });
@@ -61,6 +66,11 @@ before(async () => {
       stream.text("已按补充改为蓝色。");
     } else if (user === "直接回答") {
       stream.text("你好，我在。");
+    } else if (user === "查询目标") {
+      if (!rounds) {
+        stream.text("我先核对当前目标记录，再说明检查的触发方式。");
+        stream.tool("goal_manage", { action: "list" }, "goal_list");
+      } else stream.text("已核对目标记录，当前没有进行中的目标。");
     } else if (user === "挂起") {
       res.flushHeaders();
       return;
@@ -77,6 +87,21 @@ before(async () => {
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   url = `http://127.0.0.1:${(server.address() as any).port}/v1`;
+});
+
+test('current and historical images reach the Responses provider as image inputs', async () => {
+  const agent = await createBotAgent({
+    model: { id: 'vision', name: '测试', baseUrl: url, modelId: 'test', contextWindow: 32000, maxTokens: 1000 },
+    apiKey: SECRET, cwd: dir, agentDir: join(dir, 'vision'), systemPrompt: '测试',
+    history: [{ role: 'user', content: '上次的图片', images: [picture] }, { role: 'assistant', content: '已看到' }], tools: [],
+  });
+  try {
+    await agent.prompt('直接回答', () => {}, [picture]);
+    const turns = requests.at(-1).body.input.filter((m: any) => m.role === 'user');
+    assert.equal(turns.length, 2);
+    // Pi may normalize/re-encode the current image before sending it.
+    for (const turn of turns) assert.ok(turn.content.some((part: any) => part.type === 'input_image' && /^data:image\/(png|jpeg|webp);base64,\S+$/.test(part.image_url)), JSON.stringify(turn));
+  } finally { agent.dispose(); }
 });
 
 test("tool-round remarks are kept in full and do not pollute final streaming", async () => {
@@ -162,6 +187,28 @@ test("direct answers do not create progress remarks", async () => {
   try {
     assert.equal(await agent.prompt("直接回答", () => {}), "你好，我在。");
     assert.deepEqual(progress, []);
+  } finally { agent.dispose(); }
+});
+
+test("a goal query keeps its opening reply before the tool and its verified answer afterwards", async () => {
+  const progress: string[][] = [];
+  let progressAtToolStart: string[][] | undefined;
+  const agent = await createBotAgent({
+    model: { id: "goal-reply", name: "测试", baseUrl: url, modelId: "test", contextWindow: 32000, maxTokens: 1000 },
+    apiKey: SECRET, cwd: dir, agentDir: join(dir, "goal-reply"), systemPrompt: "测试", history: [],
+    tools: automationTools(url.replace(/\/v1$/, ""), () => SECRET, "00000000-0000-4000-8000-000000000001"),
+    skills: { baseUrl: url, token: () => SECRET, runId: "goal-reply", catalog: [] },
+    onProgress: lines => progress.push(lines),
+    onObservation: event => {
+      if (event.name === "goal_manage" && event.phase === "start")
+        progressAtToolStart = progress.slice();
+    },
+    runId: "goal-reply",
+  });
+  try {
+    assert.equal(await agent.prompt("查询目标", () => {}), "已核对目标记录，当前没有进行中的目标。");
+    assert.deepEqual(progressAtToolStart, [["我先核对当前目标记录，再说明检查的触发方式。"]]);
+    assert.deepEqual(progress, [["我先核对当前目标记录，再说明检查的触发方式。"]]);
   } finally { agent.dispose(); }
 });
 

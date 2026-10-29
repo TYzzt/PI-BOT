@@ -3,7 +3,7 @@ package dev.pibot.android.update
 import kotlinx.serialization.json.*
 
 internal val updateJson = Json { ignoreUnknownKeys = true }
-internal const val RELEASE_ROOT = "https://github.com/TYzzt/PI-BOT/releases/download/"
+internal const val RELEASE_ROOT = "https://github.com/lhx692135353/PI-BOT/releases/download/"
 
 data class UpdateCandidate(val version: String, val buildNumber: Int, val commit: String, val tag: String, val url: String, val sha256: String, val size: Long)
 

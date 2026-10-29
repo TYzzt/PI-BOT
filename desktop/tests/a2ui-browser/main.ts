@@ -62,7 +62,7 @@ const messages: Message[] = [
     content:
       "调整下面的滑块，计算结果会同步更新。也可以提交当前数值，让我继续处理。",
     status: "completed",
-    executor: "mac",
+    executor: "device",
     tools: [],
     ui: doc,
     created_at: now(),
@@ -126,7 +126,7 @@ window.agent = {
             role: "assistant",
             content: `收到当前数值：${Number(action.context.amount)}。这是本地验证回复；正式运行时由 Bot 处理。`,
             status: "completed",
-            executor: "mac",
+            executor: "device",
             tools: [],
             created_at: now(),
             updated_at: now(),

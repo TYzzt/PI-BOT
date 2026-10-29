@@ -1,6 +1,6 @@
 import type { UpdateChannel } from '../../../packages/protocol/src/index.js';
 
-export const RELEASE_ROOT = 'https://github.com/TYzzt/PI-BOT/releases/download/';
+export const RELEASE_ROOT = 'https://github.com/lhx692135353/PI-BOT/releases/download/';
 export interface Candidate { version: string; buildNumber: number; commit: string; tag: string; url: string; sha256: string; size: number }
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('更新元数据格式无效');

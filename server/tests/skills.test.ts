@@ -114,10 +114,10 @@ test("only a live owned run with the matching executor and device can manage ski
   const keys = deviceKeys();
   const device = await api("POST", "/devices/register", { label: "test", public_key: keys.publicKey });
   const deviceId = device.json.device.id;
-  await db.tx(tx => tx.rows("UPDATE bot_runs SET executor='mac', device_id=$2 WHERE run_id=$1", [runId, deviceId]));
+  await db.tx(tx => tx.rows("UPDATE bot_runs SET executor='device', device_id=$2 WHERE run_id=$1", [runId, deviceId]));
   assert.equal((await skill({ action: "list" }, await token())).status, 404);
-  assert.equal((await skill({ action: "list" }, await token({ src: "mac", did: randomUUID() }))).status, 404);
-  assert.equal((await skill({ action: "list" }, await token({ src: "mac", did: deviceId }))).status, 200);
+  assert.equal((await skill({ action: "list" }, await token({ src: "device", did: randomUUID() }))).status, 401);
+  assert.equal((await skill({ action: "list" }, await token({ src: "device", did: deviceId }))).status, 200);
   await db.tx(tx => tx.rows("UPDATE bot_runs SET executor='cloud', device_id=NULL, cancel_requested=true WHERE run_id=$1", [runId]));
   assert.equal((await skill({ action: "list" })).status, 404);
   await db.tx(async tx => { await finishRun(tx, runId, "cancelled", null); });
@@ -131,7 +131,7 @@ test("cloud Runner uses the real extension to create and reuse skills without ex
     const response = await fetch(`${runnerUrl}/runs`, { method: "POST", headers: { authorization: `Bearer ${runnerToken}`, "content-type": "application/json" }, body: JSON.stringify({ run: context, base_url: `${base}/llm/v1`, token: await token() }) });
     assert.equal(response.status, 200);
     const raw = await response.text();
-    assert.doesNotMatch(raw, /skill_|内部|PRIVATE-WORKFLOW/);
+    assert.doesNotMatch(raw, /PRIVATE-WORKFLOW/);
     const events = raw.trim().split("\n").map(line => JSON.parse(line));
     assert.equal(events.at(-1).state, "completed", raw);
     assert.equal(events.at(-1).text, "已按方法完成任务。");

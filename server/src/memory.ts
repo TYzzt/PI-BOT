@@ -95,7 +95,7 @@ export async function manageMemory(
   body: z.infer<typeof memoryRequest>,
 ) {
   const run = await callerRun(tx, userId, claims, body.run_id);
-  if (run.automation_readonly && !["list", "search"].includes(body.action)) fail(403, "自主巡检只能读取记忆");
+  if (run.automation_readonly && !["list", "search"].includes(body.action)) fail(403, "当前轮次只能读取记忆");
   await tx.one("SELECT bot_id FROM bots WHERE bot_id=$1 FOR NO KEY UPDATE", [
     run.bot_id,
   ]);
@@ -285,6 +285,7 @@ export async function resumeTask(
   userId: string,
   claims: LlmClaims,
   body: { run_id: string; task_id: string; request_id: string; text?: string },
+  settings?:import("./config.js").Settings,
 ) {
   const parent = await callerRun(tx, userId, claims, body.run_id);
   if (parent.lane !== "conversation") fail(422, "请由对话通道续接任务");
@@ -300,7 +301,7 @@ export async function resumeTask(
     [old!.task_id],
   );
   const task = `继续原任务，先核实已完成操作和当前执行环境；未确认的外部操作状态未知，不得直接重复提交，旧审批不继承。\n原目标：${old!.task}\n最近检查点：${JSON.stringify(old!.checkpoint)}\n已有结果：${String(old!.result ?? "").slice(0, 12000)}\n补充要求：${instructions.map((x) => x.text).join("\n")}\n本次要求：${body.text ?? "继续完成"}`;
-  return createTask(tx, hub, userId, claims, {
+  const resumed = await createTask(tx, hub, userId, claims, {
     run_id: parent.run_id,
     agent: old!.target_bot_id,
     kind: old!.kind,
@@ -309,5 +310,10 @@ export async function resumeTask(
     title: `续接：${old!.title}`.slice(0, 80),
     request_id: body.request_id,
     resumed_from: old!.task_id,
-  });
+    execution: old!.execution,
+    device_id:old!.device_id,
+    operation_target:old!.operation_target,
+  },settings);
+  if(resumed.run && old!.child_run_id)await tx.rows(`INSERT INTO message_artifacts(message_id,artifact_id) SELECT $1,artifact_id FROM report_artifacts WHERE run_id=$2 ON CONFLICT DO NOTHING`,[resumed.run.assistant_message_id,old!.child_run_id]);
+  return resumed;
 }
