@@ -9,7 +9,7 @@ export const DOCUMENT_MIMES = {
 export function documentFormat(name: string): keyof typeof DOCUMENT_MIMES {
   const format = name.split(".").at(-1)?.toLowerCase();
   if (!format || !Object.hasOwn(DOCUMENT_MIMES, format))
-    throw new Error("仅支持 PDF、DOCX、XLSX；旧式、宏和加密文档不支持");
+    throw new Error("此内置处理器仅支持 PDF、DOCX、XLSX；其他格式请使用 file_bytes、file_fetch 和执行环境工具");
   return format as keyof typeof DOCUMENT_MIMES;
 }
 const cell = z.union([
@@ -59,6 +59,7 @@ export const documentContent = z
 export const documentJob = z
   .object({
     action: z.enum(["inspect", "read", "write", "edit"]),
+    reader: z.enum(["auto", "text", "pdf", "docx", "xlsx"]).default("auto"),
     name: z.string().min(1).max(255),
     offset: z.number().int().nonnegative().default(0),
     limit: z.number().int().min(1).max(100).default(20),

@@ -1,4 +1,5 @@
-import {uploadDocument,DOCUMENT_ACCEPT} from './documents.js';
+import {uploadDocument} from './documents.js';
+import { AttachmentMenu } from './attachment-menu.js';
 import type {ArtifactRef} from '../../../packages/protocol/src/index.js';
 import { confirmAction, showNotice } from './dialogs.js';
 import { memo, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
@@ -11,7 +12,7 @@ import { uniqueById } from './unique.js';
 import { UiView } from '@pi-bot/a2ui/react';
 import '@pi-bot/a2ui/styles';
 import { bridge, call, errorText } from './bridge.js';
-import { IMAGE_LIMIT_HINT, IMAGE_TYPES, imageSource, type ChatImage } from '@pi-bot/agent/images';
+import { imageSource, type ChatImage } from '@pi-bot/agent/images';
 import { MessagePicture, readImages } from './images.js';
 import { readDrafts, stageDrafts, flushDrafts } from './drafts.js';
 import { Icon } from './icons.js';
@@ -191,13 +192,12 @@ export function Timeline({ bot, messages, hasMore, mood, online, onLoadMore, onS
     }catch(e){if(!item.controller.signal.aborted)setUploads(current=>current.map(x=>x.id===item.id?{...x,error:errorText(e)}:x));}
   };
   const addDocuments=(files:File[])=>{
-    if(!files.length)return;
-    if(!documentReady){setError('服务器尚不支持文档上传，请升级服务器');return;}
-    if(documents.length+uploads.filter(x=>x.botId===bot.id).length+files.length>4){setError('每条消息最多 4 份文档');return;}
+    if(!files.length || !online || submitting.current)return;
+    if(!documentReady){setError('服务器尚不支持文件上传，请升级服务器');return;}
+    if(documents.length+uploads.filter(x=>x.botId===bot.id).length+files.length>4){setError('每条消息最多 4 个文件');return;}
     for(const file of files)void upload({botId:bot.id,file,id:crypto.randomUUID(),sent:0,controller:new AbortController()});
   };
   const documentBusy=uploads.some(x=>x.botId===bot.id);
-  const picker = useRef<HTMLInputElement>(null);
   const [reading, setReading] = useState(false);
   const readingRef = useRef(false);
   const [error, setError] = useState('');
@@ -268,15 +268,25 @@ export function Timeline({ bot, messages, hasMore, mood, online, onLoadMore, onS
     if (hasMore && el.scrollTop < LOAD_AHEAD && !loadingOlderRef.current && !olderError) loadOlder();
   }, [messages, bot.id, bot.pending_approvals.length, loadingOlder, olderError]);
   useEffect(() => { setError(''); setOlderError(''); setConversationTask(null); }, [bot.id]);
-  const addImages = async (files: File[]) => {
+  const addFiles = async (files: File[]) => {
     if (!files.length || readingRef.current || submitting.current || !online) return;
     const botId = bot.id;
-    readingRef.current = true;
-    setReading(true);
-    setError('');
-    try { const next = await readImages(files, images); if (activeBot.current === botId) setImages(next); }
-    catch (e) { if (activeBot.current === botId) setError(errorText(e)); }
-    finally { readingRef.current = false; setReading(false); }
+    readingRef.current = true; setReading(true); setError('');
+    let next = images;
+    const generic: File[] = [];
+    try {
+      for (const file of files) {
+        if (file.type.startsWith('image/')) {
+          try { next = await readImages([file], next); continue; }
+          catch { /* Unsupported images and images beyond the visual quota remain ordinary files. */ }
+        }
+        generic.push(file);
+      }
+      if (activeBot.current === botId) {
+        setImages(next);
+        addDocuments(generic);
+      }
+    } finally { readingRef.current = false; setReading(false); }
   };
   const send = async () => {
     const value = text.trim();
@@ -359,7 +369,7 @@ export function Timeline({ bot, messages, hasMore, mood, online, onLoadMore, onS
       </div>
       {farFromBottom && <button type="button" className="jump-bottom" onClick={toBottom} title="回到最新消息" aria-label="回到最新消息"><Icon name="arrow" size={18} style={{ transform: 'rotate(180deg)' }} /></button>}
       </div>
-      <div className="composer" onDragOver={e => { if (e.dataTransfer.types.includes('Files')) e.preventDefault(); }} onDrop={e => { e.preventDefault(); const files=Array.from(e.dataTransfer.files);void addImages(files.filter(f=>f.type.startsWith('image/')));addDocuments(files.filter(f=>!f.type.startsWith('image/'))); }}>
+      <div className="composer" onDragOver={e => { if (e.dataTransfer.types.includes('Files')) e.preventDefault(); }} onDrop={e => { e.preventDefault(); const files=Array.from(e.dataTransfer.files);void addFiles(files); }}>
         {error && <p className="error small">{error}</p>}
         {!online && <p className="muted small">电脑未连接服务器，暂时无法发送。</p>}
         {!!images.length && <div className="image-drafts">{images.map((image, i) => <div key={i}><img src={imageSource(image)} alt={image.name} /><button disabled={sending || reading} aria-label={`移除 ${image.name}`} onClick={() => setImages(current => current.filter((_, index) => index !== i))}>×</button></div>)}</div>}
@@ -368,11 +378,9 @@ export function Timeline({ bot, messages, hasMore, mood, online, onLoadMore, onS
           {uploads.filter(x=>x.botId===bot.id).map(item=><div key={item.id}><span>{item.file.name} · {Math.round(item.sent/item.file.size*100)}% {item.error}</span>{item.error&&<button type="button" onClick={()=>void upload({...item,controller:new AbortController()})}>重试</button>}<button type="button" onClick={()=>{item.controller.abort();setUploads(current=>current.filter(x=>x.id!==item.id));void call('documentUploadCancel',{id:item.id}).catch(()=>{});}}>取消上传</button></div>)}
         </div>
         <div className="input">
-          <input ref={picker} type="file" accept={IMAGE_TYPES.join(',')} multiple hidden onChange={e => { void addImages(Array.from(e.target.files ?? [])); e.target.value = ''; }} />
-          <button className="attach ghost" disabled={!online || sending || reading || images.length >= 4} onClick={() => picker.current?.click()} title={IMAGE_LIMIT_HINT} aria-label="上传图片"><Icon name="plus" /></button>
-          <input ref={documentPicker} type="file" accept={DOCUMENT_ACCEPT} multiple hidden onChange={e=>{addDocuments(Array.from(e.target.files??[]));e.target.value='';}} />
-          <button type="button" className="attach ghost" disabled={!online||!documentReady||sending||documents.length+uploads.filter(x=>x.botId===bot.id).length>=4} onClick={()=>documentPicker.current?.click()} aria-label="上传文档" title="PDF、Word、Excel，每份最多 10 MiB">▤</button>
-          <textarea value={text} onChange={e => setText(e.target.value)} onKeyDown={key} onPaste={e => { const files = Array.from(e.clipboardData.files).filter(file => file.type.startsWith('image/')); if (files.length) { e.preventDefault(); void addImages(files); } }} rows={Math.min(8, Math.max(1, text.split('\n').length))} placeholder={`给 ${bot.name} 发消息`} aria-label="消息输入" />
+          <input ref={documentPicker} type="file" multiple hidden onChange={e=>{const files=Array.from(e.target.files??[]);void addFiles(files);e.target.value='';}} />
+          <AttachmentMenu key={bot.id} disabled={!online || sending || reading || ((!documentReady || documents.length+uploads.filter(x=>x.botId===bot.id).length>=4) && images.length>=4)} onFiles={() => documentPicker.current?.click()} />
+          <textarea value={text} onChange={e => setText(e.target.value)} onKeyDown={key} onPaste={e => { const files = Array.from(e.clipboardData.files); if (files.length) { e.preventDefault(); void addFiles(files); } }} rows={Math.min(8, Math.max(1, text.split('\n').length))} placeholder={`给 ${bot.name} 发消息`} aria-label="消息输入" />
           <button className="send" disabled={(!text.trim() && !images.length && !documents.length) || !online || sending || reading || documentBusy} onClick={send} title="发送（Enter）" aria-label="发送消息"><Icon name="arrow" size={19} /></button>
         </div>
       </div>

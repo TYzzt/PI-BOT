@@ -1,5 +1,7 @@
 import SwiftUI
 import PhotosUI
+import UniformTypeIdentifiers
+import AVFoundation
 import PiBotKit
 
 struct Composer: View {
@@ -8,7 +10,15 @@ struct Composer: View {
     @Binding var text: String
     let callEnabled: Bool
     let onCall: () -> Void
-    let onSend: (String, String, [ChatImage]) async -> Bool
+    @Environment(AppStore.self) private var store
+    let onSend: (String, String, [ChatImage], [String]) async -> Bool
+    @State private var files: [FileDraft] = []
+    @State private var uploads: [String: Task<Void, Never>] = [:]
+    @State private var importTask: Task<Void, Never>?
+    @State private var importing = false
+    @State private var showingPhotos = false
+    @State private var showingCamera = false
+    @State private var retryFiles: [String] = []
     @State private var sending = false
     @State private var reading = false
     @State private var images: [ChatImage] = []
@@ -20,7 +30,7 @@ struct Composer: View {
     @FocusState private var focused: Bool
 
     private var canSend: Bool {
-        (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty) && !sending && !reading
+        (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty || !files.isEmpty) && !sending && !reading && files.allSatisfy { $0.artifact != nil }
     }
 
     var body: some View {
@@ -48,15 +58,35 @@ struct Composer: View {
                     .padding(.horizontal, 16)
                 }
             }
+            ForEach(files) { file in
+                HStack {
+                    Text("\(file.name) · \(file.artifact == nil ? "\(file.progress)%" : "已上传")").lineLimit(1)
+                    if let error = file.error {
+                        Text(error).font(.footnote).foregroundStyle(Palette.danger)
+                        Button("重试") { upload(file) }
+                    }
+                    Button(file.artifact == nil ? "取消上传" : "移除") { removeFile(file.id) }.disabled(sending)
+                }.font(.footnote).padding(.horizontal, 16)
+            }
             HStack(alignment: .bottom, spacing: 2) {
                 Button(action: onCall) { Image(systemName: "phone.fill").frame(width: 40, height: 40) }
                     .disabled(!callEnabled || sending)
                     .accessibilityLabel("语音通话")
-                PhotosPicker(selection: $picked, maxSelectionCount: max(1, 4 - images.count), matching: .images) {
+                Menu {
+                    Button("拍照", systemImage: "camera") {
+                        Task {
+                            guard UIImagePickerController.isSourceTypeAvailable(.camera) else { imageError = "此设备没有可用相机"; return }
+                            let allowed = await AVCaptureDevice.requestAccess(for: .video)
+                            if allowed { showingCamera = true } else { imageError = "请在系统设置中允许相机访问" }
+                        }
+                    }.disabled(images.count >= 4)
+                    Button("照片", systemImage: "photo") { showingPhotos = true }.disabled(images.count >= 4)
+                    Button("文件", systemImage: "doc") { importing = true }.disabled(files.count >= 4)
+                } label: {
                     Image(systemName: "plus").font(.system(size: 18, weight: .semibold)).frame(width: 40, height: 40)
                 }
-                .disabled(sending || reading || images.count >= 4)
-                .accessibilityLabel("上传图片")
+                .disabled(sending || reading)
+                .accessibilityLabel("添加附件")
                 TextField("向 \(botName) 提问", text: $text, axis: .vertical)
                     .lineLimit(1...5)
                     .focused($focused)
@@ -80,6 +110,42 @@ struct Composer: View {
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 16).padding(.top, 6).padding(.bottom, 10)
         }
+        .photosPicker(isPresented: $showingPhotos, selection: $picked, maxSelectionCount: max(1, 4 - images.count), matching: .images)
+        .sheet(isPresented: $showingCamera) {
+            CameraCapture { image in
+                showingCamera = false
+                guard let image else { return }
+                do { images = try appendCameraImage(image, existing: images) }
+                catch { imageError = errorText(error) }
+            }.ignoresSafeArea()
+        }
+        .fileImporter(isPresented: $importing, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+            switch result {
+            case .success(let urls):
+                guard files.count + urls.count <= 4 else { imageError = "每条消息最多 4 个文件"; return }
+                reading = true
+                importTask = Task {
+                    defer { reading = false; importTask = nil }
+                    for url in urls {
+                        do {
+                            let file = try await readFileDraft(url)
+                            try Task.checkCancellation()
+                            files.append(file); upload(file)
+                        } catch is CancellationError { break }
+                        catch { imageError = errorText(error) }
+                    }
+                }
+            case .failure(let error):
+                if (error as NSError).code != NSUserCancelledError { imageError = errorText(error) }
+            }
+        }
+        .onDisappear {
+            importTask?.cancel()
+            for i in files.indices where files[i].artifact == nil { files[i].error = "上传已暂停，请重试" }
+            uploads.values.forEach { $0.cancel() }; uploads = [:]
+            let pending = files.filter { $0.artifact == nil }.map(\.id)
+            Task { for id in pending { try? await store.cancelDocumentUpload(id) } }
+        }
         .onChange(of: picked) {
             let items = picked
             guard !items.isEmpty else { return }
@@ -100,13 +166,39 @@ struct Composer: View {
         }
     }
 
+    private func removeFile(_ id: String) {
+        uploads.removeValue(forKey: id)?.cancel()
+        files.removeAll { $0.id == id }
+        Task { try? await store.cancelDocumentUpload(id) }
+    }
+
+    private func upload(_ file: FileDraft) {
+        guard let index = files.firstIndex(where: { $0.id == file.id }) else { return }
+        files[index].error = nil
+        uploads[file.id] = Task { @MainActor in
+            defer { uploads[file.id] = nil }
+            do {
+                let artifact = try await store.uploadDocument(botId: botId, id: file.id, name: file.name, data: file.data) { progress in
+                    if let i = files.firstIndex(where: { $0.id == file.id }) { files[i].progress = progress }
+                }
+                try Task.checkCancellation()
+                if let i = files.firstIndex(where: { $0.id == file.id }) { files[i].artifact = artifact }
+            } catch is CancellationError {
+            } catch {
+                if let i = files.firstIndex(where: { $0.id == file.id }) { files[i].error = errorText(error) }
+            }
+        }
+    }
+
     private func send() {
         let draft = text
         let value = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = images
         guard canSend else { return }
         // Retrying the same content reuses the request id so the server can deduplicate it.
-        if retryText != value || retryImages != attachments {
+        let documentIds = files.compactMap { $0.artifact?.id }
+        if retryText != value || retryImages != attachments || retryFiles != documentIds {
+            retryFiles = documentIds
             retryText = value
             retryImages = attachments
             requestId = UUID().uuidString.lowercased()
@@ -114,8 +206,9 @@ struct Composer: View {
         sending = true
         Task {
             defer { sending = false }
-            if await onSend(value, requestId, attachments) {
+            if await onSend(value, requestId, attachments, documentIds) {
                 if text == draft { text = "" }
+                files = []; retryFiles = []
                 images = []
                 retryImages = []
                 retryText = ""

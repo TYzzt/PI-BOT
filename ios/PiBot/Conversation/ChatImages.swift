@@ -31,6 +31,14 @@ func readChatImages(_ items: [PhotosPickerItem], existing: [ChatImage]) async th
     return all
 }
 
+func appendCameraImage(_ image: UIImage, existing: [ChatImage]) throws -> [ChatImage] {
+    guard existing.count < 4, let raw = image.jpegData(compressionQuality: 0.9) else { throw ImageLimitError() }
+    let data = raw.count <= maxImageBytes ? raw : try reencode(raw)
+    let result = existing + [ChatImage(name: "拍照.jpg", mimeType: "image/jpeg", data: data.base64EncodedString())]
+    guard result.reduce(0, { $0 + decodedSize($1.data) }) <= maxTotalBytes else { throw ImageLimitError() }
+    return result
+}
+
 private func decodedSize(_ base64: String) -> Int {
     base64.count * 3 / 4 - (base64.hasSuffix("==") ? 2 : base64.hasSuffix("=") ? 1 : 0)
 }

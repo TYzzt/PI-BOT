@@ -82,8 +82,31 @@ async function validate(name: string, bytes: Buffer) {
   return format;
 }
 async function execute(raw: unknown, bytes?: Buffer) {
-  const job = documentJob.parse(raw),
-    format = documentFormat(job.name);
+  const job = documentJob.parse(raw);
+  if (job.action === "read") {
+    if (!bytes?.length || bytes.length > DOCUMENT_LIMIT) throw new Error("文件为空或超过 10 MiB");
+    const isPdf = bytes.subarray(0, 1024).includes(Buffer.from("%PDF-"));
+    const isZip = bytes.subarray(0, 2).toString() === "PK";
+    let text: string | undefined;
+    if (job.reader === "text" || (job.reader === "auto" && !isPdf && !isZip)) {
+      try {
+        const value = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+        if (!/[\x00-\x08\x0b\x0e-\x1f]/.test(value)) text = value;
+      } catch { /* Preserve binary bytes for an appropriate parser. */ }
+    }
+    if (text !== undefined) {
+      const lines = text.split("\n"), window = readWindow(job.offset, job.fragment, lines.length);
+      for (const line of lines.slice(job.offset, job.offset + job.limit)) if (!window.take(line)) break;
+      return { format: "text", encoding: "utf-8", ...window.result("lines") };
+    }
+    if (job.reader === "text") throw new Error("不是有效的 UTF-8 文本，请选择编码或二进制解析工具");
+    if (job.reader !== "auto") job.name = "file." + job.reader;
+    else if (isPdf) job.name = "file.pdf";
+    if (!/\.(pdf|docx|xlsx)$/i.test(job.name))
+      return { format: "binary", size: bytes.length, name: job.name,
+        hint: "使用 file_bytes 获取原始字节，或 file_fetch 保存到当前执行环境后选择可用解析器；LLM 不能直接解码任意二进制。" };
+  }
+  const format = documentFormat(job.name);
   if (job.action === "inspect") {
     await validate(job.name, bytes!);
     return { format };

@@ -84,18 +84,18 @@ struct ConversationView: View {
                     text: Binding(get: { store.drafts[botId] ?? "" }, set: { store.drafts[botId] = $0.isEmpty ? nil : $0 }),
                     callEnabled: !(call?.local == true || call?.botId == botId),
                     onCall: startCall,
-                    onSend: { text, requestId, images in
+                    onSend: { text, requestId, images, documents in
                         error = nil
                         followTail = true
                         do {
-                            try await store.send(botId: botId, text: text, requestId: requestId, images: images)
+                            try await store.send(botId: botId, text: text, requestId: requestId, images: images, documentIds: documents)
                             return true
                         } catch {
                             self.error = errorText(error)
                             return false
                         }
                     }
-                )
+                ).id(botId)
             }
         }
         .toolbar {

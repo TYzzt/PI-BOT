@@ -191,7 +191,7 @@ export const reportRoutes: Route[] = [
         [params.id, user.user_id, run.bot_id],
       );
       if (!r) return fail(404, "报告不存在或未共享给本智能体");
-      if(r.mime && r.mime !== "text/markdown") fail(422,"请使用 document_read 读取 PDF、DOCX、XLSX 文档");
+      if(r.mime && r.mime !== "text/markdown") fail(422,"请使用 document_read 或 file_bytes 读取此附件");
       const content = Buffer.from(r.body).toString("utf8");
       return {
         id: params.id,

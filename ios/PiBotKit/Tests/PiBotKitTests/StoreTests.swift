@@ -1,4 +1,5 @@
 import XCTest
+import CryptoKit
 @testable import PiBotKit
 
 /// Serves queued responses and records requests, like OkHttp's MockWebServer in the Android tests.
@@ -159,6 +160,32 @@ final class StoreTests: XCTestCase {
         }
         _ = StubProtocol.take()
         XCTAssertTrue(StubProtocol.requests.isEmpty)
+    }
+
+    func testGenericFileUploadChunksAndSendsReferences() async throws {
+        try await login()
+        let data = Data(repeating: 42, count: 300_000)
+        let artifact = #"{"id":"f1","title":"opaque","name":"opaque","mime":"application/octet-stream","size":300000,"created_at":"2026-11-17T00:00:00Z"}"#
+        StubProtocol.respond(200, "{}")
+        StubProtocol.respond(200, "{}")
+        StubProtocol.respond(200, "{}")
+        StubProtocol.respond(200, "{\"artifact\":\(artifact)}")
+        let file = try await store.uploadDocument(botId: "b1", id: "upload-id", name: "opaque", data: data) { _ in }
+        XCTAssertEqual(file.id, "f1")
+        let begin = StubProtocol.take()
+        XCTAssertEqual(json(begin.body)["name"]?.stringValue, "opaque")
+        let first = json(StubProtocol.take().body)["data"]!.stringValue!
+        let second = json(StubProtocol.take().body)["data"]!.stringValue!
+        XCTAssertEqual(Data(base64Encoded: first)!.count, 256 * 1024)
+        XCTAssertEqual(Data(base64Encoded: first)! + Data(base64Encoded: second)!, data)
+        let complete = json(StubProtocol.take().body)
+        XCTAssertEqual(complete["sha256"]?.stringValue, SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined())
+        StubProtocol.respond(200, #"{"run":\#(runJSON),"messages":[]}"#)
+        try await store.send(botId: "b1", text: "", documentIds: [file.id])
+        XCTAssertEqual(json(StubProtocol.take().body)["document_ids"], .array([.string("f1")]))
+        StubProtocol.respond(200, "{}")
+        try await store.cancelDocumentUpload("upload-id")
+        XCTAssertEqual(StubProtocol.take().request.httpMethod, "DELETE")
     }
 
     func testBotEditsAlwaysSendTheModelSoItCanBeCleared() async throws {
