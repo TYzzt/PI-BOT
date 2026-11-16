@@ -1,8 +1,9 @@
+import {documentRoutes,readableDocument} from './documents.js';
 import { isCliRuntime } from "./cli.js";
 import { saveCliSession } from "./cli-sessions.js";
 import { routingFields } from "./targets.js";
 import { authorizationRoutes } from './authorizations.js';
-import { reportRoutes } from "./reports.js";
+import { reportRoutes, messageAttachments } from "./reports.js";
 import { conversation } from "./task-conversation.js";
 import { remoteRoutes } from './remote/routes.js';
 import type {RemoteService} from './remote/service.js';
@@ -219,6 +220,7 @@ export const routes: Route[] = [
   ...authorizationRoutes,
   ...pushRoutes,
   ...reportRoutes,
+  ...documentRoutes,
   {method:"GET",path:"/bots/:id/files/sources",auth:"actor",tag:"files",summary:"资料库的可选文件来源",tx:false,handler:fileSources},
   ...phoneRoutes,
   ...remoteRoutes,
@@ -532,13 +534,15 @@ export const routes: Route[] = [
   },
   {
     method: "POST", path: "/bots/:id/messages", auth: "actor", tag: "bots", summary: "给 Bot 发消息；由云端统一处理对话与任务调度",
-    body: z.object({ text: z.string().trim().max(100000).default(''), images: imagesSchema.default([]), request_id: z.string().min(8).max(80), client:z.enum(['android','ios','desktop']).optional() }).refine(body => body.text.length > 0 || body.images.length > 0, '请填写消息或选择图片'),
+    body: z.object({ text: z.string().trim().max(100000).default(''), images: imagesSchema.default([]), request_id: z.string().min(8).max(80), client:z.enum(['android','ios','desktop']).optional(), document_ids:z.array(uuid).max(4).default([]) }).refine(body => body.text.length > 0 || body.images.length > 0 || body.document_ids.length > 0, '请填写消息或选择图片、文档'),
     handler: async ({ db, tx, s, hub, user, device, params, body, after }) => {
       await ownBot(tx,user.user_id,params.id,true);
       const { run, created } = await postMessage(tx, user.user_id, params.id, body.text, body.request_id, null, body.images, {client:device?"desktop":body.client??"legacy",deviceId:device?.device_id});
+      if(created)for(const id of body.document_ids){const file=await readableDocument(tx,user.user_id,params.id,id);await tx.rows('INSERT INTO message_artifacts(message_id,artifact_id) VALUES($1,$2) ON CONFLICT DO NOTHING',[run.user_message_id,file.artifact_id]);}
       if (created && run.executor === "device") after(() => dispatchDevice(db, s, hub, run.run_id));
       const messages = await tx.rows("SELECT * FROM bot_messages WHERE message_id = ANY($1) ORDER BY seq", [[run.user_message_id, run.assistant_message_id]]);
-      return { run: runOut(run), messages: messages.map((m) => messageOut(m)) };
+        const attachments = await messageAttachments(tx, messages.map(m=>m.message_id));
+        return { run: runOut(run), messages: messages.map((m) => messageOut({...m,attachments:attachments.get(m.message_id)??[]})) };
     },
   },
   {

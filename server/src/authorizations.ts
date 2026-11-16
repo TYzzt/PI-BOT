@@ -32,31 +32,31 @@ export async function approvalScope(tx: Tx, run: Row, resource: string, operatio
     operation, resource, resource_type: resourceType };
 }
 export function canRemember(scope: AuthorizationScope | undefined): boolean {
-  return !!scope && scope.operation === 'read' && ['file','directory'].includes(scope.resource_type) &&
+  return !!scope && ['read','write','execute'].includes(scope.operation) && ['file','directory'].includes(scope.resource_type) &&
     /^(device|remote):[0-9a-f-]{36}$/.test(scope.target) && !!normalizedResource(scope.resource, scope.platform);
 }
 export function scopeText(scope: AuthorizationScope | undefined): string {
   if (!scope) return '仅本次任务访问此路径；旧版执行端未提供可保存的权限范围。';
   const operation = { read: '读取', write: '写入或修改', execute: '执行命令', legacy: '读写及命令工作目录访问（旧版）' }[scope.operation];
-  return `当前账号 · ${scope.target_label} · ${operation} · ${scope.resource}${scope.resource_type === 'directory' ? ' 及其子路径' : ''}。${scope.operation === 'read' ? '不包含写入、删除或执行命令。' : '此操作仅允许本次任务，不能保存为持久授权。'}`;
+  return `当前账号 · ${scope.target_label} · ${operation} · ${scope.resource}${scope.resource_type === 'directory' ? ' 及其子路径' : ''}。${scope.operation === 'read' ? '不包含写入、删除或执行命令。' : scope.operation === 'execute' ? '允许在该目录启动命令；命令可能访问目录以外的文件，这不是文件访问隔离。' : scope.operation === 'write' ? '不包含读取或执行命令。' : '旧版宽泛权限仅本次有效。'}`;
 }
 export async function authorizationLog(tx: Tx, userId: string, scope: AuthorizationScope, action: string, ids: Row = {}) {
   await tx.insert('authorization_logs', { user_id: userId, target: scope.target, operation: scope.operation, resource: scope.resource, action, ...ids });
 }
 export async function rememberAuthorization(tx: Tx, approval: Row) {
   const scope = approval.detail.authorization_scope as AuthorizationScope | undefined;
-  if (!canRemember(scope)) fail(422, '只能记住明确资源的读取权限；写入、命令和旧版宽泛授权需逐次确认');
+  if (!canRemember(scope)) fail(422, '只能记住明确文件或目录的读、写、执行权限；旧版或宽泛资源需逐次确认');
   const s = scope!;
   const rule = (await tx.one(`INSERT INTO saved_authorizations(authorization_id,user_id,target,target_label,platform,operation,resource,resource_type,source_approval_id)
-    VALUES($1,$2,$3,$4,$5,'read',$6,$7,$8)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
     ON CONFLICT(user_id,target,operation,resource,resource_type) WHERE revoked_at IS NULL DO UPDATE SET target_label=EXCLUDED.target_label RETURNING *`,
-  [randomUUID(), approval.user_id, s.target, s.target_label, s.platform, normalizedResource(s.resource,s.platform), s.resource_type, approval.approval_id]))!;
+  [randomUUID(), approval.user_id, s.target, s.target_label, s.platform, s.operation, normalizedResource(s.resource,s.platform), s.resource_type, approval.approval_id]))!;
   await authorizationLog(tx, approval.user_id, s, 'grant', { authorization_id: rule.authorization_id, approval_id: approval.approval_id, run_id: approval.run_id });
   return rule;
 }
 /** Invoked immediately before each saved access. No client-side grant cache survives revocation. */
 export async function matchAuthorization(tx: Tx, run: Row, resource: string, operation: Access): Promise<Row | null> {
-  if (operation !== 'read' || run.cancel_requested || !['running','waiting_approval'].includes(run.status)) return null;
+  if (!['read','write','execute'].includes(operation) || run.cancel_requested || !['running','waiting_approval'].includes(run.status)) return null;
   const scope = await approvalScope(tx, run, resource, operation, 'unknown');
   if (run.executor === 'device' && !await tx.one('SELECT 1 FROM devices WHERE device_id=$1 AND user_id=$2 AND revoked_at IS NULL', [run.device_id,run.user_id])) return null;
   const rules = await tx.rows(`SELECT * FROM saved_authorizations WHERE user_id=$1 AND target=$2 AND operation=$3 AND revoked_at IS NULL ORDER BY length(resource) DESC FOR UPDATE`, [run.user_id,scope.target,operation]);

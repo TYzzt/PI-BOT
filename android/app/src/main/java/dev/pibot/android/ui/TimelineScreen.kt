@@ -319,9 +319,9 @@ fun TimelineScreen(
                 Text("正在其他设备通话", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
             }
             val callBlocked = call?.local == true || call?.botId == botId
-            Composer(botId, current.name, draft, onDraftChange, onCall = startCall, callEnabled = !callBlocked) { text, requestId, images ->
+            Composer(botId, current.name, draft, onDraftChange, onCall = startCall, callEnabled = !callBlocked, repository = repository) { text, requestId, images, documentIds ->
                 error = null
-                try { repository.send(botId, text, requestId, images); true }
+                try { repository.send(botId, text, requestId, images, documentIds); true }
                 catch (e: Exception) { error = errorText(e); false }
             }
         }
@@ -431,7 +431,7 @@ private fun MessageItem(message: Message, onOpenBot: (String) -> Unit, repositor
                     ) {
                         Column(Modifier.padding(16.dp)) {
                             Text(file.title,fontWeight=androidx.compose.ui.text.font.FontWeight.SemiBold)
-                            Text("Markdown · ${file.size / 1024 + 1} KB · 打开报告 ›",color=Muted)
+                            Text("${file.name.substringAfterLast('.').uppercase()} · ${file.size / 1024 + 1} KB · 打开文件 ›",color=Muted)
                         }
                     }
                     Spacer(Modifier.height(6.dp))
@@ -503,7 +503,7 @@ private fun ApprovalCard(approval: Approval, onDecide: suspend (String) -> Unit)
             TextButton(onClick = { decide("approve") }, enabled = !deciding) { Text("仅本次允许") }
             TextButton(onClick = { confirmAlways = true }, enabled = !deciding && approval.canRemember) { Text("一直允许") }
         }
-        if (!approval.canRemember) Text("写入、命令和旧版宽泛权限需要逐次确认。", color = Muted, fontSize = 12.sp)
+        if (!approval.canRemember) Text("旧版或范围不明确的权限需要逐次确认，请更新执行端并指定具体文件或目录。", color = Muted, fontSize = 12.sp)
     }
     if (confirmAlways) AlertDialog(
         onDismissRequest = { confirmAlways = false }, title = { Text("记住以下权限？") },
@@ -552,7 +552,10 @@ private fun CallOverlay(bot: Bot, call: LiveCall, onMute: (Boolean) -> Unit, onH
 }
 
 @Composable
-private fun Composer(botId: String, botName: String, text: String, onTextChange: (String) -> Unit, onCall: () -> Unit, callEnabled: Boolean, onSend: suspend (String, String, List<ChatImage>) -> Boolean) {
+private fun Composer(botId: String, botName: String, text: String, onTextChange: (String) -> Unit, onCall: () -> Unit, callEnabled: Boolean, repository: PiBotRepository, onSend: suspend (String, String, List<ChatImage>, List<String>) -> Boolean) {
+    var documentIds by rememberSaveable(botId) { mutableStateOf(emptyList<String>()) }
+    var documentsBusy by remember(botId) { mutableStateOf(false) }
+    var retryDocuments by rememberSaveable(botId) { mutableStateOf(emptyList<String>()) }
     val currentText by rememberUpdatedState(text)
     var sending by remember(botId) { mutableStateOf(false) }
     var retryText by rememberSaveable(botId) { mutableStateOf("") }
@@ -579,6 +582,8 @@ private fun Composer(botId: String, botName: String, text: String, onTextChange:
         }
     }
     Column {
+        DocumentPicker(botId,repository,documentIds,{ documentIds=it },{ documentsBusy=it },!sending)
+
         imageError?.let { Text(it, color = Danger, modifier = Modifier.padding(horizontal = 16.dp)) }
         if (images.isNotEmpty()) Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             images.forEachIndexed { index, image ->
@@ -618,14 +623,16 @@ private fun Composer(botId: String, botName: String, text: String, onTextChange:
                     val value = draft.trim()
                     val attachments = images
                     val targetBot = botId
-                    if ((value.isNotEmpty() || attachments.isNotEmpty()) && !sending && !reading) {
-                        if (retryText != value || retryImages != attachments) { retryText = value; retryImages = attachments; requestId = java.util.UUID.randomUUID().toString() }
+                    if ((value.isNotEmpty() || attachments.isNotEmpty() || documentIds.isNotEmpty()) && !sending && !reading && !documentsBusy) {
+                        if (retryText != value || retryImages != attachments || retryDocuments != documentIds) { retryText = value; retryImages = attachments; retryDocuments = documentIds; requestId = java.util.UUID.randomUUID().toString() }
                         sending = true
                         scope.launch {
                             try {
-                                if (onSend(value, requestId, attachments) && currentBotId == targetBot) {
+                                if (onSend(value, requestId, attachments, retryDocuments) && currentBotId == targetBot) {
                                     if (currentText == draft) onTextChange("")
                                     images = emptyList()
+                                    documentIds = emptyList()
+                                    retryDocuments = emptyList()
                                     retryImages = emptyList()
                                     retryText = ""
                                 }
@@ -633,7 +640,7 @@ private fun Composer(botId: String, botName: String, text: String, onTextChange:
                         }
                     }
                 },
-                enabled = (text.isNotBlank() || images.isNotEmpty()) && !sending && !reading,
+                enabled = (text.isNotBlank() || images.isNotEmpty() || documentIds.isNotEmpty()) && !sending && !reading && !documentsBusy,
                 colors = IconButtonDefaults.iconButtonColors(containerColor = Accent, contentColor = Color.White, disabledContainerColor = Line, disabledContentColor = Muted),
             ) { Icon(Icons.AutoMirrored.Filled.Send, "发送", Modifier.size(20.dp)) }
         }

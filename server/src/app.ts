@@ -1,3 +1,4 @@
+import {pruneDocuments} from './documents.js';
 import { timingSafeEqual } from "node:crypto";
 import { RemotePreparationRequired } from "./targets.js";
 import { claimExecution } from "./scheduling.js";
@@ -116,6 +117,8 @@ export async function createApp(
   await bootstrapAdmin(db, s);
   await failOrphanedDeviceRuns(db);
   const app = Fastify({ logger: false, bodyLimit: 16 * 1024 * 1024 });
+  const documentCleanup=setInterval(()=>{void db.tx(pruneDocuments).catch(()=>{});},60000);documentCleanup.unref();
+  app.addHook('onClose',async()=>{clearInterval(documentCleanup);});
   const push = pushTransport ? new PushDispatcher(db, pushTransport) : undefined;
   app.removeContentTypeParser("application/json");
   app.addContentTypeParser(
@@ -218,7 +221,7 @@ export async function createApp(
     }
   });
 
-  app.get("/reports/view/:id", async (_req, reply) => reply.header("cache-control","no-store").header("content-security-policy", "default-src 'self'; style-src 'unsafe-inline'; script-src 'self'; frame-ancestors 'none'; base-uri 'none'").type("text/html").send(reportViewer));
+  app.get("/reports/view/:id", async (_req, reply) => reply.header("cache-control","no-store").header("content-security-policy", "default-src 'self'; style-src 'unsafe-inline'; script-src 'self'; frame-src blob:; frame-ancestors 'none'; base-uri 'none'").type("text/html").send(reportViewer));
   app.get("/reports/view/viewer.js", async (_req, reply) => reply.type("text/javascript").send(await readFile(new URL("../dist/report-viewer.js",import.meta.url))));
   app.get("/openapi.json", async () => openapi());
 

@@ -6,7 +6,7 @@ import { protectWindowsDirectory } from '../../../packages/service/src/windows.j
 import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, nativeTheme } from 'electron';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { join, basename, dirname } from 'node:path';
-import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, existsSync, readFileSync, writeFileSync, appendFileSync, statSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { dataDir, libraryRoot } from '../../../packages/service/src/paths.js';
@@ -25,9 +25,16 @@ app.setPath('userData', join(dataDir, 'electron'));
 let window: BrowserWindow | null = null;
 let serviceProcess: ChildProcess | undefined;
 let quitting = false;
+function diagnostic(event: string, detail?: string) {
+  try {
+    const path = join(dataDir,'electron','input-diagnostics.jsonl');
+    if (existsSync(path) && statSync(path).size > 128 * 1024) writeFileSync(path,'');
+    appendFileSync(path,JSON.stringify({time:new Date().toISOString(),event,detail})+'\n',{mode:0o600});
+  } catch { /* Diagnostics must not interrupt input. */ }
+}
 const page = pathToFileURL(join(__dirname, '../ui-dist/index.html')).href;
 const iconPath = join(__dirname, '../assets/pi-bot.png');
-const client = new ServiceClient(event => window?.webContents.send('agent:event', event));
+const client = new ServiceClient(event => { if(event.type==='service.status')diagnostic('service-connection',String(event.connected)); if(event.type==='account')diagnostic('account-connection',event.state.connection);window?.webContents.send('agent:event', event); });
 function validSender(event: Electron.IpcMainInvokeEvent) { if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame || event.senderFrame.url !== page) throw new Error('不受信任的 IPC 来源'); }
 declare const __PI_BOT_BUILD__: { version: string; buildNumber: number };
 const identity = typeof __PI_BOT_BUILD__ === 'undefined' ? { version: app.getVersion(), buildNumber: 0 } : __PI_BOT_BUILD__;
@@ -118,8 +125,15 @@ else {
     ipcMain.handle('agent:pickDirectory', async event => {
       validSender(event);
       const properties = ['openDirectory', 'createDirectory'] as const;
-      const result = window ? await dialog.showOpenDialog(window, { properties: [...properties] }) : await dialog.showOpenDialog({ properties: [...properties] });
-      return result.canceled ? null : result.filePaths[0] ?? null;
+      const target = window;
+      diagnostic('directory-dialog-open');
+      try {
+        const result = target ? await dialog.showOpenDialog(target, { properties: [...properties] }) : await dialog.showOpenDialog({ properties: [...properties] });
+        return result.canceled ? null : result.filePaths[0] ?? null;
+      } finally {
+        diagnostic('directory-dialog-close');
+        if (target && !target.isDestroyed()) { target.focus(); target.webContents.focus(); }
+      }
     });
     ipcMain.handle('agent:openLibrary', async (event, botId: unknown) => {
       validSender(event);
@@ -136,6 +150,9 @@ else {
       } catch { /* First launch uses defaults. */ }
       window = new BrowserWindow({ width: saved.width, height: saved.height, minWidth: 900, minHeight: 600, show: false, icon: iconPath, title: 'Pi Bot', backgroundColor: nativeTheme.shouldUseDarkColors ? '#101010' : '#ffffff', titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default', webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false } });
       if (saved.maximized) window.maximize();
+      window.on('focus',()=>diagnostic('focus')); window.on('blur',()=>diagnostic('blur'));
+      window.on('unresponsive',()=>diagnostic('unresponsive')); window.on('responsive',()=>diagnostic('responsive'));
+      window.webContents.on('render-process-gone', (_event,detail) => diagnostic('render-process-gone',detail.reason));
       window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
       window.webContents.on('will-navigate', event => event.preventDefault());
       window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));

@@ -1,3 +1,6 @@
+import {uploadDocument,DOCUMENT_ACCEPT} from './documents.js';
+import type {ArtifactRef} from '../../../packages/protocol/src/index.js';
+import { confirmAction, showNotice } from './dialogs.js';
 import { memo, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -20,7 +23,7 @@ const NO_IMAGES: ChatImage[] = [];
 const Markdown = memo(function Markdown({ text }: { text: string }) {
   return (
     <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
-      a: ({ href, children }) => <a href={href} onClick={e => { e.preventDefault(); if(href&&/^\/remote\/artifacts\/[0-9a-f-]{36}$/.test(href))void call<{url:string}>('remoteArtifact',{id:href.split('/').at(-1)}).then(r=>bridge.openExternal(r.url)).catch(e=>alert(errorText(e)));else if (href && /^https?:/.test(href)) void bridge.openExternal(href); }}>{children}</a>,
+      a: ({ href, children }) => <a href={href} onClick={e => { e.preventDefault(); if(href&&/^\/remote\/artifacts\/[0-9a-f-]{36}$/.test(href))void call<{url:string}>('remoteArtifact',{id:href.split('/').at(-1)}).then(r=>bridge.openExternal(r.url)).catch(e=>showNotice(errorText(e)));else if (href && /^https?:/.test(href)) void bridge.openExternal(href); }}>{children}</a>,
     }}>{text}</ReactMarkdown>
   );
 });
@@ -99,7 +102,7 @@ function ReportFiles({ message }: { message: Message }) {
   const [opening,setOpening]=useState<string|null>(null);
   if(!message.attachments?.length)return null;
   return <div className="report-files">{message.attachments.map(file=><button type="button" className="report-file" key={file.id} disabled={opening===file.id} onClick={()=>{setError('');setOpening(file.id);void call<{url:string}>('reportOpen',{id:file.id}).then(r=>bridge.openExternal(r.url)).catch(e=>setError(errorText(e))).finally(()=>setOpening(null));}}>
-    <span className="report-file-icon" aria-hidden="true">▤</span><span className="report-file-info"><strong>{file.title}</strong><span>Markdown · {file.size<1024 ? `${file.size} B` : `${(file.size/1024).toFixed(1)} KB`} · {time(file.created_at)}</span></span><span className="report-file-action">{opening===file.id?'打开中…':'打开报告 ›'}</span>
+    <span className="report-file-icon" aria-hidden="true">▤</span><span className="report-file-info"><strong>{file.title}</strong><span>{file.name.split('.').at(-1)?.toUpperCase()} · {file.size<1024 ? `${file.size} B` : `${(file.size/1024).toFixed(1)} KB`} · {time(file.created_at)}</span></span><span className="report-file-action">{opening===file.id?'打开中…':'打开文件 ›'}</span>
   </button>)}{error&&<p role="alert" className="error">{error}</p>}</div>;
 }
 
@@ -132,12 +135,13 @@ function RelayMessage({ m, onOpenBot }: { m: Message & { from_bot: FromBot }; on
 
 export function ApprovalCard({ approval }: { approval: Approval }) {
   const [busy, setBusy] = useState(false);
+  const [decided, setDecided] = useState(false);
   const [error, setError] = useState('');
   const decide = async (decision: 'approve' | 'approve_always' | 'reject') => {
-    if (decision === 'approve_always' && !confirm(`一直允许以下范围？\n${approval.scope}\n可在设置 → 已保存授权中撤销。`)) return;
+    if (decision === 'approve_always' && !await confirmAction(`一直允许以下范围？\n${approval.scope}\n可在设置 → 已保存授权中撤销。`)) return;
     setError('');
     setBusy(true);
-    try { await call('decide', { approvalId: approval.id, decision }); } catch (e) { setError(errorText(e)); setBusy(false); }
+    try { await call('decide', { approvalId: approval.id, decision }); setDecided(true); } catch (e) { setError(errorText(e)); } finally { setBusy(false); }
   };
   return (
     <div className="approval">
@@ -145,11 +149,11 @@ export function ApprovalCard({ approval }: { approval: Approval }) {
       <code>{approval.path}</code>
       <p>{approval.reason}</p>
       <p className="small">{approval.scope ?? '仅本次任务访问此路径。旧版执行端无法保存授权，请更新执行电脑客户端。'}</p>
-      {error && <p className="error small">{error}</p>}
+      {decided && <p role="status">已提交决定，正在同步…</p>}{error && <p className="error small">{error}</p>}
       <div className="row-end">
-        <button className="ghost" disabled={busy} onClick={() => decide('reject')}>拒绝</button>
-        <button className="primary" disabled={busy} onClick={() => decide('approve')}>仅本次允许</button>
-        <button className="ghost" disabled={busy || !approval.can_remember} title={approval.can_remember ? '保存上述读取权限，可在设置中撤销' : '写入、命令和旧版宽泛权限需要逐次确认'} onClick={() => decide('approve_always')}>一直允许</button>
+        <button className="ghost" disabled={busy || decided} onClick={() => decide('reject')}>拒绝</button>
+        <button className="primary" disabled={busy || decided} onClick={() => decide('approve')}>仅本次允许</button>
+        <button className="ghost" disabled={busy || decided || !approval.can_remember} title={approval.can_remember ? '保存上述操作权限，可在设置中撤销' : '旧版或范围不明确的权限需要逐次确认'} onClick={() => decide('approve_always')}>一直允许</button>
       </div>
     </div>
   );
@@ -169,17 +173,37 @@ export function Timeline({ bot, messages, hasMore, mood, online, onLoadMore, onS
   const [olderError, setOlderError] = useState('');
   const [drafts, setDrafts] = useState(readDrafts);
   const text = drafts[bot.id]?.text ?? '';
-  const setText = (update: string | ((current: string) => string)) => setDrafts(current => ({...current,[bot.id]:{images:current[bot.id]?.images ?? [],text:typeof update === 'function' ? update(current[bot.id]?.text ?? '') : update}}));
+  const setText = (update: string | ((current: string) => string)) => setDrafts(current => ({...current,[bot.id]:{...current[bot.id],images:current[bot.id]?.images ?? [],text:typeof update === 'function' ? update(current[bot.id]?.text ?? '') : update}}));
   const [conversationTask, setConversationTask] = useState<AgentTaskRef | null>(null);
   const images = drafts[bot.id]?.images ?? NO_IMAGES;
-  const setImages = (update: ChatImage[] | ((current: ChatImage[]) => ChatImage[])) => setDrafts(current => ({ ...current, [bot.id]: {text:current[bot.id]?.text ?? '', images:typeof update === 'function' ? update(current[bot.id]?.images ?? NO_IMAGES) : update} }));
+  const setImages = (update: ChatImage[] | ((current: ChatImage[]) => ChatImage[])) => setDrafts(current => ({ ...current, [bot.id]: {...current[bot.id],text:current[bot.id]?.text ?? '', images:typeof update === 'function' ? update(current[bot.id]?.images ?? NO_IMAGES) : update} }));
+  const documents = drafts[bot.id]?.documents ?? [];
+  const documentPicker=useRef<HTMLInputElement>(null);
+  const [documentReady,setDocumentReady]=useState(false);
+  const [uploads,setUploads]=useState<{botId:string;file:File;id:string;sent:number;error?:string;controller:AbortController}[]>([]);
+  useEffect(()=>{if(online)void call('documentCapabilities').then(()=>setDocumentReady(true)).catch(()=>setDocumentReady(false));},[online]);
+  const upload=async(item:{botId:string;file:File;id:string;sent:number;controller:AbortController})=>{
+    setUploads(current=>[...current.filter(x=>x.id!==item.id),item]);
+    try{
+      const artifact=await uploadDocument(item.file,item.botId,item.id,sent=>setUploads(current=>current.map(x=>x.id===item.id?{...x,sent}:x)),item.controller.signal);
+      setDrafts(current=>({...current,[item.botId]:{text:current[item.botId]?.text??'',images:current[item.botId]?.images??[],documents:[...(current[item.botId]?.documents??[]).filter(x=>x.id!==artifact.id),artifact]}}));
+      setUploads(current=>current.filter(x=>x.id!==item.id));
+    }catch(e){if(!item.controller.signal.aborted)setUploads(current=>current.map(x=>x.id===item.id?{...x,error:errorText(e)}:x));}
+  };
+  const addDocuments=(files:File[])=>{
+    if(!files.length)return;
+    if(!documentReady){setError('服务器尚不支持文档上传，请升级服务器');return;}
+    if(documents.length+uploads.filter(x=>x.botId===bot.id).length+files.length>4){setError('每条消息最多 4 份文档');return;}
+    for(const file of files)void upload({botId:bot.id,file,id:crypto.randomUUID(),sent:0,controller:new AbortController()});
+  };
+  const documentBusy=uploads.some(x=>x.botId===bot.id);
   const picker = useRef<HTMLInputElement>(null);
   const [reading, setReading] = useState(false);
   const readingRef = useRef(false);
   const [error, setError] = useState('');
   const [sending, setSending] = useState(false);
   const submitting = useRef(false);
-  const retry = useRef<{ text: string; images: ChatImage[]; bot: string; id: string } | null>(null);
+  const retry = useRef<{ text: string; images: ChatImage[]; documents:ArtifactRef[]; bot: string; id: string } | null>(null);
   const activeBot = useRef(bot.id);
   useLayoutEffect(() => { stageDrafts(drafts); }, [drafts]);
   useEffect(() => {
@@ -256,16 +280,16 @@ export function Timeline({ bot, messages, hasMore, mood, online, onLoadMore, onS
   };
   const send = async () => {
     const value = text.trim();
-    if ((!value && !images.length) || !online || submitting.current || readingRef.current) return;
+    if ((!value && !images.length && !documents.length) || !online || submitting.current || readingRef.current || documentBusy) return;
     const draft = text;
     const botId = bot.id;
-    if (retry.current?.text !== value || retry.current.bot !== botId || retry.current.images !== images) retry.current = { text: value, images, bot: botId, id: crypto.randomUUID() };
+    if (retry.current?.text !== value || retry.current.bot !== botId || retry.current.images !== images || retry.current.documents.map(d=>d.id).join() !== documents.map(d=>d.id).join()) retry.current = { text: value, images, documents, bot: botId, id: crypto.randomUUID() };
     submitting.current = true;
     setSending(true);
     setError('');
     stick.current = true;
     try {
-      const result = await call<{ messages: Message[] }>('send', { botId, text: value, images, request_id: retry.current.id });
+      const result = await call<{ messages: Message[] }>('send', { botId, text: value, images, document_ids:documents.map(d=>d.id), request_id: retry.current.id });
       onSent({ messages: result.messages, has_more: hasMore });
       setDrafts(current => {
         const latest = current[botId];
@@ -273,6 +297,7 @@ export function Timeline({ bot, messages, hasMore, mood, online, onLoadMore, onS
         return {...current,[botId]:{
           text:latest.text === draft ? '' : latest.text,
           images:latest.images === images ? [] : latest.images,
+          documents:(latest.documents??[]).filter(d=>!documents.some(sent=>sent.id===d.id)),
         }};
       });
       retry.current = null;
@@ -280,12 +305,13 @@ export function Timeline({ bot, messages, hasMore, mood, online, onLoadMore, onS
     finally { submitting.current = false; setSending(false); }
   };
   const key = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void send(); }
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229) { e.preventDefault(); void send(); }
   };
   let lastDay = '';
   return (
     <>
       {conversationTask && <ConversationDialog key={`${bot.id}:${conversationTask.id}`} bot={bot} task={conversationTask} onClose={() => setConversationTask(null)} onOpenBot={onOpenBot} />}
+      {!online && <p className="muted small" role="status">连接已断开，仍可编辑草稿，重连后发送。</p>}
       <div className="timeline-frame">
       <div className="timeline" ref={scroller} onScroll={onScroll}>
         {(loadingOlder || olderError) && (
@@ -309,7 +335,7 @@ export function Timeline({ bot, messages, hasMore, mood, online, onLoadMore, onS
           ) : m.role === 'user' ? (
             <div className="msg user" key={m.id} data-message={m.id}>
               {!!m.images?.length && <div className="message-pictures">{m.images.map(image => <MessagePicture key={image.id} botId={bot.id} messageId={m.id} image={image} onLoad={() => { const el = scroller.current; if (el && stick.current) el.scrollTop = el.scrollHeight; }} />)}</div>}
-              {m.content && <div className="bubble">{m.content}</div>}<span className="meta">{time(m.created_at)}</span>
+              {m.content && <div className="bubble">{m.content}</div>}<ReportFiles message={m} /><span className="meta">{time(m.created_at)}</span>
             </div>
           ) : (
             <div className="msg bot" key={m.id} data-message={m.id}>
@@ -333,15 +359,21 @@ export function Timeline({ bot, messages, hasMore, mood, online, onLoadMore, onS
       </div>
       {farFromBottom && <button type="button" className="jump-bottom" onClick={toBottom} title="回到最新消息" aria-label="回到最新消息"><Icon name="arrow" size={18} style={{ transform: 'rotate(180deg)' }} /></button>}
       </div>
-      <div className="composer" onDragOver={e => { if (e.dataTransfer.types.includes('Files')) e.preventDefault(); }} onDrop={e => { e.preventDefault(); void addImages(Array.from(e.dataTransfer.files)); }}>
+      <div className="composer" onDragOver={e => { if (e.dataTransfer.types.includes('Files')) e.preventDefault(); }} onDrop={e => { e.preventDefault(); const files=Array.from(e.dataTransfer.files);void addImages(files.filter(f=>f.type.startsWith('image/')));addDocuments(files.filter(f=>!f.type.startsWith('image/'))); }}>
         {error && <p className="error small">{error}</p>}
         {!online && <p className="muted small">电脑未连接服务器，暂时无法发送。</p>}
         {!!images.length && <div className="image-drafts">{images.map((image, i) => <div key={i}><img src={imageSource(image)} alt={image.name} /><button disabled={sending || reading} aria-label={`移除 ${image.name}`} onClick={() => setImages(current => current.filter((_, index) => index !== i))}>×</button></div>)}</div>}
+        <div className="document-drafts">
+          {documents.map(file=><div key={file.id}><span>{file.name}</span><button type="button" disabled={sending} onClick={()=>setDrafts(current=>({...current,[bot.id]:{...current[bot.id],documents:(current[bot.id]?.documents??[]).filter(d=>d.id!==file.id)}}))}>移除</button></div>)}
+          {uploads.filter(x=>x.botId===bot.id).map(item=><div key={item.id}><span>{item.file.name} · {Math.round(item.sent/item.file.size*100)}% {item.error}</span>{item.error&&<button type="button" onClick={()=>void upload({...item,controller:new AbortController()})}>重试</button>}<button type="button" onClick={()=>{item.controller.abort();setUploads(current=>current.filter(x=>x.id!==item.id));void call('documentUploadCancel',{id:item.id}).catch(()=>{});}}>取消上传</button></div>)}
+        </div>
         <div className="input">
           <input ref={picker} type="file" accept={IMAGE_TYPES.join(',')} multiple hidden onChange={e => { void addImages(Array.from(e.target.files ?? [])); e.target.value = ''; }} />
           <button className="attach ghost" disabled={!online || sending || reading || images.length >= 4} onClick={() => picker.current?.click()} title={IMAGE_LIMIT_HINT} aria-label="上传图片"><Icon name="plus" /></button>
-          <textarea value={text} onChange={e => setText(e.target.value)} onKeyDown={key} onPaste={e => { const files = Array.from(e.clipboardData.files).filter(file => file.type.startsWith('image/')); if (files.length) { e.preventDefault(); void addImages(files); } }} rows={Math.min(8, Math.max(1, text.split('\n').length))} placeholder={`给 ${bot.name} 发消息`} disabled={!online} />
-          <button className="send" disabled={(!text.trim() && !images.length) || !online || sending || reading} onClick={send} title="发送（Enter）" aria-label="发送消息"><Icon name="arrow" size={19} /></button>
+          <input ref={documentPicker} type="file" accept={DOCUMENT_ACCEPT} multiple hidden onChange={e=>{addDocuments(Array.from(e.target.files??[]));e.target.value='';}} />
+          <button type="button" className="attach ghost" disabled={!online||!documentReady||sending||documents.length+uploads.filter(x=>x.botId===bot.id).length>=4} onClick={()=>documentPicker.current?.click()} aria-label="上传文档" title="PDF、Word、Excel，每份最多 10 MiB">▤</button>
+          <textarea value={text} onChange={e => setText(e.target.value)} onKeyDown={key} onPaste={e => { const files = Array.from(e.clipboardData.files).filter(file => file.type.startsWith('image/')); if (files.length) { e.preventDefault(); void addImages(files); } }} rows={Math.min(8, Math.max(1, text.split('\n').length))} placeholder={`给 ${bot.name} 发消息`} aria-label="消息输入" />
+          <button className="send" disabled={(!text.trim() && !images.length && !documents.length) || !online || sending || reading || documentBusy} onClick={send} title="发送（Enter）" aria-label="发送消息"><Icon name="arrow" size={19} /></button>
         </div>
       </div>
     </>

@@ -1,4 +1,7 @@
-import { reportTools } from "@pi-bot/agent";
+import {readFile,writeFile,mkdir,rename,stat} from 'node:fs/promises';
+import {dirname} from 'node:path';
+import {withLibraryMutation} from './mutation-lock.js';
+import { reportTools, documentTools } from "@pi-bot/agent";
 import { toolDescriptor, errorInfo } from "@pi-bot/runtime-contracts";
 import { randomUUID } from 'node:crypto';
 import type { ChatImage } from '@pi-bot/agent/images';
@@ -117,10 +120,10 @@ export class Executor {
       }
       let token = await this.deps.llmToken(run.bot.id);
       const authorizationApi = this.deps.proxyUrl.replace(/\/llm\/v1\/?$/, '');
-      const sandbox = new Sandbox(await libraryDir(this.deps.libraryRoot, run.bot.slug), [], async path => {
+      const sandbox = new Sandbox(await libraryDir(this.deps.libraryRoot, run.bot.slug), [], async (path, access) => {
         const response = await fetch(`${authorizationApi}/agent/authorizations/check`, {
           method:'POST', headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},
-          body:JSON.stringify({run_id:run.run_id,path,access:'read'}), redirect:'error', signal:AbortSignal.timeout(15000),
+          body:JSON.stringify({run_id:run.run_id,path,access}), redirect:'error', signal:AbortSignal.timeout(15000),
         });
         // An older server has no rule endpoint; fall back to explicit approval, never implicit access.
         if (response.status === 404) return false;
@@ -218,6 +221,10 @@ export class Executor {
         if (run.lane !== "conversation" && run.search_enabled) tools.push(webSearchTool(api, () => token));
         if (run.composio_enabled && !run.automation_readonly) tools.push(...composioTools(api, () => token));
         if (run.agents_enabled) tools.push(askAgentTool(api, () => token, run.run_id, { conversation: run.lane === "conversation" }));
+        tools.push(...documentTools(api,()=>token,run.run_id,run.lane === 'task' && !run.automation_readonly && !run.automation,{
+          read:async path=>{const file=await sandbox.resolve(path,{mustExist:true,access:'read'});if((await stat(file)).size>10*1024*1024)throw new Error('文件超过 10 MiB');return readFile(file);},
+          write:async(path,bytes)=>withLibraryMutation(sandbox.root,undefined,async()=>{const file=await sandbox.resolve(path,{access:'write'});await mkdir(dirname(file),{recursive:true});const tmp=file+'.'+randomUUID()+'.tmp';await writeFile(tmp,bytes);await rename(tmp,file);}),
+        }));
         tools.push(...reportTools(api, () => token, run.run_id, run.lane === "task" && !run.automation));
         tools.push(...a2uiTools(messages => { event({ kind: 'ui', messages }); }));
       }

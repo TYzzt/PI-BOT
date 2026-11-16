@@ -1,3 +1,4 @@
+import { confirmAction, showNotice } from './dialogs.js';
 import { StrictMode, useCallback, useEffect, useRef, useState, type FormEvent, type MouseEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 import { PiBot } from './bot-avatar.js';
@@ -88,7 +89,7 @@ function Settings({ state, cloud, onClose, onOpenPhone }: { state: AccountState;
     return bridge.subscribe(event => { if (event.type === 'bots' || event.type === 'account') void refresh(); });
   },[]);
   const revoke = async (device: Device) => {
-    if (!confirm(`解绑「${device.label}」？该电脑上的文件保留，绑定它的 Bot 将等待重新选择执行电脑。`)) return;
+    if (!await confirmAction(`解绑「${device.label}」？该电脑上的文件保留，绑定它的 Bot 将等待重新选择执行电脑。`)) return;
     try { if (device.id === state.deviceId) { await call('logout'); onClose(); } else { await call('deviceRevoke',{id:device.id}); await refresh(); } }
     catch(e) { setError(errorText(e)); }
   };
@@ -119,7 +120,7 @@ function Settings({ state, cloud, onClose, onOpenPhone }: { state: AccountState;
           ))}
           {error && <p className="error">{error}</p>}
           <footer>
-            <button className="ghost danger" onClick={() => { if (confirm('退出登录并解绑这台电脑？资料库文件会保留。')) void call('logout').then(onClose).catch(e => setError(errorText(e))); }}>退出登录</button>
+            <button className="ghost danger" onClick={async () => { if (await confirmAction('退出登录并解绑这台电脑？资料库文件会保留。')) void call('logout').then(onClose).catch(e => setError(errorText(e))); }}>退出登录</button>
             <button className="primary" onClick={onClose}>完成</button>
           </footer>
         </div>
@@ -243,7 +244,7 @@ function App() {
   const searchRef = useRef<HTMLInputElement>(null);
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
-  const online = account?.connection === 'online';
+  const online = service && account?.connection === 'online';
   const userId = account?.user?.id ?? null;
   const shownUser = useRef<string | null>(null);
 
@@ -362,7 +363,7 @@ function App() {
     return () => window.removeEventListener('keydown', shortcut);
   }, []);
 
-  if (!service || !account) return <div className="splash"><PiBot avatar={ORANGE} mood="sleeping" size={110} /><p className="muted">正在连接本地服务…</p></div>;
+  if (!account) return <div className="splash"><PiBot avatar={ORANGE} mood="sleeping" size={110} /><p className="muted">正在连接本地服务…</p></div>;
   if (account.connection === 'signed_out' || account.connection === 'revoked') return <Login state={account} />;
   const bot = bots.find(b => b.id === selected) ?? null;
   const page = bot ? pages[bot.id] : undefined;
@@ -449,15 +450,15 @@ function App() {
           </div>
         )}
       </main>
-      {inspector && bot && <Inspector key={bot.id} bot={bot} currentDeviceId={account.deviceId ?? null} onClose={() => setInspector(false)} onOpenLibrary={() => bridge.openLibrary(bot.id).catch(e => alert(errorText(e)))} />}
+      {inspector && bot && <Inspector key={bot.id} bot={bot} currentDeviceId={account.deviceId ?? null} onClose={() => setInspector(false)} onOpenLibrary={() => bridge.openLibrary(bot.id).catch(e => showNotice(errorText(e)))} />}
       {menu && <>
         <button type="button" className="menu-backdrop" aria-label="关闭菜单" onClick={() => setMenu(null)} />
         <div className="bot-menu" style={{ left: menu.x, top: menu.y }}>
           <button type="button" onClick={() => { setEditor(menu.bot); setMenu(null); }}>编辑</button>
-          {!menu.bot.is_main && <button type="button" className="danger" onClick={() => {
+          {!menu.bot.is_main && <button type="button" className="danger" onClick={async () => {
             const target = menu.bot; setMenu(null);
-            if (!confirm(`删除「${target.name}」？对话会归档，资料库文件保留。`)) return;
-            void call('botDelete', { id: target.id }).then(() => { if (target.id === selected) setInspector(false); void loadBots(); }).catch(e => alert(errorText(e)));
+            if (!await confirmAction(`删除「${target.name}」？对话会归档，资料库文件保留。`)) return;
+            void call('botDelete', { id: target.id }).then(() => { if (target.id === selected) setInspector(false); void loadBots(); }).catch(e => showNotice(errorText(e)));
           }}>删除</button>}
         </div>
       </>}

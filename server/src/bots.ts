@@ -1,6 +1,6 @@
 import { absoluteClientPath, isCliRuntime, type CliRuntime } from "./cli.js";
 import { cliRouteMaterial, closeCliSessions } from "./cli-sessions.js";
-import { messageAttachments } from "./reports.js";
+import { messageAttachments, copyPublishedRunArtifacts } from "./reports.js";
 import { CONTEXT_DEFAULTS, toolDescriptor, internalTool, type AppError, type ModelCapabilities, ACTIVE_RUN_STATES } from "@pi-bot/runtime-contracts";
 import { replyAnswer, type ReplySegment } from "@pi-bot/agent";
 import { recordReply, withRemarks } from "./replies.js";
@@ -469,6 +469,11 @@ export async function insertRun(tx: Tx, o: NewRun) {
     executor,
     visibility: o.lane === "task" ? "task" : "public",
   });
+  if(parent)await tx.rows('INSERT INTO message_artifacts(message_id,artifact_id) SELECT $1,artifact_id FROM message_artifacts WHERE message_id=$2 ON CONFLICT DO NOTHING',[userMessageId,parent.user_message_id]);
+  if(task?.resumed_from) {
+    const previous = await tx.get("agent_tasks",task.resumed_from);
+    if(previous?.child_run_id)await copyPublishedRunArtifacts(tx,previous.child_run_id,userMessageId);
+  }
   if (!o.origin || o.origin === "user") await wakeGoals(tx, o.botId);
   await tx.notify({ user_id: o.userId, bot_id: o.botId });
   return run;
@@ -632,7 +637,8 @@ export async function buildContext(
     `SELECT m.message_id, m.role, m.content, m.images, m.progress, m.ui_action, f.name AS from_name FROM bot_messages m
      LEFT JOIN bots f ON f.bot_id=m.from_bot_id
      WHERE m.bot_id=$1 AND m.seq>$2 AND (m.seq<$3 OR m.role='assistant') AND m.visibility='public' AND m.status IN ('completed','cancelled')
-     AND ((m.role='user' AND (m.content<>'' OR m.images <> '[]'::jsonb)) OR (m.role='assistant' AND (m.content<>'' OR m.progress <> '[]'::jsonb)))
+     AND ((m.role='user' AND (m.content<>'' OR m.images <> '[]'::jsonb)) OR (m.role='assistant' AND (m.content<>'' OR m.progress <> '[]'::jsonb))
+       OR EXISTS(SELECT 1 FROM message_artifacts ma WHERE ma.message_id=m.message_id))
      AND NOT EXISTS(SELECT 1 FROM memory_entries e WHERE e.bot_id=m.bot_id AND e.deleted AND e.source_message_id=m.message_id)
      ORDER BY m.seq DESC LIMIT $4`,
     [bot.bot_id, memory?.through_seq ?? 0, run.origin === "report" ? Number.MAX_SAFE_INTEGER : question.seq, Math.max(s.historyLimit, s.memoryThreshold+20)],
@@ -640,7 +646,7 @@ export async function buildContext(
   const historicalFiles=await messageAttachments(tx,rows.map(r=>r.message_id));
   for (const row of rows) {
     const files=historicalFiles.get(row.message_id);
-    if(files?.length)row.content += "\n报告文件："+JSON.stringify(files);
+    if(files?.length)row.content += "\n附件文件："+JSON.stringify(files);
   }
   const countTokens=(text:string)=>estimateTokens({role:"user",content:text,timestamp:0});
   const boundedText=(text:string,budget:number)=>{let lo=0,hi=text.length;while(lo<hi){const mid=Math.ceil((lo+hi)/2);if(countTokens(text.slice(0,mid))<=budget)lo=mid;else hi=mid-1;}return text.slice(0,lo);};
@@ -689,7 +695,8 @@ export async function buildContext(
   const fileIndex = [...attachments.values()].flat();
   const from = question.from_bot_id ? await tx.get("bots", question.from_bot_id) : undefined;
   let text = modelMessageContent(question) || (questionImages.length ? '请查看这些图片。' : '');
-  if(fileIndex.length) system += "\n相关报告（正文未载入，需要时 report_read 读取片段）："+JSON.stringify(fileIndex);
+  if(fileIndex.length)text+='\n附件文件（按需用 document_read 或 report_read 读取）：'+JSON.stringify(fileIndex);
+  if(fileIndex.length) system += "\n相关附件（PDF/DOCX/XLSX 用 document_read，Markdown 用 report_read；正文未载入）："+JSON.stringify(fileIndex);
   if (truncated || covered < rows.length) system+="\n（部分早期对话超出窗口，需要时用 history_search 检索，不代表没有历史。）";
   if (run.origin === "agent" && from && from.bot_id !== bot.bot_id)
     text = `你收到来自智能体「${from.name}」的委托，它正在为用户处理一项任务：\n\n${text}\n\n请直接完成并给出自包含的结果，「${from.name}」会把它转述给用户。缺少必要信息时直接说明缺什么，不要向用户提问。`;
@@ -834,7 +841,7 @@ export async function finishRun(
   }
   const message = await tx.get("bot_messages", run.assistant_message_id);
   let segments: ReplySegment[] = message?.reply_segments ?? [];
-  const reports = await tx.rows('SELECT artifact_id,title,name,mime,size,created_at,summary FROM report_artifacts WHERE run_id=$1 ORDER BY created_at',[runId]);
+  const reports = await tx.rows("SELECT artifact_id,title,name,mime,size,created_at,summary FROM report_artifacts WHERE run_id=$1 AND mime='text/markdown' ORDER BY created_at",[runId]);
   if (reports.length && state === 'completed') { content = reports.map(r => r.summary).join('\n\n'); segments=segments.filter(r=>r.phase!=="answer"); await tx.rows("UPDATE bot_messages SET reply_segments=$2 WHERE message_id=$1",[run.assistant_message_id,JSON.stringify(segments)]); }
   const finalText = content ?? message?.content ?? "";
   const answer = reports.length ? finalText : replyAnswer(segments, finalText);

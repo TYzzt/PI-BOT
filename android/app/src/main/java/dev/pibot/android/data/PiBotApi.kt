@@ -257,13 +257,16 @@ data class BotInput(
 private data class LoginBody(val username: String, val password: String)
 
 @Serializable
-private data class SendBody(val text: String, @SerialName("request_id") val requestId: String, val images: List<ChatImage> = emptyList(), val client: String = "android")
+private data class SendBody(val text: String, @SerialName("request_id") val requestId: String, val images: List<ChatImage> = emptyList(), val client: String = "android", @SerialName("document_ids") val documentIds: List<String> = emptyList())
 
 @Serializable
 private data class DecisionBody(val decision: String)
 
 @Serializable
 private data class PasswordBody(@SerialName("old_password") val oldPassword: String, @SerialName("new_password") val newPassword: String)
+
+@Serializable
+data class DocumentUploadResponse(@SerialName("upload_id") val uploadId: String? = null, val artifact: ReportAttachment? = null)
 
 @Serializable
 private class EmptyBody
@@ -323,8 +326,8 @@ class PiBotApi(private val http: OkHttpClient, private val json: Json = API_JSON
     fun taskConversation(url: ServerUrl, token: String, botId: String, taskId: String, after: Long = 0): TaskConversation =
         call(url, "GET", "/bots/$botId/tasks/$taskId/conversation", token, query = listOf("after" to after.toString()))
 
-    fun send(url: ServerUrl, token: String, botId: String, text: String, requestId: String, images: List<ChatImage> = emptyList()): SendResult =
-        call(url, "POST", "/bots/$botId/messages", token, SendBody(text, requestId, images))
+    fun send(url: ServerUrl, token: String, botId: String, text: String, requestId: String, images: List<ChatImage> = emptyList(), documentIds: List<String> = emptyList()): SendResult =
+        call(url, "POST", "/bots/$botId/messages", token, SendBody(text, requestId, images, documentIds=documentIds))
 
     fun image(url: ServerUrl, token: String, botId: String, messageId: String, imageId: String): ChatImage =
         call(url, "GET", "/bots/$botId/messages/$messageId/images/$imageId", token)
@@ -334,6 +337,12 @@ class PiBotApi(private val http: OkHttpClient, private val json: Json = API_JSON
 
     fun uiAction(url: ServerUrl, token: String, botId: String, messageId: String, body: JsonObject): SendResult =
         call(url, "POST", "/bots/$botId/messages/$messageId/ui-actions", token, JsonObject(body + ("client" to kotlinx.serialization.json.JsonPrimitive("android"))))
+
+    fun documentCapabilities(url: ServerUrl, token: String): JsonObject = call(url,"GET","/documents/capabilities",token)
+    fun documentBegin(url: ServerUrl, token: String, botId: String, body: JsonObject): DocumentUploadResponse = call(url,"POST","/bots/$botId/documents/uploads",token,body)
+    fun documentChunk(url: ServerUrl, token: String, id: String, body: JsonObject): JsonObject = call(url,"POST","/documents/uploads/$id/chunks",token,body)
+    fun documentComplete(url: ServerUrl, token: String, id: String, body: JsonObject): DocumentUploadResponse = call(url,"POST","/documents/uploads/$id/complete",token,body)
+    fun documentCancel(url: ServerUrl, token: String, id: String): JsonObject = call(url,"DELETE","/documents/uploads/$id",token)
 
     fun reportOpen(url: ServerUrl, token: String, id: String): JsonObject = call(url,"POST","/reports/$id/open",token,EmptyBody())
 

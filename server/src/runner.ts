@@ -1,3 +1,4 @@
+import {documentTools} from '@pi-bot/agent';
 import { errorInfo } from "@pi-bot/runtime-contracts";
 import { reportTools } from "@pi-bot/agent";
 import Fastify from "fastify";
@@ -138,6 +139,7 @@ export async function createRunner(options: { token: string; dir: string; factor
       ];
       if(p.run.lane === "task" && p.run.operation_target.startsWith("remote:")) tools.push(...remoteTools(api,()=>p.token,p.run.run_id,p.run.remote_capabilities));
       if(p.run.automation) tools.push(...automationTools(api,()=>p.token,p.run.run_id,true));
+      tools.push(...documentTools(api,()=>p.token,p.run.run_id,p.run.lane==='task'&&!p.run.automation_readonly&&!p.run.automation));
       tools.push(...reportTools(api, () => p.token, p.run.run_id, p.run.lane === "task" && !p.run.automation));
       tools.push(...a2uiTools(messages => { emit({ type: "ui", messages }); }));
       state.agent = await factory({

@@ -16,7 +16,7 @@ test(
     await resetDatabase(TEST_DB!);
     const dir = tempDir();
     const db = new Database(TEST_DB!);
-    const s = settings({
+    const s = settings({PI_BOT_LOCAL_WORK_ROOT:"/pibot-test-workspaces",PI_BOT_REMOTE_BACKEND:"none",
       PI_BOT_DATABASE_URL: TEST_DB!,
       PI_BOT_ADMIN_PASSWORD: "test-password",
       PI_BOT_JWT_SECRET: "j".repeat(40),

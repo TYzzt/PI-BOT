@@ -26,12 +26,12 @@ fun SavedAuthorizations(repository: PiBotRepository) {
     LaunchedEffect(repository) { refresh() }
     Column {
         Text("已保存授权")
-        Text("仅当前账号、指定电脑和资源的读取；不包含写入、删除或执行命令。每次使用由服务器验证。", color = Muted)
+        Text("仅当前账号、指定电脑和资源；读、写、执行分别保存，互不包含。每次使用由服务器验证。", color = Muted)
         TextButton(enabled = !busy, onClick = { scope.launch { refresh() } }) { Text(if (busy) "正在加载…" else "刷新授权") }
         error?.let { Text(it, color = Danger) }
         if (!busy && error == null && rules.isEmpty()) Text("暂无已保存授权。", color = Muted)
         rules.forEach { rule ->
-            Text("${rule.targetLabel} · 读取")
+            Text("${rule.targetLabel} · ${when(rule.operation) { "write" -> "写入或修改"; "execute" -> "执行命令"; else -> "读取" }}")
             Text(rule.resource + if (rule.resourceType == "directory") "（含子路径）" else "")
             Text("保存于 ${rule.createdAt}" + (rule.lastUsedAt?.let { " · 最近使用 $it" } ?: ""), color = Muted)
             TextButton(enabled = !busy, onClick = { removing = rule }) { Text("撤销", color = Danger) }
@@ -44,7 +44,7 @@ fun SavedAuthorizations(repository: PiBotRepository) {
         }
     }
     removing?.let { rule -> AlertDialog(
-        onDismissRequest = { removing = null }, title = { Text("撤销读取授权？") },
+        onDismissRequest = { removing = null }, title = { Text("撤销此操作授权？") },
         text = { Text("${rule.targetLabel} · ${rule.resource}\n后续访问将重新确认。") },
         confirmButton = { TextButton(enabled = !busy, onClick = {
             removing = null; busy = true

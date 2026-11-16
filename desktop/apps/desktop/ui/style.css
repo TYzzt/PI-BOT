@@ -366,3 +366,11 @@ button svg { flex-shrink: 0; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+.app-dialog { max-width: min(520px,90vw); border:1px solid var(--line); border-radius:16px; padding:24px; background:var(--panel); color:var(--ink); box-shadow:0 20px 80px #0004; }
+.app-dialog p { white-space:pre-wrap; overflow-wrap:anywhere; }
+.app-dialog::backdrop { background:#0005; }
+
+.document-drafts { display:grid; gap:6px; max-height:180px; overflow:auto; }
+.document-drafts>div { display:flex; align-items:center; gap:8px; padding:6px; }
+.document-drafts span { overflow-wrap:anywhere; flex:1; }

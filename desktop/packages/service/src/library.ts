@@ -37,7 +37,7 @@ export async function libraryDir(root: string, slug: string) {
 export class Sandbox {
   private roots: string[];
   private grants: {path: string; access: 'read' | 'write' | 'execute'}[] = [];
-  constructor(readonly root: string, approved: string[] = [], private authorizeSaved?: (path: string, access: 'read') => Promise<boolean>) { this.roots = [root, ...approved]; }
+  constructor(readonly root: string, approved: string[] = [], private authorizeSaved?: (path: string, access: 'read' | 'write' | 'execute') => Promise<boolean>) { this.roots = [root, ...approved]; }
   get allowed() { return [...this.roots]; }
   expand(input: string) {
     const value = input || '.';
@@ -60,7 +60,7 @@ export class Sandbox {
   async resolve(input: string, options: { mustExist?: boolean; access?: 'read' | 'write' | 'execute' } = {}) {
     const real = await this.canonical(input), access = options.access ?? 'read';
     if (!this.roots.some(r => inside(r, real)) && !this.grants.some(g => g.access === access && inside(g.path,real)) &&
-        !(access === 'read' && await this.authorizeSaved?.(real,access))) throw new OutsideError(real);
+        !(await this.authorizeSaved?.(real,access))) throw new OutsideError(real);
     if (options.mustExist && !(await lstat(real).catch(() => null))) throw new Error(`文件不存在：${this.display(real)}`);
     return real;
   }
@@ -254,7 +254,7 @@ export function libraryTools(sandbox: Sandbox, hooks: ToolHooks): ToolDefinition
       },
     },
     {
-      name: 'request_outside_access', label: '申请访问', description: '申请资料库以外的文件或目录访问；access 默认为 read（可选择 write 或 execute）。读取授权不含写入或命令；只有读取权限可以被用户记住，其他权限仅本次任务有效。',
+      name: 'request_outside_access', label: '申请访问', description: '申请资料库以外的文件或目录访问；access 默认为 read（可选择 write 或 execute）。读取授权不含写入或命令；读、写和命令权限分别保存，不互相包含。命令授权仅针对启动目录，不隔离命令的文件访问。',
       parameters: Type.Object({ path: Type.String({ minLength: 1 }), reason: Type.String({ minLength: 1, maxLength: 1000 }), access: Type.Optional(Type.Union([Type.Literal('read'),Type.Literal('write'),Type.Literal('execute')])) }),
       execute: async (_id, args: any, signal) => {
         const full = await sandbox.canonical(args.path), access = args.access ?? 'read';

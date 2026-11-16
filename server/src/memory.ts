@@ -5,6 +5,7 @@ import { normalizeMemoryLookupText } from "../../packages/agent/src/hermes-memor
 import { fail, type Row, type Tx } from "./db.js";
 import { checkpointAutomation } from "./automations.js";
 import { callerRun, createTask } from "./agents.js";
+import { messageAttachments } from "./reports.js";
 import type { LlmClaims } from "./security.js";
 import type { Hub } from "./hub.js";
 
@@ -199,16 +200,22 @@ export async function searchHistory(
   const forgotten = await forgottenContext(tx, run.bot_id);
   const rows = await tx.rows(
     `SELECT m.message_id,m.run_id,m.role,m.content,m.created_at,r.task_id FROM bot_messages m
-    LEFT JOIN bot_runs r USING(run_id) WHERE m.bot_id=$1 AND m.status IN ('completed','cancelled') AND m.content<>''
+    LEFT JOIN bot_runs r USING(run_id) WHERE m.bot_id=$1 AND m.status IN ('completed','cancelled')
+    AND (m.content<>'' OR EXISTS(SELECT 1 FROM message_artifacts ma WHERE ma.message_id=m.message_id))
     AND (m.visibility='public' OR (m.visibility='task' AND r.lane='task'))
     AND NOT EXISTS(SELECT 1 FROM memory_entries e WHERE e.bot_id=m.bot_id AND e.deleted AND (e.source_message_id=m.message_id OR e.source_task_id=r.task_id))
-    AND ($2::text[]='{}' OR m.content ILIKE ANY($2)) ORDER BY m.seq DESC LIMIT 12`,
+    AND ($2::text[]='{}' OR m.content ILIKE ANY($2)
+      OR EXISTS(SELECT 1 FROM message_artifacts ma JOIN report_artifacts a USING(artifact_id)
+        WHERE ma.message_id=m.message_id AND concat_ws(' ',a.title,a.name) ILIKE ANY($2)))
+    ORDER BY m.seq DESC LIMIT 12`,
     [run.bot_id, searchTerms(query).map((x) => `%${escapeLike(x)}%`)],
   );
+  const attachments = await messageAttachments(tx, rows.map(r => r.message_id));
   return {
     matches: rows.map((r) => {
       const content = maskForgotten(r.content, forgotten);
-      return { ...r, content: content.length > 1200 ? `${content.slice(0, 1200)}…（共 ${content.length} 字，换更具体的关键词缩小范围）` : content };
+      return { ...r, content: content.length > 1200 ? `${content.slice(0, 1200)}…（共 ${content.length} 字，换更具体的关键词缩小范围）` : content,
+        attachments: attachments.get(r.message_id) ?? [] };
     }),
   };
 }
@@ -316,6 +323,5 @@ export async function resumeTask(
     requirements:old!.routing?.requirements,
     resources:old!.routing?.resources,
   },settings);
-  if(resumed.run && old!.child_run_id)await tx.rows(`INSERT INTO message_artifacts(message_id,artifact_id) SELECT $1,artifact_id FROM report_artifacts WHERE run_id=$2 ON CONFLICT DO NOTHING`,[resumed.run.assistant_message_id,old!.child_run_id]);
   return resumed;
 }

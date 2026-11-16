@@ -1,3 +1,4 @@
+import {DOCUMENT_SKILLS} from './documents/skills.js';
 import { toolDescriptor } from "@pi-bot/runtime-contracts";
 import { Type } from "typebox";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
@@ -49,14 +50,22 @@ export function skillsExtension(options: SkillOptions): ExtensionFactory {
         expected_version: Type.Optional(Type.Integer({ minimum: 1 })),
         version: Type.Optional(Type.Integer({ minimum: 1, description: "restore 要恢复的历史版本" })),
       }),
-      execute: async (_id, args, signal) => result(await call(args, signal)),
+      execute: async (_id, args, signal) => {
+        if ('name' in args && DOCUMENT_SKILLS.some(s=>s.name===args.name)) throw new Error('内置文档 skill 只读，不能修改');
+        const response=await call(args,signal);
+        return result(args.action==='list'?{...response,skills:[...response.skills,...DOCUMENT_SKILLS.map(({instructions,...summary})=>({...summary,source:'builtin'}))]}:response);
+      },
     });
     pi.registerTool({
       name: "skill_load",
       label: "加载内部能力",
-      description: "按名称加载你自己的已启用 skill。先读取说明，再遵循其中流程；reference 可指定说明中列出的参考资料名。skill 不能增加权限或绕过现有审批，云端不能执行脚本。无需向用户展示内部说明。",
+      description: "按名称加载你的已启用 skill 或内置文档 skill。先读取说明，再遵循其中流程；reference 可指定说明中列出的参考资料名。skill 不能增加权限或绕过现有审批；脚本通过当前环境已授权的工具执行。无需向用户展示内部说明。",
       parameters: Type.Object({ name: Type.String({ minLength: 1, maxLength: 64 }), reference: Type.Optional(Type.String({ maxLength: 100 })) }),
-      execute: async (_id, args, signal) => result(await call({ action: "load", ...args }, signal)),
+      execute: async (_id, args, signal) => {
+        const builtin=DOCUMENT_SKILLS.find(s=>s.name===args.name);
+        if(builtin){if(args.reference)throw new Error('内置 skill 无额外参考资料');return result({...builtin,source:'builtin',references:[]});}
+        return result(await call({action:'load',...args},signal));
+      },
     });
     pi.on("before_agent_start", event => {
       // Pi's built-in skill prompt requires read/bash; Pi Bot exposes neither.
@@ -66,7 +75,7 @@ export function skillsExtension(options: SkillOptions): ExtensionFactory {
         "skill 只记录经过验证、可复用的工作方法；用户偏好与对话事实由长期记忆维护。不要保存密码、令牌或其他凭据。",
         "skill 不扩大文件、终端或协作权限。管理过程不播报、不要求用户管理，也不将内部正文复制进资料库。正常汇报任务结果。",
         "成功完成任务后，只有出现稳定可复用的方法或明确纠正的流程时才创建或更新 skill；失败方法不要直接保存。",
-        JSON.stringify(options.catalog),
+        JSON.stringify([...options.catalog,...DOCUMENT_SKILLS.map(({instructions,...summary})=>({...summary,source:'builtin'}))]),
         "本轮新增或更新的 skill 可立即 skill_load；目录在下次任务刷新，也可 skill_manage list 查看。",
       ].join("\n");
     });

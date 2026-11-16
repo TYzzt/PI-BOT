@@ -9,6 +9,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -327,11 +328,33 @@ class PiBotRepository(
     suspend fun taskConversation(botId: String, taskId: String, after: Long = 0): TaskConversation =
         authed { u, t -> api.taskConversation(u, t, botId, taskId, after) }
 
-    suspend fun send(botId: String, text: String, requestId: String = UUID.randomUUID().toString(), images: List<ChatImage> = emptyList()): Run {
-        val result = authed { u, t -> api.send(u, t, botId, text, requestId, images) }
+    suspend fun send(botId: String, text: String, requestId: String = UUID.randomUUID().toString(), images: List<ChatImage> = emptyList(), documentIds: List<String> = emptyList()): Run {
+        val result = authed { u, t -> api.send(u, t, botId, text, requestId, images, documentIds) }
         _timelines.update { all -> all + (botId to (all[botId] ?: Timeline()).merge(result.messages)) }
         _bots.update { list -> list?.map { if (it.id == botId) it.copy(latestRun = result.run) else it } }
         return result.run
+    }
+
+    suspend fun documentCapabilities(): JsonObject = authed { u,t -> api.documentCapabilities(u,t) }
+    suspend fun cancelDocumentUpload(id: String) { authed { u,t -> api.documentCancel(u,t,id) } }
+    suspend fun uploadDocument(botId: String, name: String, bytes: ByteArray, requestId: String, progress: (Int) -> Unit): ReportAttachment {
+        require(bytes.isNotEmpty() && bytes.size <= 10*1024*1024) { "每份文档最多 10 MiB" }
+        fun body(vararg values: Pair<String, JsonPrimitive>) = JsonObject(values.toMap())
+        suspend fun <T> retry(action: suspend () -> T): T = try { action() } catch(e: java.io.IOException) { action() }
+        val begin = retry { authed { u,t -> api.documentBegin(u,t,botId,body("request_id" to JsonPrimitive(requestId),"name" to JsonPrimitive(name),"size" to JsonPrimitive(bytes.size))) } }
+        begin.artifact?.let { return it }
+        val chunk = 256*1024
+        var part = 0
+        var offset = 0
+        while(offset < bytes.size) {
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            val end = minOf(bytes.size, offset+chunk)
+            val data = android.util.Base64.encodeToString(bytes.copyOfRange(offset,end),android.util.Base64.NO_WRAP)
+            retry { authed { u,t -> api.documentChunk(u,t,requestId,body("part" to JsonPrimitive(part),"data" to JsonPrimitive(data))) } }
+            offset = end; part++; progress(offset*100/bytes.size)
+        }
+        val hash = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it.toInt() and 255) }
+        return retry { authed { u,t -> api.documentComplete(u,t,requestId,body("sha256" to JsonPrimitive(hash))) } }.artifact ?: throw ApiException(500,"上传未返回文件引用")
     }
 
     suspend fun image(botId: String, messageId: String, imageId: String): ChatImage =

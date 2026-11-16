@@ -26,6 +26,24 @@ export async function messageAttachments(tx: Tx, ids: string[]) {
     map.set(r.message_id, [...(map.get(r.message_id) ?? []), artifactOut(r)]);
   return map;
 }
+/** Generated drafts stay private until attached to the run's reply. */
+export async function publishedRunArtifacts(tx: Tx, runId: string) {
+  return tx.rows(
+    `SELECT a.artifact_id,a.title,a.name,a.mime,a.size,a.created_at FROM bot_runs r
+     JOIN message_artifacts ma ON ma.message_id=r.assistant_message_id
+     JOIN report_artifacts a USING(artifact_id) WHERE r.run_id=$1 ORDER BY a.created_at`,
+    [runId],
+  );
+}
+export async function copyPublishedRunArtifacts(tx: Tx, runId: string, messageId: string) {
+  await tx.rows(
+    `INSERT INTO message_artifacts(message_id,artifact_id)
+     SELECT $2,ma.artifact_id FROM bot_runs r
+     JOIN message_artifacts ma ON ma.message_id=r.assistant_message_id
+     WHERE r.run_id=$1 ON CONFLICT DO NOTHING`,
+    [runId, messageId],
+  );
+}
 export const reportRoutes: Route[] = [
   {
     method: "POST",
@@ -140,7 +158,7 @@ export const reportRoutes: Route[] = [
       } catch {}
       if (!sub) fail(401, "报告访问已过期，请重新打开");
       const r = await tx.one(
-        "SELECT title,name,body FROM report_artifacts WHERE artifact_id=$1 AND user_id=$2",
+        "SELECT title,name,mime,body FROM report_artifacts WHERE artifact_id=$1 AND user_id=$2",
         [params.id, sub],
       );
       if (!r) return fail(404, "报告不存在");
@@ -148,10 +166,10 @@ export const reportRoutes: Route[] = [
         .header("cache-control", "no-store")
         .header("referrer-policy", "no-referrer")
         .header("x-report-title", encodeURIComponent(r.title))
-        .header("x-report-name", r.name);
+        .header("x-report-name", encodeURIComponent(r.name));
       if (query.download)
-        reply.header("content-disposition", `attachment; filename="${r.name}"`);
-      return reply.type("text/plain; charset=utf-8").send(r.body);
+        reply.header("content-disposition", `attachment; filename*=UTF-8''${encodeURIComponent(r.name)}`);
+      return reply.type(r.mime === "text/markdown" ? "text/plain; charset=utf-8" : r.mime).send(r.body);
     },
   },
   {
@@ -169,10 +187,11 @@ export const reportRoutes: Route[] = [
     handler: async ({ tx, user, llm, body, params }) => {
       const run = await callerRun(tx, user.user_id, llm!, body.run_id);
       const r = await tx.one(
-        `SELECT a.title,a.body FROM report_artifacts a WHERE a.artifact_id=$1 AND a.user_id=$2 AND (a.bot_id=$3 OR EXISTS(SELECT 1 FROM message_artifacts ma JOIN bot_messages m USING(message_id) WHERE ma.artifact_id=a.artifact_id AND m.bot_id=$3))`,
+        `SELECT a.title,a.mime,a.body FROM report_artifacts a WHERE a.artifact_id=$1 AND a.user_id=$2 AND (a.bot_id=$3 OR EXISTS(SELECT 1 FROM message_artifacts ma JOIN bot_messages m USING(message_id) WHERE ma.artifact_id=a.artifact_id AND m.bot_id=$3))`,
         [params.id, user.user_id, run.bot_id],
       );
       if (!r) return fail(404, "报告不存在或未共享给本智能体");
+      if(r.mime && r.mime !== "text/markdown") fail(422,"请使用 document_read 读取 PDF、DOCX、XLSX 文档");
       const content = Buffer.from(r.body).toString("utf8");
       return {
         id: params.id,

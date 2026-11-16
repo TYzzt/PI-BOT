@@ -83,13 +83,13 @@ export function reportContextMessages<T>(messages: T[]): T[] {
     return {
       ...value,
       content: value.content.map((part: any) =>
-        part.type === "toolCall" && part.name === "publish_report"
+        part.type === "toolCall" && ["publish_report","document_write","document_edit"].includes(part.name)
           ? {
               ...part,
               arguments: {
                 ...part.arguments,
-                content:
-                  "[报告正文已单独保存为文件；按需使用 report_read 读取片段]",
+                content: "[正文已保存为文件，按需用 report_read/document_read 读取]",
+                ...(part.name.startsWith("document_") ? {replacements:undefined,cells:undefined} : {}),
               },
             }
           : part,

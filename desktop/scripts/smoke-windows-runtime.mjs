@@ -3,7 +3,7 @@ import { cp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawn } from 'node:child_process';
+import { spawn, fork } from 'node:child_process';
 import { createServer } from 'node:net';
 if (process.platform !== 'win32') throw new Error('Windows-only smoke test');
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -21,6 +21,18 @@ try {
   await new Promise((resolve, reject) => reservation.close(error => error ? reject(error) : resolve()));
   const env = { ...process.env, PI_BOT_DATA_DIR: join(stage, 'private'), PI_BOT_LIBRARY_ROOT: join(stage, 'libraries'), PI_BOT_WINDOWS_HELPER: join(runtime, 'pi-bot-windows.exe'), PI_BOT_PARENT_LEASE: '1', PI_BOT_IPC_PORT: String(port) };
   const node = join(runtime, 'bin/node.exe');
+  const documentJob = (job,bytes) => new Promise((resolve,reject) => {
+    const child=fork(join(runtime,'document-worker.mjs'),[],{execPath:node,execArgv:[],serialization:'advanced',windowsHide:true,stdio:['ignore','ignore','pipe','ipc'],cwd:stage});
+    let diagnostic='';child.stderr.on('data',b=>{diagnostic=(diagnostic+b).slice(-2000);});
+    const timer=setTimeout(()=>{child.kill();reject(new Error('Packaged document worker timed out'));},30000);
+    child.once('error',reject);child.once('exit',code=>{clearTimeout(timer);if(code)reject(new Error(`Packaged document worker failed: ${diagnostic}`));});
+    child.once('message',message=>{clearTimeout(timer);child.kill();message.ok?resolve(message.result):reject(new Error(message.error));});child.send({job,bytes});
+  });
+  for(const [name,content] of [['测试.docx',{paragraphs:[{text:'随包文档验证'}]}],['测试.xlsx',{sheets:[{name:'验证',rows:[['随包文档验证']]}]}]]){
+    const generated=await documentJob({action:'write',name,content});
+    const read=await documentJob({action:'read',name},generated.bytes);
+    if(!JSON.stringify(read).includes('随包文档验证'))throw new Error('Packaged document roundtrip lost Chinese content');
+  }
   service = spawn(node, [join(runtime, 'server.mjs')], { cwd: stage, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
   service.stdin.on('error', () => {});
   let stderr = ''; service.stderr.on('data', b => { stderr = (stderr + b).slice(-4000); });
