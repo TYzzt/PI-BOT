@@ -230,8 +230,10 @@ export async function remoteOperation(ctx: Context) {
         const current = await callerRun(tx,ctx.user.user_id,ctx.llm!,run.run_id);
         const once = await tx.rows("SELECT detail FROM approvals WHERE run_id=$1 AND status='approved' AND COALESCE(detail->>'remembered','false') <> 'true'",[run.run_id]);
         const paths = once.filter(x => !x.detail.access || x.detail.access === 'legacy' || x.detail.access === operation).map(x => x.detail.path);
-        if (operation === 'read' && typeof a.path === 'string' && posix.isAbsolute(a.path)) {
-          const rule = await matchAuthorization(tx,current,posix.normalize(a.path),operation);
+        const resource = operation === 'execute' ? a.cwd : a.path;
+        if (typeof resource === 'string' && posix.isAbsolute(resource)) {
+          const validated = await ctx.remote.action(env,run,bot.slug,body.call_id+'-scope','validate_approval',{path:resource,access:operation},abort.signal);
+          const rule = await matchAuthorization(tx,current,validated.path,operation);
           if (rule) paths.push(rule.resource);
         }
         return paths;

@@ -9,6 +9,6 @@ export const workspace = { name:'pi-bot-workspace', setup(build) {
   build.onResolve({filter:/^@pi-bot\/(agent|bot-face|a2ui|runtime-contracts)$/},args=>({path:resolve('../packages',args.path.split('/')[1],'src/index.ts')}));
 } };
 export async function buildService() {
-  await build({entryPoints:{server:'packages/service/src/server.ts',cli:'packages/service/src/cli.ts',paths:'packages/service/src/paths.ts'},outdir:'packages/service/dist',outExtension:{'.js':'.mjs'},plugins:[workspace],bundle:true,platform:'node',format:'esm',packages:'external',sourcemap:true});
+  await build({entryPoints:{server:'packages/service/src/server.ts',cli:'packages/service/src/cli.ts',paths:'packages/service/src/paths.ts','document-worker':'../packages/agent/src/documents/document-worker.ts'},outdir:'packages/service/dist',outExtension:{'.js':'.mjs'},plugins:[workspace],bundle:true,platform:'node',format:'esm',packages:'external',sourcemap:true});
 }
 if (process.argv[1] && resolve(process.argv[1])===fileURLToPath(import.meta.url)) await buildService();

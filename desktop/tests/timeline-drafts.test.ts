@@ -7,7 +7,7 @@ import { dirname,join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 
-test('timeline clears sent drafts across bot switches and reloads while preserving later edits and failed sends',async()=>{
+test('timeline preserves drafts, accepts offline and post-dialog native input, handles IME and uploads bounded document chunks',async()=>{
   const here=dirname(fileURLToPath(import.meta.url)),base=join(here,'../test-results');mkdirSync(base,{recursive:true});
   const directory=mkdtempSync(join(base,'timeline-drafts-'));
   try {

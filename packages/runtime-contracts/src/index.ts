@@ -105,6 +105,10 @@ const tool = (
 export const TOOL_REGISTRY: Readonly<Record<string, ToolDescriptor>> =
   Object.freeze({
     list_files: tool("浏览文件", "read", "public", "searching"),
+    document_read: tool("阅读文档", "read", "public", "searching"),
+    document_write: {...tool("创建文档", "write"),fileOutput:true},
+    document_edit: {...tool("修改文档副本", "write"),fileOutput:true},
+    document_publish: {...tool("发布文档", "write"),fileOutput:true},
     read_file: tool("阅读文件", "read", "public", "searching"),
     search_files: tool("搜索文件", "read", "public", "searching"),
     web_search: tool("查找资料", "read", "public", "searching"),

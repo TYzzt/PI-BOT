@@ -42,6 +42,7 @@ async function saveVersion(tx: Tx, skill: Row, action: string, runId: string) {
 
 /** No user-facing endpoint: a live run and its bot-scoped token own every operation. */
 export async function manageSkill(tx: Tx, userId: string, claims: LlmClaims, body: z.infer<typeof skillRequest>) {
+  if ('name' in body && ['builtin-pdf','builtin-word','builtin-excel'].includes(body.name)) fail(422,'内置文档 skill 名称保留，不能通过私有 skill 接口修改');
   const run = await callerRun(tx, userId, claims, body.run_id);
   if (run.automation_readonly && !["load", "list", "history"].includes(body.action)) fail(403, "当前轮次不能修改技能");
   const bot = await tx.one("SELECT bot_id FROM bots WHERE bot_id=$1 AND user_id=$2 AND archived_at IS NULL FOR UPDATE", [run.bot_id, userId]);

@@ -1,4 +1,4 @@
-import { artifactOut } from "./reports.js";
+import { artifactOut, publishedRunArtifacts, copyPublishedRunArtifacts } from "./reports.js";
 import { internalTool, TERMINAL_RUN_STATES } from "@pi-bot/runtime-contracts";
 import { taskMessage } from "./task-conversation.js";
 import {browserTestRouting,taskRouting,resolveTaskTarget,RemotePreparationRequired,type Routing} from "./targets.js";
@@ -70,7 +70,7 @@ async function ownTask(tx: Tx, userId: string, claims: LlmClaims, taskId: string
     [taskId, userId, claims.bot],
   );
   if (!t) fail(404, "委托不存在");
-  const reports=t!.child_run_id ? await tx.rows('SELECT artifact_id,title,name,mime,size,created_at FROM report_artifacts WHERE run_id=$1 ORDER BY created_at',[t!.child_run_id]) : [];
+  const reports=t!.child_run_id ? await publishedRunArtifacts(tx,t!.child_run_id) : [];
   return { ...t!, attachments:reports.map(artifactOut),status: t!.run_status ?? t!.status };
 }
 async function resolveTarget(tx: Tx, userId: string, name: string, selfId: string) {
@@ -243,7 +243,8 @@ export async function readTask(tx: Tx, userId: string, claims: LlmClaims, taskId
       return agentTaskOut({ ...task, status: "running", run_status: "running", result: null });
   }
   if(task.attachments?.length && task.mode === "wait") {
-    await tx.rows(`INSERT INTO message_artifacts(message_id,artifact_id) SELECT r.assistant_message_id,a.artifact_id FROM bot_runs r CROSS JOIN report_artifacts a WHERE r.run_id=$1 AND a.run_id=$2 ON CONFLICT DO NOTHING`,[task.parent_run_id,task.child_run_id]);
+    const parent = await tx.get("bot_runs", task.parent_run_id);
+    await copyPublishedRunArtifacts(tx,task.child_run_id,parent.assistant_message_id);
   }
   return agentTaskOut(task);
 }
@@ -500,7 +501,7 @@ export class AgentDispatcher {
           });
           await tx.rows("UPDATE agent_tasks SET report_run_id=$2 WHERE task_id=$1", [task_id, report.run_id]);
           if (t.child_run_id) {
-            await tx.rows("INSERT INTO message_artifacts(message_id,artifact_id) SELECT $1,artifact_id FROM report_artifacts WHERE run_id=$2 ON CONFLICT DO NOTHING", [report.assistant_message_id,t.child_run_id]);
+            await copyPublishedRunArtifacts(tx,t.child_run_id,report.assistant_message_id);
             const output = await tx.one("SELECT m.ui FROM bot_messages m JOIN bot_runs r ON r.assistant_message_id=m.message_id WHERE r.run_id=$1", [t.child_run_id]);
             if (output?.ui) await tx.update("bot_messages", report.assistant_message_id, { ui: output.ui });
           }

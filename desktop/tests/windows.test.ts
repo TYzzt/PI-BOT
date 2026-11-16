@@ -5,6 +5,7 @@ import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync, mkdirSync
 import { tmpdir } from 'node:os';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import { commandShell, defaultDataDir } from '../packages/service/src/platform.js';
 import { libraryFolder, nativeWindows, powerShellArgs, protectWindowsDirectory, validateWindowsPath } from '../packages/service/src/windows.js';
 import { FileCredentials } from '../packages/service/src/keychain.js';
@@ -15,7 +16,7 @@ import { windowsIpcPort } from '../packages/service/src/paths.js';
 
 const windows = process.platform === 'win32';
 const native = { skip: windows ? false : 'Requires Windows APIs and compiled MSVC helper' };
-if (windows) process.env.PI_BOT_WINDOWS_HELPER ||= resolve('native/dist/pi-bot-windows.exe');
+if (windows) process.env.PI_BOT_WINDOWS_HELPER ||= fileURLToPath(new URL('../native/dist/pi-bot-windows.exe', import.meta.url));
 function temp(t: { after(fn: () => void): void }) {
   const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'pi-bot-win-')));
   t.after(() => rmSync(dir, { recursive: true, force: true })); return dir;
@@ -157,7 +158,7 @@ test('Windows service authenticates IPC, refuses wrong token, and shuts down on 
   const port = (reservation.address() as import('node:net').AddressInfo).port;
   await new Promise<void>((resolve, reject) => reservation.close(error => error ? reject(error) : resolve()));
   const env = { ...process.env, PI_BOT_DATA_DIR: dataDir, PI_BOT_LIBRARY_ROOT: join(dir, 'libraries'), PI_BOT_PARENT_LEASE: '1', PI_BOT_IPC_PORT: String(port) };
-  const service = spawn(process.execPath, [resolve('packages/service/dist/server.mjs')], { env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+  const service = spawn(process.execPath, [fileURLToPath(new URL('../packages/service/dist/server.mjs', import.meta.url))], { env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
   t.after(() => { if (service.exitCode === null) service.kill(); });
   service.stdin.on('error', () => {}); let stderr = ''; service.stderr.on('data', b => { stderr += b; });
   await new Promise<void>((resolve, reject) => {

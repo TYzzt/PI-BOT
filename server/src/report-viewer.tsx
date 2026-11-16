@@ -18,16 +18,23 @@ try {
         ? "访问已过期，请从聊天卡片重新打开。"
         : "报告暂时无法打开。",
     );
-  const text = await response.text();
+  const mime = response.headers.get('content-type') ?? 'text/markdown';
+  const blob = await response.blob();
   document.title = decodeURIComponent(
     response.headers.get("x-report-title") ?? "报告",
   );
   document.querySelector("header strong")!.textContent = document.title;
   const download = document.getElementById("download") as HTMLAnchorElement;
   download.href = URL.createObjectURL(
-    new Blob([text], { type: "text/markdown;charset=utf-8" }),
+    blob,
   );
-  download.download = response.headers.get("x-report-name") ?? `${id}.md`;
+  download.download = decodeURIComponent(response.headers.get("x-report-name") ?? `${id}.md`);
+  if (mime.startsWith('application/pdf')) {
+    const frame=document.createElement('iframe'); frame.title=document.title;frame.src=download.href;frame.style.cssText='width:100%;height:80vh;border:0';target.append(frame);
+  } else if (!mime.startsWith('text/')) {
+    target.textContent='文档已就绪，请点击下载，用办公软件打开。';
+  } else {
+  const text = await blob.text();
   createRoot(target).render(
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -41,6 +48,7 @@ try {
       {text}
     </ReactMarkdown>,
   );
+  }
 } catch (error) {
   target.textContent =
     error instanceof Error ? error.message : "报告暂时无法打开。";

@@ -10,9 +10,14 @@
   "dependencies": {
     "@earendil-works/pi-ai": "1.5.2",
     "@earendil-works/pi-coding-agent": "1.5.2",
-    "typebox": "1.3.27",
     "@pi-bot/a2ui": "*",
-    "@pi-bot/runtime-contracts": "*"
+    "@pi-bot/runtime-contracts": "*",
+    "docx": "9.15.4",
+    "exceljs": "4.4.0",
+    "jszip": "3.10.1",
+    "mammoth": "1.13.0",
+    "pdfjs-dist": "6.5.438",
+    "typebox": "1.3.27"
   },
   "license": "Apache-2.0"
 }

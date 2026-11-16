@@ -27,3 +27,15 @@
 ## 桌面端 Web 测试依赖
 
 - `playwright` 和 `playwright-core`：桌面运行时锁定版本 1.65.1，Apache-2.0；来源 <https://github.com/microsoft/playwright>。打包保留依赖的许可文件。浏览器由用户安装，遵循各自的许可证。
+
+## 文档引擎
+
+随 npm 依赖分发，保留每个包内的 LICENSE/NOTICE，未修改上游源码：
+
+- PDF.js (`pdfjs-dist` 6.5.438)：Apache-2.0；https://github.com/mozilla/pdf.js 。提供 PDF 文字读取。
+- Mammoth 1.13.0：BSD-2-Clause；https://github.com/mwilliamson/mammoth.js 。提供 DOCX 内容读取。
+- docx 9.15.4：MIT；https://github.com/dolanmiu/docx 。提供 DOCX 编写。
+- ExcelJS 4.4.0：MIT；https://github.com/exceljs/exceljs 。提供 XLSX 读写。
+- JSZip 3.10.1：选用 MIT 许可（上游提供 MIT/GPL-3.0 双许可）；https://github.com/Stuk/jszip 。用于 Office ZIP 格式验证。
+
+文档操作在有超时和堆内存限制的独立 Node 子进程中运行；内置技能为本项目原创说明，不安装或执行第三方 skill 包。

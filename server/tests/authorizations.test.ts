@@ -24,7 +24,8 @@ test('saved resource matching rejects sibling prefixes, traversal and broad or d
   for (const path of ['C:\\','/','/home','/root']) assert.equal(normalizedResource(path,path.includes(':')?'win32':'linux'),null);
   const scope = {...rule,target:`device:${randomUUID()}`,target_label:'Windows PC',operation:'read' as const};
   assert.ok(canRemember(scope));
-  for (const operation of ['write','execute','legacy'] as const) assert.equal(canRemember({...scope,operation}),false);
+  for (const operation of ['write','execute'] as const) assert.equal(canRemember({...scope,operation}),true);
+  assert.equal(canRemember({...scope,operation:'legacy'}),false);
   assert.equal(canRemember({...scope,resource_type:'unknown'}),false);
 });
 
@@ -33,7 +34,7 @@ test('saved authorization API persists, scopes, audits and revokes across runs a
   const dir = tempDir();
   const db = new Database(TEST_DB!);
   const hub = new Hub();
-  const s = settings({PI_BOT_DATABASE_URL:TEST_DB,PI_BOT_JWT_SECRET:'j'.repeat(40),PI_BOT_ADMIN_PASSWORD:'test-password',PI_BOT_VAULT_FILE:vaultFile(dir.path)});
+  const s = settings({PI_BOT_LOCAL_WORK_ROOT:"/pibot-test-workspaces",PI_BOT_REMOTE_BACKEND:"none",PI_BOT_DATABASE_URL:TEST_DB,PI_BOT_JWT_SECRET:'j'.repeat(40),PI_BOT_ADMIN_PASSWORD:'test-password',PI_BOT_VAULT_FILE:vaultFile(dir.path)});
   const app = await createApp(s,db,hub);
   t.after(async () => { await app.close(); dir.cleanup(); });
   const login = await app.inject({method:'POST',url:'/auth/login',payload:{username:'admin',password:'test-password'}});
@@ -110,8 +111,9 @@ test('saved authorization API persists, scopes, audits and revokes across runs a
       await db.tx(tx=>tx.rows("UPDATE approvals SET detail=detail - 'authorization_scope' - 'access' WHERE approval_id=$1",[p.approval_id]));
     }
     const result = await api('POST',`/approvals/${p.approval_id}`,{decision:'approve_always'});
-    assert.equal(result.statusCode,422,result.body);
-    assert.equal((await api('POST',`/approvals/${p.approval_id}`,{decision:'approve'})).statusCode,200);
+    if(access===undefined){assert.equal(result.statusCode,422,result.body);assert.equal((await api('POST',`/approvals/${p.approval_id}`,{decision:'approve'})).statusCode,200);}
+    else {assert.equal(result.statusCode,200,result.body);assert.equal(await check('C:\\Projects\\Demo\\a',access),true);const rules=(await api('GET','/authorizations')).json();const saved=rules.find((r:any)=>r.operation===access);assert.ok(saved);await api('DELETE',`/authorizations/${saved.id}`);assert.equal(await check('C:\\Projects\\Demo\\a',access),false);}
+
   }
   const expired = await approval((await newRun()).run_id);
   await db.tx(tx=>tx.rows("UPDATE approvals SET expires_at=now()-interval '1 second' WHERE approval_id=$1",[expired.approval_id]));

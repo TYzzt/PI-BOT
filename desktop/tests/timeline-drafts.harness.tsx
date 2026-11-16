@@ -1,3 +1,4 @@
+import {confirmAction} from '../apps/desktop/ui/dialogs.js';
 import { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Timeline } from '../apps/desktop/ui/timeline.js';
@@ -12,6 +13,9 @@ let pending: {resolve(value:unknown):void;reject(error:Error):void} | undefined;
 const harness = {
   requests: [] as {botId:string;text:string;images:unknown[]}[],
   select: (_id:string) => {},
+  online: (_value:boolean) => {},
+  confirm:confirmAction,
+  chunks:[] as string[],
   finish: (success:boolean) => {
     if (!pending) throw new Error('No pending send');
     const request = pending; pending = undefined;
@@ -27,6 +31,10 @@ window.agent = {
     install:async()=>false,
   },
   call:async(method,input:any)=>{
+    if(method==='documentCapabilities')return {version:1};
+    if(method==='documentUploadBegin')return {upload_id:input.request_id};
+    if(method==='documentUploadChunk'){harness.chunks[input.part]=input.data;return {received:atob(input.data).length};}
+    if(method==='documentUploadComplete')return {artifact:{id:'11223344-1122-4122-8122-112233445566',name:'测试.pdf',title:'测试.pdf',mime:'application/pdf',size:340000,status:'ready',created_at:new Date().toISOString()}};
     if (method !== 'send') throw new Error(`Unexpected call: ${method}`);
     harness.requests.push(input);
     return new Promise((resolve,reject)=>{pending={resolve,reject};});
@@ -39,7 +47,8 @@ if (!localStorage.getItem('pi-bot.message-drafts.v1')) stageDrafts({
 });
 function Harness() {
   const [bot,setBot] = useState(botA);
+  const [online,setOnline] = useState(true);harness.online=setOnline;
   harness.select = id=>setBot(id === botA.id ? botA : botB);
-  return <Timeline bot={bot} messages={[]} hasMore={false} mood="idle" online={true} onLoadMore={async()=>{}} onSent={()=>{}} onOpenBot={()=>{}} />;
+  return <Timeline bot={bot} messages={[]} hasMore={false} mood="idle" online={online} onLoadMore={async()=>{}} onSent={()=>{}} onOpenBot={()=>{}} />;
 }
 createRoot(document.getElementById('root')!).render(<Harness />);

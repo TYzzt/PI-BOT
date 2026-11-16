@@ -1,6 +1,7 @@
+import type {ArtifactRef} from '../../../packages/protocol/src/index.js';
 import type { ChatImage } from '@pi-bot/agent/images';
 
-export interface Draft { text: string; images: ChatImage[] }
+export interface Draft { text: string; images: ChatImage[]; documents?:ArtifactRef[] }
 const key = 'pi-bot.message-drafts.v1';
 let current: Record<string,Draft> | undefined;
 export function readDrafts(): Record<string,Draft> {
@@ -11,16 +12,17 @@ export function readDrafts(): Record<string,Draft> {
     if (data && typeof data === 'object' && !Array.isArray(data)) {
       for (const [id,value] of Object.entries(data)) {
         const draft = value as Partial<Draft> | null;
-        if (draft && typeof draft.text === 'string' && Array.isArray(draft.images)) restored[id] = {text:draft.text,images:draft.images};
+        if (draft && typeof draft.text === 'string' && Array.isArray(draft.images)) restored[id] = {text:draft.text,images:draft.images,documents:Array.isArray(draft.documents)?draft.documents:[]};
       }
     }
   } catch { /* Missing or damaged draft storage starts empty. */ }
   current = restored;
   return current;
 }
-export function stageDrafts(drafts: Record<string,Draft>) { current = drafts; }
+let timer:ReturnType<typeof setTimeout>|undefined;
+export function stageDrafts(drafts: Record<string,Draft>) { current = drafts;clearTimeout(timer);timer=setTimeout(()=>{try{flushDrafts();}catch{/* Quota errors must not block typing. */}},600); }
 /** Synchronous write completes before the installer IPC; quota errors stop installation. */
 export function flushDrafts() {
   const drafts = readDrafts();
-  localStorage.setItem(key,JSON.stringify(Object.fromEntries(Object.entries(drafts).filter(([,d]) => d.text || d.images.length))));
+  localStorage.setItem(key,JSON.stringify(Object.fromEntries(Object.entries(drafts).filter(([,d]) => d.text || d.images.length || d.documents?.length))));
 }

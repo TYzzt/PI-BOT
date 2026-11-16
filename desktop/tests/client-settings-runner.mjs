@@ -32,11 +32,17 @@ app.whenReady().then(async()=>{
     await js(`document.querySelector('.authorization-rule').scrollIntoView({block:'center'})`);
     await shot('saved-authorizations.png');
     await click('一直允许');
+    await until(`!!document.querySelector('dialog[open]')`,'confirmation dialog missing');
+    await js(`window.__settingsHarness.confirmations.push(document.querySelector('dialog').textContent)`);
+    await click('确认');
     await until(`document.body.textContent.includes('连接暂时中断')`,'decision failure missing');
     await click('一直允许');
+    await until(`!!document.querySelector('dialog[open]')`,'confirmation dialog missing');
+    await js(`window.__settingsHarness.confirmations.push(document.querySelector('dialog').textContent)`);
+    await click('确认');
     await until(`window.__settingsHarness.history.filter(x=>x.method==='decide').length===2`,'decision retry stayed disabled');
     if(!await js(`window.__settingsHarness.confirmations.every(x=>x.includes('办公电脑') && x.includes('不包含写入'))`))throw new Error('remembered permission scope was not confirmed');
-    await click('撤销');
+    await click('撤销');await until(`!!document.querySelector('dialog[open]')`,'revoke dialog missing');await click('确认');
     await until(`document.body.textContent.includes('暂无已保存授权')`,'revocation not reflected');
     await js(`window.__settingsHarness.cancel=false`);await click('安装更新');
     await until(`document.body.textContent.includes('已打开安装器')`,'installer launch feedback missing');

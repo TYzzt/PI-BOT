@@ -58,6 +58,29 @@ app.whenReady().then(async()=>{
     await expect(`${saved}['bot-b'].text==='B remains unsent' && ${saved}['bot-b'].images.length===1`,'failed B send lost its draft');
     await select('bot-b');
     await expect(`document.querySelector('textarea').value==='B remains unsent'`,'failed send draft missing after switching back');
+    await js(`window.__draftHarness.online(false)`);
+    await until(`document.querySelector('button.send').disabled`,'offline send not disabled');
+    await expect(`!document.querySelector('textarea').disabled`,'offline composer stopped accepting text');
+    await type('离线草稿');
+    await js(`window.__draftHarness.online(true)`);
+    await until(`!document.querySelector('button.send').disabled`,'reconnect did not restore send');
+    for(let i=0;i<4;i++){
+      await js(`(()=>{const input=document.querySelector('textarea');input.focus();input.setSelectionRange(input.value.length,input.value.length);void window.__draftHarness.confirm('保留输入焦点');})()`);
+      await until(`!!document.querySelector('dialog[open]')`,'async dialog missing');
+      await js(`document.querySelector('dialog .primary').click()`);
+      await until(`document.activeElement===document.querySelector('textarea')`,'dialog did not restore input focus');
+      win.webContents.sendInputEvent({type:'char',keyCode:'Z'});
+      await until(`document.querySelector('textarea').value.endsWith(${JSON.stringify('Z'.repeat(i+1))})`,'native key input failed after dialog');
+    }
+    await js(`(()=>{const input=document.querySelector('textarea');input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,keyCode:229,bubbles:true}));})()`);
+    await expect(`window.__draftHarness.requests.length===2`,'IME confirmation submitted a message');
+    await js(`(()=>{const data=new DataTransfer();data.items.add(new File(['%PDF-1.4\\n'+'x'.repeat(339991)],'测试.pdf',{type:'application/pdf'}));const picker=document.querySelector('input[accept=".pdf,.docx,.xlsx"]');picker.files=data.files;picker.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+    await until(`document.querySelector('.document-drafts')?.textContent.includes('测试.pdf') && !document.querySelector('.document-drafts').textContent.includes('取消上传')`,'document upload did not finish');
+    await expect(`window.__draftHarness.chunks.length===2 && atob(window.__draftHarness.chunks[0]).length===262144`,'upload did not use bounded chunks');
+    await send(3);
+    await expect(`window.__draftHarness.requests[2].document_ids[0]==='11223344-1122-4122-8122-112233445566'`,'send omitted uploaded reference');
+    await finish(true);
+    await expect(`!document.querySelector('.document-drafts').textContent.includes('测试.pdf')`,'sent document draft survived');
     writeFileSync(join(directory,'result.json'),JSON.stringify({ok:true}));
     win.destroy();app.exit(0);
   } catch(error) {

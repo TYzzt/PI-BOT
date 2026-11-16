@@ -141,6 +141,8 @@ npm run desktop:dev
 
 ## 开发与验证
 
+文档附件的上传、读取和生成能力见 [文档说明](docs/documents.md)，持续授权范围及撤销方式见 [已保存授权](docs/saved-authorizations.md)。
+
 ```sh
 npm run typecheck
 npm run build

@@ -16,6 +16,8 @@ export const fail = (status: number, detail: unknown): never => {
   throw new HttpError(status, detail);
 };
 const keys: Record<string, string> = {
+  report_artifacts: "artifact_id",
+  document_uploads: "upload_id",
   remote_environments: "environment_id",
   remote_artifacts: "artifact_id",
   users: "user_id",

@@ -7,6 +7,35 @@ import { CANCELLED } from '@pi-bot/agent';
 import { Executor, type RunContext } from '../packages/service/src/executor.js';
 import { OutsideError } from '../packages/service/src/library.js';
 
+test('document tools remain available to ordinary tasks while browser tests keep their restricted tools', async t => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'pi-bot-document-browser-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const origin = 'http://127.0.0.1:5173';
+  writeFileSync(join(root, 'browser-test.json'), JSON.stringify({ enabled: true, origins: [origin], browser: 'chrome' }));
+  for (const browser of [false, true]) {
+    const events: any[] = [];
+    let tools: string[] = [];
+    const executor = new Executor({
+      libraryRoot: join(root, 'libraries'), agentDir: join(root, 'agents'),
+      browserTestDataDir: root, phoneConfigPath: join(root, 'no-phone.json'),
+      proxyUrl: 'http://127.0.0.1/llm/v1', llmToken: async () => 'test-token',
+      send: message => events.push(message), activity() {},
+      factory: async options => {
+        tools = options.tools!.map(tool => tool.name);
+        return { tools: [], setApiKey: async () => {}, dispose() {}, abort: async () => {}, prompt: async () => 'verified' };
+      },
+    });
+    await executor.start({
+      run_id: browser ? 'browser-run' : 'document-run', executor: 'device', lane: 'task',
+      bot: { id: 'bot', name: 'Bot', slug: 'bot' }, model: { id: 'model', name: 'test', context_window: 32000, max_tokens: 1000 },
+      system: 'test', history: [], text: 'test', ...(browser ? { browser_test_origin: origin } : {}),
+    });
+    assert.equal(events.at(-1).event.state, 'completed', JSON.stringify(events.at(-1)));
+    if (browser) assert.deepEqual(tools, ['browser_test']);
+    else for (const name of ['document_read', 'document_write', 'document_edit', 'document_publish']) assert.ok(tools.includes(name), name);
+  }
+});
+
 test('saved approval decisions reach real file tools without caching permission after revocation', async t => {
   const root = realpathSync(mkdtempSync(join(tmpdir(),'pi-bot-saved-executor-')));
   t.after(()=>rmSync(root,{recursive:true,force:true}));
@@ -18,10 +47,10 @@ test('saved approval decisions reach real file tools without caching permission 
     assert.equal(String(url),'http://127.0.0.1/agent/authorizations/check');
     assert.equal((options!.headers as Record<string,string>).Authorization,'Bearer test-token');
     const body = JSON.parse(options!.body as string);
-    assert.equal(body.run_id,'saved-run'); assert.equal(body.access,'read');
+    assert.equal(body.run_id,'saved-run'); assert.ok(['read','write','execute'].includes(body.access));
     assert.ok(body.path === outside || body.path === file);
     checks++;
-    return new Response(JSON.stringify({approved:active}),{status:networkFailure ? 503 : 200});
+    return new Response(JSON.stringify({approved:active && body.access==='read'}),{status:networkFailure ? 503 : 200});
   };
   const events: any[] = [];
   const executor = new Executor({

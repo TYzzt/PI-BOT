@@ -125,7 +125,7 @@ test('saved read permission is checked on every access and cannot authorize writ
   writeFileSync(join(outside,'readme.txt'),'project'); writeFileSync(join(sibling,'private.txt'),'private');
   symlinkSync(sibling,join(outside,'escape'),process.platform === 'win32' ? 'junction' : 'dir');
   let active = true, checks = 0;
-  const sandbox = new Sandbox(root,[],async path => { checks++; return active && (path === outside || path.startsWith(outside + (process.platform === 'win32' ? '\\' : '/'))); });
+  const sandbox = new Sandbox(root,[],async (path,access) => { checks++; return access==='read' && active && (path === outside || path.startsWith(outside + (process.platform === 'win32' ? '\\' : '/'))); });
   const tools = libraryTools(sandbox,{requestOutside:async()=> 'saved'});
   assert.equal(await call(tools,'read_file',{path:join(outside,'readme.txt')}),'project');
   await assert.rejects(call(tools,'write_file',{path:join(outside,'readme.txt'),content:'bad'}),OutsideError);

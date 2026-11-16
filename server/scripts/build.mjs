@@ -13,7 +13,7 @@ const workspace = {
   },
 };
 await build({
-  entryPoints: ["src/main.ts", "src/worker.ts", "src/runner.ts"],
+  entryPoints: {main:"src/main.ts", worker:"src/worker.ts", runner:"src/runner.ts", "document-worker":"../packages/agent/src/documents/document-worker.ts"},
   outdir: "dist",
   outExtension: { ".js": ".mjs" },
   bundle: true,
