@@ -6,8 +6,7 @@ import dev.pibot.android.push.PushConfigResponse
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.contentOrNull
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
@@ -398,11 +397,27 @@ class PiBotApi(private val http: OkHttpClient, private val json: Json = API_JSON
 }
 
 fun errorMessage(status: Int, body: String): String {
-    val detail = runCatching {
-        val element = API_JSON.parseToJsonElement(body)
-        ((element as? JsonObject)?.get("detail") as? JsonPrimitive)?.contentOrNull
-    }.getOrNull()
-    return detail?.takeIf { it.isNotBlank() } ?: when (status) {
+    val parsed = runCatching { API_JSON.parseToJsonElement(body) as? JsonObject }.getOrNull()
+    val detailElement = parsed?.get("detail")
+
+    // 1. Try detail as a plain string (original behaviour)
+    (detailElement as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }?.let { return it }
+
+    // 2. Try detail as an array of validation issues [{loc, msg, type}, ...]
+    (detailElement as? JsonArray)?.takeIf { it.isNotEmpty() }?.let { arr ->
+        val lines = arr.mapNotNull { item ->
+            val obj = (item as? JsonObject) ?: return@mapNotNull null
+            val msg = (obj["msg"] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val loc = (obj["loc"] as? JsonArray)
+                ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+                ?.joinToString(".")
+            if (loc.isNullOrBlank()) msg else "$loc: $msg"
+        }
+        if (lines.isNotEmpty()) return lines.joinToString("\n")
+    }
+
+    // 3. Fallback
+    return when (status) {
         401 -> "登录已过期，请重新登录"
         503 -> "电脑离线，资料库不可用"
         else -> "请求失败（$status）"
