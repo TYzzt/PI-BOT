@@ -1,0 +1,20 @@
+android/app/src/main/java/dev/pibot/android/data/PiBotApi.kt
+  h_0953b6dc91c7e5 9,400-420
+android/app/src/main/java/dev/pibot/android/ui/ChatImages.kt
+  h_0953b6dc91c7e5 4,33,37-39,41-158,160-166,169-170
+android/app/src/main/java/dev/pibot/android/ui/TimelineScreen.kt
+  h_0953b6dc91c7e5 581-587,604-608
+android/app/src/test/java/dev/pibot/android/data/ErrorMessageTest.kt
+  h_0953b6dc91c7e5 1-28
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9f315cab00ecb066891f3179938beb8384519171",
+  "prompts": {},
+  "humans": {
+    "h_0953b6dc91c7e5": {
+      "author": "zhaotao1 <zhaotao1@lenovo.com>"
+    }
+  }
+}
