@@ -578,7 +578,13 @@ private fun Composer(botId: String, botName: String, text: String, onTextChange:
             reading = true
             imageError = null
             scope.launch {
-                try { val selected = readChatImages(context, uris, images); if (currentBotId == targetBot) images = selected }
+                try {
+                    val result = readChatImages(context, uris, images)
+                    if (currentBotId == targetBot) {
+                        images = result.images
+                        imageError = result.warnings.takeIf { it.isNotEmpty() }?.joinToString("\n")
+                    }
+                }
                 catch (e: Exception) { if (currentBotId == targetBot) imageError = errorText(e) }
                 finally { if (currentBotId == targetBot) reading = false }
             }
@@ -595,8 +601,11 @@ private fun Composer(botId: String, botName: String, text: String, onTextChange:
             scope.launch {
                 try {
                     val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.updates", file)
-                    val selected = readChatImages(context, listOf(uri), images)
-                    if (currentBotId == targetBot) images = selected
+                    val result = readChatImages(context, listOf(uri), images)
+                    if (currentBotId == targetBot) {
+                        images = result.images
+                        imageError = result.warnings.takeIf { it.isNotEmpty() }?.joinToString("\n")
+                    }
                 } catch (e: Exception) { if (currentBotId == targetBot) imageError = errorText(e) }
                 finally { file.delete(); if (currentBotId == targetBot) reading = false }
             }
