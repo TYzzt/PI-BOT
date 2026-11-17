@@ -1,0 +1,14 @@
+android/app/src/main/java/dev/pibot/android/data/PiBotApi.kt
+  h_0953b6dc91c7e5 10-11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8f8ee9cb7a2c054f15bb084b05bdc5e082d2088d",
+  "prompts": {},
+  "humans": {
+    "h_0953b6dc91c7e5": {
+      "author": "zhaotao1 <zhaotao1@lenovo.com>"
+    }
+  }
+}
