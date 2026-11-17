@@ -16,6 +16,9 @@ const harness = {
   online: (_value:boolean) => {},
   confirm:confirmAction,
   chunks:[] as string[],
+  starts:[] as any[],
+  sourceImage:image,
+  pickers:[] as string[],
   finish: (success:boolean) => {
     if (!pending) throw new Error('No pending send');
     const request = pending; pending = undefined;
@@ -24,6 +27,13 @@ const harness = {
   save: () => bridge.updates!.install(),
 };
 (window as any).__draftHarness = harness;
+document.addEventListener('click', event => {
+  const input = event.target;
+  if (input instanceof HTMLInputElement && input.type === 'file') {
+    event.preventDefault();
+    harness.pickers.push(input.accept);
+  }
+});
 window.agent = {
   updates:{
     state:async()=>({supported:true,phase:'ready',channel:'stable',version:'0.3.0',buildNumber:0,message:''}),
@@ -32,9 +42,9 @@ window.agent = {
   },
   call:async(method,input:any)=>{
     if(method==='documentCapabilities')return {version:1};
-    if(method==='documentUploadBegin')return {upload_id:input.request_id};
+    if(method==='documentUploadBegin'){harness.starts.push(input);return {upload_id:input.request_id};}
     if(method==='documentUploadChunk'){harness.chunks[input.part]=input.data;return {received:atob(input.data).length};}
-    if(method==='documentUploadComplete')return {artifact:{id:'11223344-1122-4122-8122-112233445566',name:'测试.pdf',title:'测试.pdf',mime:'application/pdf',size:340000,status:'ready',created_at:new Date().toISOString()}};
+    if(method==='documentUploadComplete')return {artifact:{id:'11223344-1122-4122-8122-112233445566',name:harness.starts.at(-1).name,title:harness.starts.at(-1).name,mime:'text/csv',size:340000,status:'ready',created_at:new Date().toISOString()}};
     if (method !== 'send') throw new Error(`Unexpected call: ${method}`);
     harness.requests.push(input);
     return new Promise((resolve,reject)=>{pending={resolve,reject};});

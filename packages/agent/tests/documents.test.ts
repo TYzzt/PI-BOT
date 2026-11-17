@@ -4,6 +4,7 @@ import { processDocument } from "../src/documents/runtime.js";
 import { documentTools } from "../src/documents/tools.js";
 import JSZip from "jszip";
 import ExcelJS from "exceljs";
+import { toolDescriptor } from "@pi-bot/runtime-contracts";
 function pdf(text: string) {
   const stream = `BT /F1 12 Tf 20 100 Td (${text}) Tj ET`;
   const objects = [
@@ -192,11 +193,11 @@ test("format validation, macros, cancellation and readonly tool registration", a
     documentTools("http://localhost", () => "", "run", false).map(
       (t) => t.name,
     ),
-    ["document_read"],
+    ["file_bytes", "document_read"],
   );
   assert.equal(
     documentTools("http://localhost", () => "", "run", true).length,
-    4,
+    6,
   );
 });
 
@@ -341,4 +342,34 @@ test("Excel reads every uploaded column and resumes oversized rows through JSON 
     fragment = read.next_fragment;
   }
   assert.equal(JSON.parse(encoded).values[16383], "Excel 最后一列");
+});
+
+
+test("generic files read text without suffix restrictions and preserve binary bytes", async (t) => {
+  assert.equal(toolDescriptor("file_bytes")?.readonly, true);
+  assert.equal(toolDescriptor("file_fetch")?.effect, "write");
+  for (const name of ["notes.txt", "README.md", "main.ts", "table.csv", "no-extension", "text.pdf"]) {
+    const read = await processDocument({ action: "read", name, offset: 1, limit: 1 }, Buffer.from("第一行\n第二行\n第三行"));
+    assert.deepEqual(read.lines, ["第二行"]);
+    assert.equal(read.next_offset, 2);
+    assert.equal(read.has_more, true);
+  }
+  const binary = Buffer.from([0, 255, 128, 1, 2]);
+  const read = await processDocument({ action: "read", name: "opaque.custom" }, binary);
+  assert.equal(read.format, "binary");
+  await assert.rejects(processDocument({ action: "read", name: "opaque", reader: "text" }, binary), /UTF-8/);
+  const hidden = await processDocument({ action: "read", name: "no-suffix", reader: "pdf" }, pdf("Explicit parser"));
+  assert.match(JSON.stringify(hidden), /Explicit parser/);
+  const inferred = await processDocument({ action: "read", name: "no-suffix" }, pdf("Signature parser"));
+  assert.match(JSON.stringify(inferred), /Signature parser/);
+  let written: Buffer | undefined;
+  t.mock.method(globalThis, "fetch", async () => Response.json({ name: "opaque.custom", data: binary.toString("base64") }));
+  const tools = documentTools("https://example.invalid", () => "token", "run", true, {
+    read: async () => binary,
+    write: async (path, bytes) => { assert.equal(path, "inbox/opaque.custom"); written = bytes; },
+  });
+  await tools.find(tool => tool.name === "file_fetch")!.execute("id", { artifact_id: "11223344-1122-4122-8122-112233445566", path: "inbox/opaque.custom" }, undefined, undefined as any, undefined as any);
+  assert.deepEqual(written, binary);
+  const slice = await tools.find(tool => tool.name === "file_bytes")!.execute("id", { path: "opaque", offset: 1, limit: 2 }, undefined, undefined as any, undefined as any);
+  assert.equal((slice.details as any).data, binary.subarray(1, 3).toString("base64"));
 });

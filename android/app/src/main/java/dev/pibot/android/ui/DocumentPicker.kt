@@ -14,10 +14,10 @@ import dev.pibot.android.data.PiBotRepository
 import kotlinx.coroutines.*
 import java.util.UUID
 
-private data class PendingDocument(val uri: Uri, val id: String = UUID.randomUUID().toString(), val name: String = "文档", val progress: Int = 0, val error: String? = null)
+private data class PendingDocument(val uri: Uri, val id: String = UUID.randomUUID().toString(), val name: String = "文件", val progress: Int = 0, val error: String? = null)
 
 @Composable
-internal fun DocumentPicker(botId: String, repository: PiBotRepository, ids: List<String>, onIds: (List<String>) -> Unit, onBusy: (Boolean) -> Unit, enabled: Boolean) {
+internal fun DocumentPicker(botId: String, repository: PiBotRepository, ids: List<String>, onIds: (List<String>) -> Unit, onBusy: (Boolean) -> Unit, enabled: Boolean, content: @Composable (Boolean, () -> Unit) -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var names by rememberSaveable(botId) { mutableStateOf(hashMapOf<String, String>()) }
@@ -25,6 +25,8 @@ internal fun DocumentPicker(botId: String, repository: PiBotRepository, ids: Lis
     var error by remember(botId) { mutableStateOf<String?>(null) }
     var available by remember { mutableStateOf(false) }
     val currentIds by rememberUpdatedState(ids)
+    val currentBot by rememberUpdatedState(botId)
+    var pickingFor by rememberSaveable { mutableStateOf<String?>(null) }
     val jobs = remember(botId) { mutableMapOf<String, Job>() }
     LaunchedEffect(repository, botId) { available = runCatching { repository.documentCapabilities(); true }.getOrDefault(false) }
     LaunchedEffect(pending.isNotEmpty()) { onBusy(pending.isNotEmpty()) }
@@ -34,14 +36,14 @@ internal fun DocumentPicker(botId: String, repository: PiBotRepository, ids: Lis
         jobs[item.id] = scope.launch {
             try {
                 val source = withContext(Dispatchers.IO) {
-                    val name = context.contentResolver.query(item.uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c -> if (c.moveToFirst()) c.getString(0) else null } ?: "document.pdf"
-                    require(Regex("(?i).*\\.(pdf|docx|xlsx)$").matches(name)) { "仅支持 PDF、DOCX、XLSX" }
+                    val name = context.contentResolver.query(item.uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c -> if (c.moveToFirst()) c.getString(0) else null } ?: "file"
                     val bytes = context.contentResolver.openInputStream(item.uri)?.use { input ->
                         val out = java.io.ByteArrayOutputStream()
                         val buffer = ByteArray(8192)
-                        while(true) { val count = input.read(buffer); if(count < 0) break; require(out.size()+count <= 10*1024*1024) { "每份文档最多 10 MiB" }; out.write(buffer,0,count) }
+                        while(true) { val count = input.read(buffer); if(count < 0) break; require(out.size()+count <= 10*1024*1024) { "每份文件最多 10 MiB" }; out.write(buffer,0,count) }
                         out.toByteArray() } ?: throw IllegalStateException("无法读取文件")
-                    require(bytes.isNotEmpty() && bytes.size <= 10 * 1024 * 1024) { "每份文档最多 10 MiB" }
+                    require(bytes.isNotEmpty() && bytes.size <= 10 * 1024 * 1024) { "每份文件最多 10 MiB" }
+                    ensureActive()
                     name to bytes
                 }
                 pending = pending.map { if (it.id == item.id) it.copy(name = source.first) else it }
@@ -49,6 +51,7 @@ internal fun DocumentPicker(botId: String, repository: PiBotRepository, ids: Lis
                     scope.launch { pending = pending.map { if (it.id == item.id) it.copy(progress = progress) else it } }
                 }
                 ensureActive()
+                if (currentBot != botId) return@launch
                 if (artifact.id !in currentIds) { names = HashMap(names).apply { put(artifact.id, artifact.name) }; onIds(currentIds + artifact.id) }
                 pending = pending.filter { it.id != item.id }
             } catch (e: CancellationException) { throw e }
@@ -57,13 +60,15 @@ internal fun DocumentPicker(botId: String, repository: PiBotRepository, ids: Lis
         }
     }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-        if (ids.size + pending.size + uris.size > 4) error = "每条消息最多 4 份文档"
+        val target = pickingFor
+        pickingFor = null
+        if (target != botId || !enabled) return@rememberLauncherForActivityResult
+        if (ids.size + pending.size + uris.size > 4) error = "每条消息最多 4 个文件"
         else uris.forEach { start(PendingDocument(it)) }
     }
     Column {
-        TextButton(enabled = enabled && available && ids.size + pending.size < 4, onClick = { picker.launch(arrayOf("application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")) }) { Text("上传文档") }
         ids.forEach { id -> Row {
-            Text(names[id] ?: "已上传文档", modifier = androidx.compose.ui.Modifier.weight(1f))
+            Text(names[id] ?: "已上传文件", modifier = androidx.compose.ui.Modifier.weight(1f))
             TextButton(enabled = enabled, onClick = { onIds(ids.filter { it != id }); names = HashMap(names).apply { remove(id) } }) { Text("移除") }
         } }
         pending.forEach { item -> Column {
@@ -74,5 +79,9 @@ internal fun DocumentPicker(botId: String, repository: PiBotRepository, ids: Lis
             }
         } }
         error?.let { Text(it, color = Danger) }
+        content(enabled && available && ids.size + pending.size < 4) {
+            pickingFor = botId
+            picker.launch(arrayOf("*/*"))
+        }
     }
 }

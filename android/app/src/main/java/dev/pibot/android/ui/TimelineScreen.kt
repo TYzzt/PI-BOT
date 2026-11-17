@@ -567,6 +567,7 @@ private fun Composer(botId: String, botName: String, text: String, onTextChange:
     var imageError by remember(botId) { mutableStateOf<String?>(null) }
     var retryImages by remember(botId) { mutableStateOf<List<ChatImage>>(emptyList()) }
     var pickingFor by remember { mutableStateOf<String?>(null) }
+    var attachmentMenuOpen by remember(botId) { mutableStateOf(false) }
     val currentBotId by rememberUpdatedState(botId)
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         val targetBot = pickingFor
@@ -581,8 +582,25 @@ private fun Composer(botId: String, botName: String, text: String, onTextChange:
             }
         }
     }
-    Column {
-        DocumentPicker(botId,repository,documentIds,{ documentIds=it },{ documentsBusy=it },!sending)
+    var cameraPath by rememberSaveable { mutableStateOf<String?>(null) }
+    var cameraBot by rememberSaveable { mutableStateOf<String?>(null) }
+    val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
+        val file = cameraPath?.let { java.io.File(it) }
+        val targetBot = cameraBot
+        cameraPath = null; cameraBot = null
+        if (success && file != null && targetBot == botId && !sending && !reading) {
+            reading = true; imageError = null
+            scope.launch {
+                try {
+                    val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.updates", file)
+                    val selected = readChatImages(context, listOf(uri), images)
+                    if (currentBotId == targetBot) images = selected
+                } catch (e: Exception) { if (currentBotId == targetBot) imageError = errorText(e) }
+                finally { file.delete(); if (currentBotId == targetBot) reading = false }
+            }
+        } else file?.delete()
+    }
+    DocumentPicker(botId,repository,documentIds,{ documentIds=it },{ documentsBusy=it },!sending && !reading) { canPickDocument, pickDocument ->
 
         imageError?.let { Text(it, color = Danger, modifier = Modifier.padding(horizontal = 16.dp)) }
         if (images.isNotEmpty()) Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -600,8 +618,30 @@ private fun Composer(botId: String, botName: String, text: String, onTextChange:
             verticalAlignment = Alignment.CenterVertically,
         ) {
             IconButton(enabled = callEnabled && !sending, onClick = onCall) { Icon(Icons.Filled.Phone, "语音通话") }
-            IconButton(enabled = !sending && !reading && images.size < 4, onClick = { pickingFor = botId; picker.launch(arrayOf("image/jpeg", "image/png", "image/webp", "image/gif")) }) {
-                Icon(Icons.Filled.Add, "上传图片")
+            Box {
+                IconButton(enabled = !sending && !reading && (images.size < 4 || canPickDocument), onClick = { attachmentMenuOpen = !attachmentMenuOpen }) {
+                    Icon(Icons.Filled.Add, "添加附件")
+                }
+                DropdownMenu(expanded = attachmentMenuOpen, onDismissRequest = { attachmentMenuOpen = false }) {
+                    DropdownMenuItem(text = { Text("拍照") }, enabled = !sending && !reading && images.size < 4, onClick = {
+                        attachmentMenuOpen = false
+                        try {
+                            val folder = java.io.File(context.cacheDir, "camera").apply { mkdirs() }
+                            val file = java.io.File.createTempFile("attachment-", ".jpg", folder)
+                            cameraPath = file.absolutePath; cameraBot = botId
+                            camera.launch(androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.updates", file))
+                        } catch (e: Exception) { cameraPath?.let { java.io.File(it).delete() }; cameraPath = null; cameraBot = null; imageError = "无法打开相机：${errorText(e)}" }
+                    })
+                    DropdownMenuItem(text = { Text("照片") }, enabled = !sending && !reading && images.size < 4, onClick = {
+                        attachmentMenuOpen = false
+                        pickingFor = botId
+                        picker.launch(arrayOf("image/jpeg", "image/png", "image/webp", "image/gif"))
+                    })
+                    DropdownMenuItem(text = { Text("文件") }, enabled = canPickDocument, onClick = {
+                        attachmentMenuOpen = false
+                        pickDocument()
+                    })
+                }
             }
             TextField(
                 text, onTextChange,

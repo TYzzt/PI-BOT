@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// Server-side errors carry a Chinese `detail`; `unauthorized` means the session is gone.
 public struct APIError: LocalizedError, Equatable {
@@ -59,7 +60,8 @@ private struct SendBody: Encodable {
     let requestId: String
     let images: [ChatImage]
     let client: String?
-    enum CodingKeys: String, CodingKey { case text, requestId = "request_id", images, client }
+    let documentIds: [String]
+    enum CodingKeys: String, CodingKey { case text, requestId = "request_id", images, client, documentIds = "document_ids" }
 }
 private struct DecisionBody: Encodable { let decision: String }
 private struct PasswordBody: Encodable {
@@ -116,12 +118,37 @@ public final class PiBotAPI: @unchecked Sendable {
         try await call(url, "GET", "/bots/\(botId)/tasks/\(taskId)/conversation", token: token, query: [("after", String(after))])
     }
 
-    public func send(_ url: ServerURL, token: String, botId: String, text: String, requestId: String, images: [ChatImage] = []) async throws -> SendResult {
+    public func send(_ url: ServerURL, token: String, botId: String, text: String, requestId: String, images: [ChatImage] = [], documentIds: [String] = []) async throws -> SendResult {
         do {
-            return try await call(url, "POST", "/bots/\(botId)/messages", token: token, body: SendBody(text: text, requestId: requestId, images: images, client: "ios"))
+            return try await call(url, "POST", "/bots/\(botId)/messages", token: token, body: SendBody(text: text, requestId: requestId, images: images, client: "ios", documentIds: documentIds))
         } catch let e as APIError where e.clientRejected {
-            return try await call(url, "POST", "/bots/\(botId)/messages", token: token, body: SendBody(text: text, requestId: requestId, images: images, client: nil))
+            return try await call(url, "POST", "/bots/\(botId)/messages", token: token, body: SendBody(text: text, requestId: requestId, images: images, client: nil, documentIds: documentIds))
         }
+    }
+
+    public func uploadDocument(_ url: ServerURL, token: String, botId: String, id: String, name: String, data: Data, progress: @MainActor @Sendable (Int) -> Void) async throws -> ReportAttachment {
+        guard !data.isEmpty, data.count <= 10 * 1024 * 1024 else { throw APIError(status: 413, message: "文件不能为空，每份最多 10 MiB") }
+        struct Begin: Encodable { let request_id: String; let name: String; let size: Int }
+        struct Started: Decodable { let artifact: ReportAttachment? }
+        struct Chunk: Encodable { let part: Int; let data: String }
+        struct Complete: Encodable { let sha256: String }
+        struct Finished: Decodable { let artifact: ReportAttachment }
+        let started: Started = try await call(url, "POST", "/bots/\(botId)/documents/uploads", token: token, body: Begin(request_id: id, name: name, size: data.count))
+        if let artifact = started.artifact { return artifact }
+        for offset in stride(from: 0, to: data.count, by: 256 * 1024) {
+            try Task.checkCancellation()
+            let end = min(data.count, offset + 256 * 1024)
+            let _: JSONValue = try await call(url, "POST", "/documents/uploads/\(id)/chunks", token: token, body: Chunk(part: offset / (256 * 1024), data: data.subdata(in: offset..<end).base64EncodedString()))
+            await progress(end * 100 / data.count)
+        }
+        try Task.checkCancellation()
+        let sha = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let finished: Finished = try await call(url, "POST", "/documents/uploads/\(id)/complete", token: token, body: Complete(sha256: sha))
+        return finished.artifact
+    }
+
+    public func cancelDocumentUpload(_ url: ServerURL, token: String, id: String) async throws {
+        let _: JSONValue = try await call(url, "DELETE", "/documents/uploads/\(id)", token: token)
     }
 
     public func image(_ url: ServerURL, token: String, botId: String, messageId: String, imageId: String) async throws -> ChatImage {

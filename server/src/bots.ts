@@ -697,7 +697,7 @@ export async function buildContext(
   const from = question.from_bot_id ? await tx.get("bots", question.from_bot_id) : undefined;
   let text = modelMessageContent(question) || (questionImages.length ? '请查看这些图片。' : '');
   if(fileIndex.length)text+='\n附件文件（按需用 document_read 或 report_read 读取）：'+JSON.stringify(fileIndex);
-  if(fileIndex.length) system += "\n相关附件（PDF/DOCX/XLSX 用 document_read，Markdown 用 report_read；正文未载入）："+JSON.stringify(fileIndex);
+  if(fileIndex.length) system += "\n相关附件（正文未载入；document_read 读取文本或调用内置解析器，file_bytes 获取原始字节，file_fetch 保存到当前执行环境供其他工具处理。根据文件内容、元数据和可用工具选择方法；二进制需要解析器）："+JSON.stringify(fileIndex);
   if (truncated || covered < rows.length) system+="\n（部分早期对话超出窗口，需要时用 history_search 检索，不代表没有历史。）";
   if (run.origin === "agent" && from && from.bot_id !== bot.bot_id)
     text = `你收到来自智能体「${from.name}」的委托，它正在为用户处理一项任务：\n\n${text}\n\n请直接完成并给出自包含的结果，「${from.name}」会把它转述给用户。缺少必要信息时直接说明缺什么，不要向用户提问。`;

@@ -1,6 +1,5 @@
 import { call } from "./bridge.js";
 import type { ArtifactRef } from "../../../packages/protocol/src/index.js";
-export const DOCUMENT_ACCEPT = ".pdf,.docx,.xlsx";
 export const MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
 export async function uploadDocument(
   file: File,
@@ -10,11 +9,10 @@ export async function uploadDocument(
   signal: AbortSignal,
 ): Promise<ArtifactRef> {
   if (
-    !/\.(pdf|docx|xlsx)$/i.test(file.name) ||
     !file.size ||
     file.size > MAX_DOCUMENT_BYTES
   )
-    throw new Error("仅支持 PDF、DOCX、XLSX，每份最多 10 MiB");
+    throw new Error("文件不能为空，每份最多 10 MiB");
   const check = () => {
     if (signal.aborted) throw new Error("上传已取消");
   };

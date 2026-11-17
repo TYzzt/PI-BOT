@@ -32,7 +32,7 @@ try {
   if (mime.startsWith('application/pdf')) {
     const frame=document.createElement('iframe'); frame.title=document.title;frame.src=download.href;frame.style.cssText='width:100%;height:80vh;border:0';target.append(frame);
   } else if (!mime.startsWith('text/')) {
-    target.textContent='文档已就绪，请点击下载，用办公软件打开。';
+    target.textContent='文件已就绪，请点击下载，使用适合此文件的应用打开。';
   } else {
   const text = await blob.text();
   createRoot(target).render(

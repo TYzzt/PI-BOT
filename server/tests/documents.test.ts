@@ -235,6 +235,31 @@ test(
     );
     assert.equal(read.statusCode, 200, read.body);
     assert.match(read.body, /文档接入验收/);
+    // Uploading and storing bytes must never depend on a parser or suffix.
+    const genericFiles: { id: string; bytes: Buffer }[] = [];
+    for (const [name, data] of [["notes.txt", Buffer.from("一行\n二行")], ["code.ts", Buffer.from("export const a = 1")], ["data.csv", Buffer.from("a,b\n1,2")], ["opaque", Buffer.from([0, 255, 1])], ["unparsed.pdf", Buffer.from([0, 255, 2])], ["renamed.bin", bytes]] as const) {
+      const id = randomUUID();
+      assert.equal((await api("POST", `/bots/${bot}/documents/uploads`, { request_id: id, name, size: data.length })).statusCode, 200);
+      await api("POST", `/documents/uploads/${id}/chunks`, { part: 0, data: data.toString("base64") });
+      const complete = await api("POST", `/documents/uploads/${id}/complete`, { sha256: createHash("sha256").update(data).digest("hex") });
+      assert.equal(complete.statusCode, 200, complete.body);
+      const fileId = complete.json().artifact.id;
+      genericFiles.push({ id: fileId, bytes: data });
+      const raw = await api("POST", "/agent/documents/content", { run_id: run.run_id, artifact_id: fileId, offset: 1, limit: 2 }, token);
+      assert.equal(raw.statusCode, 200, raw.body);
+      assert.deepEqual(Buffer.from(raw.json().data, "base64"), data.subarray(1, 3));
+      if (name.endsWith(".txt") || name.endsWith(".ts") || name.endsWith(".csv")) {
+        const text = await api("POST", "/agent/documents/action", { run_id: run.run_id, request_id: randomUUID(), artifact_id: fileId, job: { action: "read", name: "file" } }, token);
+        assert.equal(text.statusCode, 200, text.body);
+        assert.equal(text.json().format, "text");
+      }
+    }
+    const renamedEdit = await api("POST", "/agent/documents/action", { run_id: run.run_id, request_id: "renamed-edit", artifact_id: genericFiles.at(-1)!.id,
+      job: { action: "edit", name: "renamed-result.docx", replacements: [{ old_text: "文档接入验收", new_text: "内容校验通过" }] } }, token);
+    assert.equal(renamedEdit.statusCode, 200, renamedEdit.body);
+    for (const name of ["../escape", "bad\\path", ".", "..", "bad\u0000name"]) {
+      assert.equal((await api("POST", `/bots/${bot}/documents/uploads`, { request_id: randomUUID(), name, size: 1 })).statusCode, 422);
+    }
     const written = await api(
       "POST",
       "/agent/documents/action",
@@ -310,6 +335,8 @@ test(
         otherToken,
       );
     assert.equal((await cross()).statusCode, 404);
+    const crossBytes = await api("POST", "/agent/documents/content", { run_id: otherRun.run_id, artifact_id: genericFiles[3].id }, otherToken);
+    assert.equal(crossBytes.statusCode, 404);
     await db.tx((tx) =>
       tx.rows(
         "INSERT INTO message_artifacts(message_id,artifact_id) VALUES($1,$2)",
@@ -329,6 +356,11 @@ test(
         operation_target: `remote:${environmentId}`,
       });
     });
+    const fetched = await api("POST", "/agent/documents/fetch", { run_id: run.run_id, artifact_id: genericFiles[3].id, path: "inbox/opaque" }, token);
+    assert.equal(fetched.statusCode, 200, fetched.body);
+    assert.deepEqual(library.get("inbox/opaque"), genericFiles[3].bytes);
+    const badFetch = await api("POST", "/agent/documents/fetch", { run_id: run.run_id, artifact_id: genericFiles[3].id, path: "../outside" }, token);
+    assert.equal(badFetch.statusCode, 422);
     const cloudWrite = await api(
       "POST",
       "/agent/documents/action",
@@ -396,6 +428,8 @@ test(
     await db.tx((tx) =>
       tx.update("bot_runs", run.run_id, { automation_readonly: true }),
     );
+    const readonlyFetch = await api("POST", "/agent/documents/fetch", { run_id: run.run_id, artifact_id: genericFiles[3].id, path: "inbox/readonly" }, token);
+    assert.equal(readonlyFetch.statusCode, 403);
     assert.equal(
       (
         await api(

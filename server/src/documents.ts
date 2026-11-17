@@ -4,10 +4,8 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { z } from "zod";
 import {
-  documentFormat,
   DOCUMENT_LIMIT,
   DOCUMENT_CHUNK,
-  DOCUMENT_MIMES,
   documentJob,
 } from "../../packages/agent/src/documents/spec.js";
 import { processDocument as runDocument } from "../../packages/agent/src/documents/runtime.js";
@@ -66,13 +64,8 @@ const base64 = z
   .max(Math.ceil(DOCUMENT_LIMIT / 3) * 4)
   .regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/);
 const cleanName = (name: string) => {
-  if (name !== posix.basename(name) || /[\\\x00-\x1f]/.test(name))
+  if (!name.trim() || name.length > 255 || name === "." || name === ".." || name !== posix.basename(name) || /[\\\x00-\x1f]/.test(name))
     fail(422, "文件名无效");
-  try {
-    documentFormat(name);
-  } catch (e) {
-    fail(422, (e as Error).message);
-  }
   return name;
 };
 export async function readableDocument(
@@ -87,11 +80,6 @@ export async function readableDocument(
     [id, userId, botId],
   );
   if (!file) fail(404, "文件不存在或未共享给本智能体");
-  try {
-    documentFormat(file!.name);
-  } catch {
-    fail(422, "请使用 report_read 读取 Markdown 报告");
-  }
   return file!;
 }
 async function save(
@@ -109,7 +97,7 @@ async function save(
     [run.run_id, requestId],
   );
   if (old) return old;
-  const format = documentFormat(cleanName(name));
+  cleanName(name);
   return (await tx.one(
     `INSERT INTO report_artifacts(artifact_id,user_id,bot_id,run_id,call_id,title,name,mime,size,body,summary)
  VALUES($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10) ON CONFLICT(run_id,call_id) DO UPDATE SET call_id=EXCLUDED.call_id RETURNING *`,
@@ -120,12 +108,23 @@ async function save(
       run.run_id,
       requestId,
       name,
-      DOCUMENT_MIMES[format],
+      fileMime(name, bytes),
       bytes.length,
       bytes,
       summary,
     ],
   ))!;
+}
+// MIME is descriptive metadata, never an admission or parsing decision.
+function fileMime(name: string, bytes: Buffer) {
+  if (bytes.subarray(0, 1024).includes(Buffer.from("%PDF-"))) return "application/pdf";
+  const ext = name.split(".").at(-1)?.toLowerCase();
+  if (bytes.subarray(0, 2).toString() === "PK") {
+    if (ext === "docx") return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    if (ext === "xlsx") return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    return "application/zip";
+  }
+  return "application/octet-stream";
 }
 const runBody = { run_id: uuid };
 const writable = (run: Row) => {
@@ -147,7 +146,9 @@ async function input(c: Context, run: Row, body: any) {
     const row = await c.db.tx((tx) =>
       readableDocument(tx, run.user_id, run.bot_id, body.artifact_id),
     );
-    return { name: row.name as string, bytes: Buffer.from(row.body) };
+    const bytes = Buffer.from(row.body);
+    if (bytes.length > DOCUMENT_LIMIT) fail(413, "文件超过 10 MiB");
+    return { name: row.name as string, bytes };
   }
   if (!body.path || !run.operation_target.startsWith("remote:"))
     fail(422, "需要文件引用，或当前云端资料库的相对路径");
@@ -177,13 +178,53 @@ async function input(c: Context, run: Row, body: any) {
 }
 export const documentRoutes: Route[] = [
   {
+    method: "POST", path: "/agent/documents/content", auth: "llm", internal: true, tag: "reports",
+    summary: "读取原始文件字节片段",
+    tx: false,
+    body: z.object({ ...runBody, artifact_id: uuid.optional(), path: z.string().max(2000).optional(),
+      offset: z.number().int().min(0).max(DOCUMENT_LIMIT).default(0),
+      limit: z.number().int().min(1).max(32768).default(16384) }).strict(),
+    handler: async (c) => {
+      const run = await c.db.tx(tx => callerRun(tx, c.user.user_id, c.llm!, c.body.run_id));
+      const source = await input(c, run, c.body);
+      const end = Math.min(source.bytes.length, c.body.offset + c.body.limit);
+      if (c.body.offset > source.bytes.length) fail(422, "字节偏移超出范围");
+      return { name: source.name, size: source.bytes.length, encoding: "base64",
+        data: source.bytes.subarray(c.body.offset, end).toString("base64"), next_offset: end, has_more: end < source.bytes.length };
+    },
+  },
+  {
+    method: "POST", path: "/agent/documents/fetch", auth: "llm", internal: true, tag: "reports",
+    summary: "保存附件到当前云端资料库", tx: false,
+    body: z.object({ ...runBody, artifact_id: uuid, path: z.string().min(1).max(2000) }).strict(),
+    handler: async (c) => {
+      const run = await c.db.tx(tx => callerRun(tx, c.user.user_id, c.llm!, c.body.run_id));
+      writable(run);
+      if (!run.operation_target.startsWith("remote:")) fail(422, "当前执行端不是云端");
+      const source = await input(c, run, c.body), path = safePath(c.body.path);
+      const environment = await c.db.tx(tx => tx.get("remote_environments", run.operation_target.slice(7)));
+      const bot = await c.db.tx(tx => tx.get("bots", run.bot_id));
+      await c.remote.action(environment!, run, bot!.slug, randomUUID(), "upload", {
+        path, base64: source.bytes.length <= 4_000_000 ? source.bytes.toString("base64") : "",
+      });
+      if (source.bytes.length > 4_000_000) {
+        const file = await c.remote.file(run.user_id, run.bot_id, environment!.environment_id, path, true);
+        try { await pipeline(Readable.from([source.bytes]), file.sftp.createWriteStream(file.path)); }
+        finally { file.sftp.end(); }
+      }
+      return { path, name: source.name, size: source.bytes.length };
+    },
+  },
+
+  {
     method: "GET",
     path: "/documents/capabilities",
     auth: "actor",
     tag: "reports",
     summary: "文档处理能力",
     handler: async () => ({
-      version: 1,
+      version: 2,
+      upload: "any-file",
       max_bytes: DOCUMENT_LIMIT,
       max_files: 4,
       chunk_bytes: DOCUMENT_CHUNK,
@@ -327,7 +368,7 @@ export const documentRoutes: Route[] = [
         createHash("sha256").update(bytes).digest("hex") !== c.body.sha256
       )
         fail(422, "文件完整性校验失败");
-      await processFor(c, { action: "inspect", name: upload.name }, bytes);
+
       return c.db.tx(async (tx) => {
         const current = await tx.one(
           "SELECT * FROM document_uploads WHERE upload_id=$1 AND user_id=$2 FOR UPDATE",
@@ -348,7 +389,7 @@ export const documentRoutes: Route[] = [
           call_id: upload.upload_id,
           title: upload.name,
           name: upload.name,
-          mime: DOCUMENT_MIMES[documentFormat(upload.name)],
+          mime: fileMime(upload.name, bytes),
           size: bytes.length,
           body: bytes,
           summary: "用户上传文档",
@@ -421,12 +462,7 @@ export const documentRoutes: Route[] = [
       );
       writable(run);
       const bytes = Buffer.from(c.body.data, "base64");
-      await processFor(
-        c,
-        { action: "inspect", name: cleanName(c.body.name) },
-        bytes,
-        run,
-      );
+      cleanName(c.body.name);
       return c.db.tx(async (tx) => {
         const fresh = await callerRun(tx, c.user.user_id, c.llm!, run.run_id);
         writable(fresh);
@@ -480,12 +516,6 @@ export const documentRoutes: Route[] = [
       }
       const source =
         job.action === "write" ? undefined : await input(c, run, c.body);
-      if (
-        source &&
-        job.action === "edit" &&
-        documentFormat(source.name) !== documentFormat(job.name)
-      )
-        fail(422, "源文件和目标格式不一致，不支持格式转换");
       const result = await processFor(
         c,
         {
@@ -592,10 +622,6 @@ export const documentRoutes: Route[] = [
       let artifactId = c.body.artifact_id;
       if (!artifactId) {
         const source = await input(c, run, c.body);
-        await processDocument(
-          { action: "inspect", name: source.name },
-          source.bytes,
-        );
         const saved = await c.db.tx((tx) =>
           save(
             tx,

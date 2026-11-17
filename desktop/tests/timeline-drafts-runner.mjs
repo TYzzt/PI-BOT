@@ -35,6 +35,20 @@ app.whenReady().then(async()=>{
   try {
     await win.loadFile(join(directory,'timeline.html'));
     await until(`document.querySelector('textarea')?.value==='  send A once  '`,'initial draft missing');
+    await expect(`!document.querySelector('button[aria-label="上传文档"]') && !document.querySelector('[role="menu"]')`,'standalone document control is still visible');
+    await js(`document.querySelector('button[aria-label="添加附件"]').click()`);
+    await until(`document.querySelectorAll('[role="menuitem"]').length===1 && !document.querySelectorAll('[role="menuitem"]')[0].disabled`,'attachment menu did not expose the file choice');
+    await js(`document.querySelectorAll('[role="menuitem"]')[0].click()`);
+    await until(`window.__draftHarness.pickers.length===1 && !document.querySelector('[role="menu"]')`,'file choice did not close menu and open picker');
+    await expect(`window.__draftHarness.pickers[0]===''`,'file choice restricted the picker');
+    await js(`document.querySelector('button[aria-label="添加附件"]').click()`);
+    await until(`!!document.querySelector('[role="menu"]')`,'attachment menu did not reopen');
+    await js(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`);
+    await until(`!document.querySelector('[role="menu"]') && document.activeElement===document.querySelector('button[aria-label="添加附件"]')`,'Escape did not close menu and restore focus');
+    await js(`document.querySelector('button[aria-label="添加附件"]').click()`);
+    await until(`!!document.querySelector('[role="menu"]')`,'attachment menu did not reopen');
+    await js(`(()=>{const input=document.querySelector('textarea');input.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));input.focus();})()`);
+    await until(`!document.querySelector('[role="menu"]')`,'attachment menu remained open after clicking the input');
     await send(1);
     await expect(`window.__draftHarness.requests[0].text==='send A once'`,'send text was not trimmed');
     await select('bot-b');await type('B remains unsent');
@@ -74,13 +88,22 @@ app.whenReady().then(async()=>{
     }
     await js(`(()=>{const input=document.querySelector('textarea');input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,keyCode:229,bubbles:true}));})()`);
     await expect(`window.__draftHarness.requests.length===2`,'IME confirmation submitted a message');
-    await js(`(()=>{const data=new DataTransfer();data.items.add(new File(['%PDF-1.4\\n'+'x'.repeat(339991)],'测试.pdf',{type:'application/pdf'}));const picker=document.querySelector('input[accept=".pdf,.docx,.xlsx"]');picker.files=data.files;picker.dispatchEvent(new Event('change',{bubbles:true}));})()`);
-    await until(`document.querySelector('.document-drafts')?.textContent.includes('测试.pdf') && !document.querySelector('.document-drafts').textContent.includes('取消上传')`,'document upload did not finish');
+    await js(`document.querySelector('button[aria-label="添加附件"]').click()`);
+    await until(`document.querySelectorAll('[role="menuitem"]').length===1`,'document menu missing');
+    await js(`document.querySelectorAll('[role="menuitem"]')[0].click()`);
+    await until(`window.__draftHarness.pickers.at(-1)==='' && !document.querySelector('[role="menu"]')`,'document choice did not open its picker and close menu');
+    await js(`(()=>{const data=new DataTransfer();data.items.add(new File(['%PDF-1.4\\n'+'x'.repeat(339991)],'测试.csv',{type:'text/csv'}));const picker=document.querySelector('input[type="file"]:not([accept])');picker.files=data.files;picker.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+    await until(`document.querySelector('.document-drafts')?.textContent.includes('测试.csv') && !document.querySelector('.document-drafts').textContent.includes('取消上传')`,'document upload did not finish');
     await expect(`window.__draftHarness.chunks.length===2 && atob(window.__draftHarness.chunks[0]).length===262144`,'upload did not use bounded chunks');
     await send(3);
     await expect(`window.__draftHarness.requests[2].document_ids[0]==='11223344-1122-4122-8122-112233445566'`,'send omitted uploaded reference');
     await finish(true);
-    await expect(`!document.querySelector('.document-drafts').textContent.includes('测试.pdf')`,'sent document draft survived');
+    await expect(`!document.querySelector('.document-drafts').textContent.includes('测试.csv')`,'sent document draft survived');
+    await js(`(()=>{const source=window.__draftHarness.sourceImage;const data=new DataTransfer();data.items.add(new File([Uint8Array.from(atob(source.data),x=>x.charCodeAt(0))],'drop.png',{type:'image/png'}));document.querySelector('.composer').dispatchEvent(new DragEvent('drop',{dataTransfer:data,bubbles:true,cancelable:true}));})()`);
+    await until(`document.querySelectorAll('.image-drafts img').length===1`,'dropped image lost visual preview');
+    await js(`(()=>{const data=new DataTransfer();data.items.add(new File([new Uint8Array([0,255,1])],'opaque',{type:'application/octet-stream'}));document.querySelector('textarea').dispatchEvent(new ClipboardEvent('paste',{clipboardData:data,bubbles:true,cancelable:true}));})()`);
+    await until(`window.__draftHarness.starts.at(-1).name==='opaque' && document.querySelector('.document-drafts').textContent.includes('opaque') && !document.querySelector('.document-drafts').textContent.includes('取消上传')`,'pasted binary did not upload as an ordinary file');
+    await expect(`document.querySelectorAll('.image-drafts img').length===1`,'file paste removed the existing image');
     writeFileSync(join(directory,'result.json'),JSON.stringify({ok:true}));
     win.destroy();app.exit(0);
   } catch(error) {

@@ -274,8 +274,8 @@ public final class AppStore {
     }
 
     @discardableResult
-    public func send(botId: String, text: String, requestId: String = UUID().uuidString.lowercased(), images: [ChatImage] = []) async throws -> Run {
-        let result = try await authed { try await self.api.send($0, token: $1, botId: botId, text: text, requestId: requestId, images: images) }
+    public func send(botId: String, text: String, requestId: String = UUID().uuidString.lowercased(), images: [ChatImage] = [], documentIds: [String] = []) async throws -> Run {
+        let result = try await authed { try await self.api.send($0, token: $1, botId: botId, text: text, requestId: requestId, images: images, documentIds: documentIds) }
         timelines[botId] = timeline(botId).merge(result.messages)
         setLatestRun(botId, result.run)
         return result.run
@@ -285,6 +285,14 @@ public final class AppStore {
         guard var list = bots, let i = list.firstIndex(where: { $0.id == botId }) else { return }
         list[i].latestRun = run
         bots = list
+    }
+
+    public func uploadDocument(botId: String, id: String, name: String, data: Data, progress: @escaping @MainActor @Sendable (Int) -> Void) async throws -> ReportAttachment {
+        try await authed { try await self.api.uploadDocument($0, token: $1, botId: botId, id: id, name: name, data: data, progress: progress) }
+    }
+
+    public func cancelDocumentUpload(_ id: String) async throws {
+        try await authed { try await self.api.cancelDocumentUpload($0, token: $1, id: id) }
     }
 
     public func image(botId: String, messageId: String, imageId: String) async throws -> ChatImage {
