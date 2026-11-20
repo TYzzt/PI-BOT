@@ -490,7 +490,7 @@ export const routes: Route[] = [
     handler: async ({tx,hub,user,params,body,after}) => {
       await tx.rows("SELECT pg_advisory_xact_lock(hashtext($1))", ['device-capacity:' + params.id]);
       const d = await tx.one("UPDATE devices SET concurrency_limit=$3 WHERE device_id=$1 AND user_id=$2 AND revoked_at IS NULL RETURNING *", [params.id,user.user_id,body.concurrency_limit]);
-      if (!d) fail(404,'设备不存在');
+      if (!d) return fail(404,'设备不存在');
       after(() => { hub.publish(user.user_id,{type:'bots'}); });
       return deviceOut(d,!!hub.device(user.user_id,params.id));
     },

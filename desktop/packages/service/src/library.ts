@@ -280,12 +280,13 @@ export function libraryTools(sandbox: Sandbox, hooks: ToolHooks): ToolDefinition
       if (tool.name === 'run_command') return deviceResources.run({ kind: 'shell' }, signal,
         () => tool.execute(id, args, signal, update, ctx), waiting);
       const mode = tool.name === 'write_file' || tool.name === 'edit_file' ? 'write' : 'read';
-      const input = (args as { path?: string }).path ?? '.';
+      const fileArgs = args as { path?: string };
+      const input = fileArgs.path ?? '.';
       const path = await sandbox.resolve(input, { access: mode });
       return deviceResources.run({ kind: 'file', path, mode }, signal, async () => {
         if (await sandbox.resolve(input, { access: mode }) !== path) throw new Error('等待期间文件路径已变化，请重试');
         hooks.started?.(id);
-        return tool.execute(id, { ...args, path }, signal, update, ctx);
+        return tool.execute(id, { ...fileArgs, path }, signal, update, ctx);
       }, waiting);
     } };
   });

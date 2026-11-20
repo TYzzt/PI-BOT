@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
 import { test } from 'node:test';
-import { ResourceLocks } from '../../desktop/packages/service/src/resource-lock.ts';
-import { queueStatus } from '../src/queue-status.ts';
+import { ResourceLocks } from '../../desktop/packages/service/src/resource-lock.js';
+import { queueStatus } from '../src/queue-status.js';
 
 const file = (name: string, mode: 'read'|'write') => ({kind:'file' as const,path:resolve(name),mode});
 const gate = () => { let open!: () => void; const waiting = new Promise<void>(r => {open=r;}); return {waiting,open}; };
