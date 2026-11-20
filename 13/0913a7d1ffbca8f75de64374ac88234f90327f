@@ -1,0 +1,14 @@
+server/src/migrate.ts
+  h_0953b6dc91c7e5 11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "130913a7d1ffbca8f75de64374ac88234f90327f",
+  "prompts": {},
+  "humans": {
+    "h_0953b6dc91c7e5": {
+      "author": "zhaotao1 <zhaotao1@lenovo.com>"
+    }
+  }
+}
