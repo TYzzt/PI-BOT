@@ -2297,6 +2297,63 @@
         }
       }
     },
+    "/devices/{id}/concurrency": {
+      "patch": {
+        "tags": [
+          "device"
+        ],
+        "summary": "设置执行电脑的并行任务上限",
+        "security": [
+          {
+            "UserBearer": []
+          },
+          {
+            "DeviceSignature": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                  "concurrency_limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 32
+                  }
+                },
+                "required": [
+                  "concurrency_limit"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "default": {
+            "description": "{ detail }"
+          }
+        }
+      }
+    },
     "/devices/{id}/revoke": {
       "post": {
         "tags": [
