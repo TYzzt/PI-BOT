@@ -7,29 +7,45 @@ import type { Settings } from "./config.js";
 
 export const TASK_CONCURRENCY = 2;
 
+async function deviceCapacity(tx: Tx, run: Row) {
+  if (run.executor !== 'device' || !run.device_id) return true;
+  await tx.rows("SELECT pg_advisory_xact_lock(hashtext($1))", ['device-capacity:' + run.device_id]);
+  const device = await tx.one('SELECT concurrency_limit FROM devices WHERE device_id=$1 AND user_id=$2 AND revoked_at IS NULL', [run.device_id, run.user_id]);
+  if (!device) return false;
+  const { n } = (await tx.one(`SELECT count(*) AS n FROM bot_runs WHERE device_id=$1 AND executor='device'
+    AND status IN ('running','waiting_approval') AND waiting_on_task_id IS NULL`, [run.device_id]))!;
+  return Number(n) < device.concurrency_limit;
+}
+
+async function queued(tx: Tx, run: Row, reason: string) {
+  const changed = await tx.one("UPDATE bot_runs SET queue_reason=$2 WHERE run_id=$1 AND status='queued' AND queue_reason IS DISTINCT FROM $2 RETURNING run_id", [run.run_id, reason]);
+  if (changed) await tx.notify({user_id:run.user_id,bot_id:run.bot_id});
+  return null;
+}
+
 /** Lock the bot before the run: all executors share the same capacity checks. */
 export async function claimExecution(tx: Tx, id: string, s: Settings, workerId?: string, hub?:Hub): Promise<Row | null> {
   const candidate = await tx.get("bot_runs", id);
   if (!candidate || candidate.status !== "queued" || (workerId && candidate.execution_policy === "device_only" && !candidate.operation_target?.startsWith("remote:"))) return null;
   const bot = await tx.one("SELECT * FROM bots WHERE bot_id=$1 FOR NO KEY UPDATE SKIP LOCKED", [candidate.bot_id]);
   if (!bot || bot.archived_at) return null;
-  if (candidate.execution_policy === "device_only" && await tx.one("SELECT 1 FROM bot_runs WHERE bot_id=$1 AND lane='task' AND execution_policy='any' AND status='queued' AND NOT cancel_requested", [candidate.bot_id])) return null;
+  if (candidate.execution_policy === "device_only" && await tx.one("SELECT 1 FROM bot_runs WHERE bot_id=$1 AND lane='task' AND execution_policy='any' AND status='queued' AND NOT cancel_requested", [candidate.bot_id])) return queued(tx, candidate, "task_priority");
   const run = await tx.one("SELECT * FROM bot_runs WHERE run_id=$1 AND status='queued' FOR NO KEY UPDATE SKIP LOCKED", [id]);
   if (!run || run.cancel_requested || (workerId ? run.executor !== "cloud" : run.executor !== "device")) return null;
   const { n } = (await tx.one(`SELECT count(*) AS n FROM bot_runs
     WHERE bot_id=$1 AND lane=$2 AND status IN ('running','waiting_approval') AND waiting_on_task_id IS NULL`, [run.bot_id, run.lane]))!;
-  if (n >= (run.lane === "conversation" ? 1 : TASK_CONCURRENCY)) return null;
+  if (n >= (run.lane === "conversation" ? 1 : TASK_CONCURRENCY)) return queued(tx, run, "bot_capacity");
   if (run.lane === "conversation") {
     const first = await tx.one(`SELECT run_id FROM bot_runs WHERE bot_id=$1 AND lane='conversation' AND status='queued'
       ORDER BY (origin='report'), created_at, run_id LIMIT 1`, [run.bot_id]);
-    if (first?.run_id !== id) return null;
+    if (first?.run_id !== id) return queued(tx, run, "conversation_order");
   }
   if (workerId) {
     // A transaction lock serializes capacity claims made for the same worker.
     await tx.rows("SELECT pg_advisory_xact_lock(hashtext($1))", [workerId]);
     const { n: used } = (await tx.one(`SELECT count(*) AS n FROM bot_runs WHERE worker_id=$1 AND lane=$2
       AND status IN ('running','waiting_approval') AND waiting_on_task_id IS NULL`, [workerId, run.lane]))!;
-    if (used >= (run.lane === "conversation" ? s.conversationConcurrency : s.workerConcurrency)) return null;
+    if (used >= (run.lane === "conversation" ? s.conversationConcurrency : s.workerConcurrency)) return queued(tx, run, "worker_capacity");
   }
   if (hub && run.lane === "task" && run.routing && !isCliRuntime(bot.runtime)) {
     try {
@@ -46,8 +62,9 @@ export async function claimExecution(tx: Tx, id: string, s: Settings, workerId?:
       return null;
     }
   }
+  if (!await deviceCapacity(tx, run)) return queued(tx, run, "device_capacity");
   if (run.lane === "task" && run.task_id) await tx.rows("UPDATE agent_tasks SET status='running', updated_at=now() WHERE task_id=$1", [run.task_id]);
-  return (await tx.one(`UPDATE bot_runs SET status='running', started_at=coalesce(started_at,now()),
+  return (await tx.one(`UPDATE bot_runs SET status='running', queue_reason=NULL, started_at=coalesce(started_at,now()),
     worker_id=$2, lease_until=$3 WHERE run_id=$1 RETURNING *`,
   [id, workerId ?? null, workerId ? new Date(Date.now() + s.leaseSeconds * 1000) : null]))!;
 }
@@ -65,6 +82,7 @@ export async function resumeExecution(tx: Tx, run: Row, s: Settings): Promise<bo
       AND status IN ('running','waiting_approval') AND waiting_on_task_id IS NULL`, [run.worker_id]))!;
     if (used >= s.workerConcurrency) return false;
   }
+  if (!await deviceCapacity(tx, run)) return false;
   await tx.rows("UPDATE bot_runs SET waiting_on_task_id=NULL WHERE run_id=$1", [run.run_id]);
   return true;
 }

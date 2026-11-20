@@ -5,6 +5,7 @@ import type { Hub } from './hub.js';
 import type { Settings } from './config.js';
 
 export const deviceOut = (d: Row, online: boolean) => ({
+  concurrency_limit: d.concurrency_limit,
   id: d.device_id, user_id: d.user_id, label: d.label, platform: d.platform,
   created_at: d.created_at, last_seen_at: d.last_seen_at, revoked_at: d.revoked_at, online: !d.revoked_at && online,
 });

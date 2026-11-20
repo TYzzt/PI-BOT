@@ -13,6 +13,8 @@ import { cancelRun, dispatchDevice } from "./runs.js";
 import { AutomationScheduler } from "./automations.js";
 import { TASK_CONCURRENCY, resumeExecution } from "./scheduling.js";
 
+import { queueStatus } from './queue-status.js';
+
 export const MAX_TASKS_PER_RUN = 5;
 export const TERMINAL:readonly string[] = TERMINAL_RUN_STATES;
 /** The live voice call speaks a finished task instead of posting a text report. */
@@ -30,7 +32,9 @@ export const agentTaskOut = (t: Row) => ({
   mode: t.mode,
   kind: t.kind,
   title: t.title,
-  activity: t.progress?.at(-1) ?? null,
+  activity: queueStatus({...t,status:t.run_status ?? t.status})?.label ?? t.progress?.at(-1) ?? null,
+  queue: queueStatus({...t,status:t.run_status ?? t.status}),
+  timing: {queued_at:t.created_at,dispatched_at:t.dispatched_at ?? null,device_received_at:t.device_received_at ?? null,first_tool_started_at:t.first_tool_started_at ?? null},
   tools: (t.tools ?? []).filter((x: Row) => !internalTool(x.name)),
   updated_at: t.activity_at ?? t.updated_at,
   agent: { id: t.target_bot_id, name: t.bot_name ?? "" },
@@ -64,7 +68,7 @@ export async function callerRun(tx: Tx, userId: string, claims: LlmClaims, runId
 async function ownTask(tx: Tx, userId: string, claims: LlmClaims, taskId: string, lock = false): Promise<Row> {
   if (!claims.bot) fail(403, "令牌未绑定智能体");
   const t = await tx.one(
-    `SELECT t.*, b.name AS bot_name, r.status AS run_status, r.error AS run_error, r.tokens_used, r.model_calls, r.missing_usage_calls, m.content AS run_result, m.progress, m.tools, m.updated_at AS activity_at
+    `SELECT t.*, b.name AS bot_name, r.status AS run_status, r.error AS run_error, r.queue_reason, r.resource_waits, r.dispatched_at, r.device_received_at, r.first_tool_started_at, r.tokens_used, r.model_calls, r.missing_usage_calls, m.content AS run_result, m.progress, m.tools, m.updated_at AS activity_at
      FROM agent_tasks t JOIN bots b ON b.bot_id=t.target_bot_id
      LEFT JOIN bot_runs r ON r.run_id=t.child_run_id
      LEFT JOIN bot_messages m ON m.message_id=r.assistant_message_id
@@ -262,7 +266,7 @@ export async function readTask(tx: Tx, userId: string, claims: LlmClaims, taskId
 
 export async function listTasks(tx: Tx, userId: string, claims: LlmClaims, runId: string) {
   await callerRun(tx, userId, claims, runId);
-  const rows = await tx.rows(`SELECT t.*, b.name AS bot_name, r.status AS run_status, r.error AS run_error, r.tokens_used, r.model_calls, r.missing_usage_calls, m.content AS run_result, m.progress, m.tools, m.updated_at AS activity_at
+  const rows = await tx.rows(`SELECT t.*, b.name AS bot_name, r.status AS run_status, r.error AS run_error, r.queue_reason, r.resource_waits, r.dispatched_at, r.device_received_at, r.first_tool_started_at, r.tokens_used, r.model_calls, r.missing_usage_calls, m.content AS run_result, m.progress, m.tools, m.updated_at AS activity_at
     FROM agent_tasks t JOIN bots b ON b.bot_id=t.target_bot_id
     LEFT JOIN bot_runs r ON r.run_id=t.child_run_id
     LEFT JOIN bot_messages m ON m.message_id=r.assistant_message_id

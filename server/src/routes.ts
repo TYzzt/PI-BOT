@@ -485,6 +485,17 @@ export const routes: Route[] = [
     handler: ({tx,hub,user}) => deviceList(tx,hub,user.user_id),
   },
   {
+    method: 'PATCH', path: '/devices/:id/concurrency', auth: 'actor', tag:'device', summary: '设置执行电脑的并行任务上限',
+    body: z.object({concurrency_limit:z.number().int().min(1).max(32)}).strict(),
+    handler: async ({tx,hub,user,params,body,after}) => {
+      await tx.rows("SELECT pg_advisory_xact_lock(hashtext($1))", ['device-capacity:' + params.id]);
+      const d = await tx.one("UPDATE devices SET concurrency_limit=$3 WHERE device_id=$1 AND user_id=$2 AND revoked_at IS NULL RETURNING *", [params.id,user.user_id,body.concurrency_limit]);
+      if (!d) fail(404,'设备不存在');
+      after(() => { hub.publish(user.user_id,{type:'bots'}); });
+      return deviceOut(d,!!hub.device(user.user_id,params.id));
+    },
+  },
+  {
     method: 'POST', path: '/devices/:id/revoke', auth: 'actor', tag: 'device', summary: '解绑自己的执行电脑',
     handler: async ({tx,db,hub,user,params,after}) => {
       const d = await tx.one('SELECT * FROM devices WHERE device_id=$1 AND user_id=$2 FOR UPDATE',[params.id,user.user_id]);

@@ -1,6 +1,6 @@
 import {readFile,writeFile,mkdir,rename,stat} from 'node:fs/promises';
 import {dirname} from 'node:path';
-import {withLibraryMutation} from './mutation-lock.js';
+import {deviceResources, type WaitReason} from './resource-lock.js';
 import { reportTools, documentTools } from "@pi-bot/agent";
 import { toolDescriptor, errorInfo } from "@pi-bot/runtime-contracts";
 import { randomUUID } from 'node:crypto';
@@ -107,6 +107,9 @@ export class Executor {
     const state: Active = { run, cancelled: false, prompted: false, received: new Set((run.instructions ?? []).map(i => i.id)), pending: [...run.instructions ?? []], waiting: new Map(), approvals: new Map(), early: new Map() };
     this.active.set(run.run_id, state);
     const event = (e: Record<string, unknown>) => this.deps.send({ type: 'run_event', run_id: run.run_id, event: e });
+    event({ kind: 'received', at: new Date().toISOString() });
+    const waiting = (id: string, reason: WaitReason) => event({ kind: 'resource_wait', id, reason });
+    const started = (id: string) => event({ kind: 'tool_started', id, at: new Date().toISOString() });
     const requestApproval = (entry: Record<string, unknown>, signal?: AbortSignal) => new Promise<boolean | 'saved'>(resolve => {
       if (state.cancelled || signal?.aborted) { resolve(false); return; }
       const requestId = randomUUID();
@@ -150,6 +153,7 @@ export class Executor {
         } : undefined, run.browser_test_handoff ? {
           visible: run.browser_test_visible === true,
           wait: async (origin, signal) => await requestApproval({ kind: 'browser_login', origin }, signal) === true,
+          input: (work, signal) => deviceResources.run({kind:'input'}, signal, work, reason => waiting('browser-login', reason)).finally(() => event({kind:'resource_clear',id:'browser-login'})),
         } : undefined);
       }
       let token = await this.deps.llmToken(run.bot.id);
@@ -173,6 +177,7 @@ export class Executor {
             return await requestApproval({ kind: 'electron_launch', path, reason }, signal) === true;
           },
           handoff: async signal => await requestApproval({ kind: 'electron_login' }, signal) === true,
+          input: (work, signal) => deviceResources.run({kind:'input'}, signal, work, reason => waiting('electron-login', reason)).finally(() => event({kind:'resource_clear',id:'electron-login'})),
         });
       }
       const testing = !!(state.browser || state.electron);
@@ -181,6 +186,7 @@ export class Executor {
         ? await phone.environment(run.lane === 'conversation', !!run.automation_readonly, this.commandsSuspended)
         : '\n本执行节点没有有效的显式手机配置；不能把其他电脑或其他智能体的手机当作本节点设备。';
       let tools = run.lane === "conversation" || testing ? [] : libraryTools(sandbox, {
+        waiting, started,
         requestOutside: (path, reason, signal, access, resourceType) =>
           requestApproval({ kind: 'approval', path, reason, access, resource_type: resourceType }, signal),
       });
@@ -258,13 +264,14 @@ export class Executor {
         if (run.composio_enabled && !run.automation_readonly) tools.push(...composioTools(api, () => token));
         if (run.agents_enabled) tools.push(askAgentTool(api, () => token, run.run_id, { conversation: run.lane === "conversation" }));
         tools.push(...documentTools(api,()=>token,run.run_id,run.lane === 'task' && !run.automation_readonly && !run.automation,{
-          read:async path=>{const file=await sandbox.resolve(path,{mustExist:true,access:'read'});if((await stat(file)).size>10*1024*1024)throw new Error('文件超过 10 MiB');return readFile(file);},
-          write:async(path,bytes)=>withLibraryMutation(sandbox.root,undefined,async()=>{const file=await sandbox.resolve(path,{access:'write'});await mkdir(dirname(file),{recursive:true});const tmp=file+'.'+randomUUID()+'.tmp';await writeFile(tmp,bytes);await rename(tmp,file);}),
+          read:async path=>{const file=await sandbox.resolve(path,{mustExist:true,access:'read'});return deviceResources.run({kind:'file',path:file,mode:'read'},undefined,async()=>{if(await sandbox.resolve(path,{mustExist:true,access:'read'})!==file)throw new Error('文件路径已变化');if((await stat(file)).size>10*1024*1024)throw new Error('文件超过 10 MiB');return readFile(file);});},
+          write:async(path,bytes)=>{const file=await sandbox.resolve(path,{access:'write'});return deviceResources.run({kind:'file',path:file,mode:'write'},undefined,async()=>{if(await sandbox.resolve(path,{access:'write'})!==file)throw new Error('文件路径已变化');await mkdir(dirname(file),{recursive:true});const tmp=file+'.'+randomUUID()+'.tmp';await writeFile(tmp,bytes);await rename(tmp,file);});},
         }));
         tools.push(...reportTools(api, () => token, run.run_id, run.lane === "task" && !run.automation));
         tools.push(...a2uiTools(messages => { event({ kind: 'ui', messages }); }));
       }
       const onTool = (t: ToolActivity) => {
+        if (t.state !== 'running') event({kind:'resource_clear',id:t.id});
         event({ kind: 'tool', ...t, summary: testing ? undefined : t.summary });
         const mood: Mood = toolDescriptor(t.name)?.activity ?? 'working';
         this.deps.activity(run, t.state === 'running' ? t.name : null, t.state === 'running' ? mood : 'thinking');
@@ -341,7 +348,8 @@ export class Executor {
     state.agent = { tools: [], async prompt() { return ''; }, async setApiKey() {}, async abort() { controller.abort(); }, dispose() {} };
     this.deps.activity(run, null, 'thinking');
     try {
-      await this.enqueueCli(run.bot.id, () => runCliTurn(run, entry => {
+      await this.enqueueCli(run.bot.id, () => deviceResources.run({kind:'shell'}, controller.signal, () => runCliTurn(run, entry => {
+        if (entry.kind === 'started') event({kind:'resource_clear',id:'cli'});
         if (entry.kind === 'tool') {
           const running = entry.state === 'running';
           this.deps.activity(run, running ? String(entry.name ?? '') : null, running ? 'working' : 'thinking');
@@ -356,7 +364,9 @@ export class Executor {
         local: this.deps.cli?.local,
         dataDir: this.deps.cli?.dataDir,
         launch: this.deps.cli?.launch,
-      }));
+      }), reason => event({kind:'resource_wait',id:'cli',reason})));
+    } catch (error) {
+      event({kind:'done',state:controller.signal.aborted ? 'cancelled' : 'failed',error: error instanceof Error ? error.message : String(error)});
     } finally {
       state.agent?.dispose();
       this.active.delete(run.run_id);

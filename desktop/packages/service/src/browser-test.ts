@@ -54,6 +54,7 @@ interface BrowserAuthorization {
   request(origins: string[], signal?: AbortSignal): Promise<boolean>;
 }
 interface LoginHandoff {
+  input?: <T>(work: () => Promise<T>, signal?: AbortSignal) => Promise<T>;
   visible: boolean;
   wait(origin: string, signal?: AbortSignal): Promise<boolean>;
 }
@@ -294,7 +295,10 @@ export class BrowserTest {
     const page = this.page;
     if (!page) throw new Error('请先打开测试页面');
     if (!this.origins.has(netLocation(page.url()))) throw new Error('测试页面已离开允许的站点');
-    if (args.op === 'login') return await this.login(page, signal);
+    if (args.op === 'login') {
+      const login = () => this.login(page, signal);
+      return this.handoff?.input ? await this.handoff.input(login, signal) : await login();
+    }
     if (args.op === 'screenshot') return { screenshot: await this.capture(page) };
     if (args.op === 'observe') {
       const snapshot = await page.locator('body').ariaSnapshot({ timeout });
