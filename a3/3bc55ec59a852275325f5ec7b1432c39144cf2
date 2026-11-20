@@ -1,0 +1,29 @@
+server/src/routes.ts
+  s_dd65edd586510d::t_a9154ccfc041c6 487-497
+desktop/packages/service/src/library.ts
+  s_d78f65a037e445::t_9d0daed1503151 1,11,118,147,167-168,255,275-291
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a33bc55ec59a852275325f5ec7b1432c39144cf2",
+  "prompts": {},
+  "sessions": {
+    "s_d78f65a037e445": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1f6a2-8f6d-72d0-a1eb-8a12a55d57e5",
+        "model": "unknown"
+      },
+      "human_author": "zhaotao1 <zhaotao1@lenovo.com>"
+    },
+    "s_dd65edd586510d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1f7a0-b57b-7192-b4c8-a3e6c8eb6fa5",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "zhaotao1 <zhaotao1@lenovo.com>"
+    }
+  }
+}
