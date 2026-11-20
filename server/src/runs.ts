@@ -54,6 +54,7 @@ export async function dispatchDevice(db: Database, s: Settings, hub: Hub, runId:
     const selected = hub.device(claimed.user_id, claimed.device_id);
     const context = await buildContext(tx, s, claimed);
     if (context.browser_test_authorization && selected?.capabilities?.includes("browser-test-handoff-v1")) context.browser_test_handoff = true;
+    if (selected) await tx.rows("UPDATE bot_runs SET dispatched_at=clock_timestamp() WHERE run_id=$1", [runId]);
     return { conn: selected, context };
   });
   job?.conn?.send({ type: "run", run: job.context });
@@ -64,6 +65,10 @@ const runEvent = z.discriminatedUnion("kind", [
   z.object({kind:z.literal("manifest"),tools:z.array(z.string().max(100)).max(200)}),
   observationSchema.extend({kind:z.literal('observation')}),
   z.object({ kind: z.literal("started") }),
+  z.object({ kind: z.literal("received"), at: z.string().datetime() }),
+  z.object({ kind: z.literal("resource_wait"), id: z.string().max(160), reason: z.enum(['host_shell','file_resource','desktop_input']) }),
+  z.object({ kind: z.literal("resource_clear"), id: z.string().max(160) }),
+  z.object({ kind: z.literal("tool_started"), id: z.string().max(160), at: z.string().datetime() }),
   replySchema.extend({ kind: z.literal("reply") }),
   z.object({ kind: z.literal("instruction_ack"), id: z.string().uuid() }),
   z.object({ kind: z.literal("ui"), messages: z.array(z.record(z.string(),z.unknown())).min(1).max(20) }),
@@ -175,6 +180,18 @@ export async function handleRunEvent(
   const reply = await db.tx(async (tx) => {
     const run = await own(tx);
     if (!run || !ACTIVE.includes(run.status)) return null;
+    if (e.kind === 'received') {
+      await tx.rows('UPDATE bot_runs SET device_received_at=coalesce(device_received_at,$2::timestamptz) WHERE run_id=$1', [runId,e.at]);
+      await tx.notify({user_id:run.user_id,bot_id:run.bot_id});
+      return null;
+    }
+    if (e.kind === 'resource_wait' || e.kind === 'resource_clear' || e.kind === 'tool_started') {
+      if (e.kind === 'resource_wait') await tx.rows("UPDATE bot_runs SET resource_waits=resource_waits || jsonb_build_object($2::text,$3::text) WHERE run_id=$1", [runId,e.id,e.reason]);
+      else if (e.kind === 'tool_started') await tx.rows("UPDATE bot_runs SET first_tool_started_at=coalesce(first_tool_started_at,$3::timestamptz), resource_waits=resource_waits - $2::text WHERE run_id=$1", [runId,e.id,e.at]);
+      else await tx.rows("UPDATE bot_runs SET resource_waits=resource_waits - $2::text WHERE run_id=$1", [runId,e.id]);
+      await tx.notify({user_id:run.user_id,bot_id:run.bot_id});
+      return null;
+    }
     if (e.kind === "started") {
       await markRunning(tx, runId);
       await tx.notify({ user_id: run.user_id, bot_id: run.bot_id });

@@ -1,4 +1,4 @@
-import { toolDescriptor } from "@pi-bot/runtime-contracts";
+
 import { StringDecoder } from 'node:string_decoder';
 import { libraryFolder, powerShellArgs, validateWindowsPath, windowsHelper } from './windows.js';
 import { spawn } from 'node:child_process';
@@ -8,7 +8,7 @@ import { commandShell } from './platform.js';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep, parse } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Type } from 'typebox';
-import { withLibraryMutation } from './mutation-lock.js';
+import { deviceResources, type WaitReason } from './resource-lock.js';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 
 export const SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/;
@@ -115,7 +115,7 @@ function shellPath() {
   const extra = ['/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'];
   return [...new Set([...(process.env.PATH ?? '').split(':').filter(Boolean), ...extra])].join(':');
 }
-export function runCommand(command: string, cwd: string, timeoutMs: number, signal?: AbortSignal) {
+export function runCommand(command: string, cwd: string, timeoutMs: number, signal?: AbortSignal, started?: () => void) {
   return new Promise<{ exit_code: number | null; timed_out: boolean; output: string }>((done, reject) => {
     if (signal?.aborted) return reject(new Error('CANCELLED'));
     const windows = process.platform === 'win32';
@@ -144,6 +144,7 @@ export function runCommand(command: string, cwd: string, timeoutMs: number, sign
       else if (signal?.aborted) reject(new Error('CANCELLED'));
       else done({ exit_code: code ?? null, timed_out: timedOut, output });
     };
+    child.once('spawn', () => started?.());
     child.once('error', e => finish(e));
     child.once('close', code => finish(undefined, code));
   });
@@ -163,6 +164,8 @@ function globRegex(glob: string) {
 }
 
 export interface ToolHooks {
+  waiting?(id: string, reason: WaitReason): void;
+  started?(id: string): void;
   /** Resolves true when the user approves access to a path outside the library. */
   requestOutside(path: string, reason: string, signal?: AbortSignal, access?: 'read' | 'write' | 'execute', resourceType?: 'file' | 'directory'): Promise<boolean | 'saved'>;
 }
@@ -249,7 +252,7 @@ export function libraryTools(sandbox: Sandbox, hooks: ToolHooks): ToolDefinition
       parameters: Type.Object({ command: Type.String({ minLength: 1, maxLength: 20000 }), cwd: Type.Optional(Type.String()), timeout_seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 600 })) }),
       execute: async (_id, args: any, signal) => {
         const cwd = await sandbox.resolve(args.cwd ?? '.', { mustExist: true, access: 'execute' });
-        const r = await runCommand(args.command, cwd, (args.timeout_seconds ?? 120) * 1000, signal);
+        const r = await runCommand(args.command, cwd, (args.timeout_seconds ?? 120) * 1000, signal, () => hooks.started?.(_id));
         return text(JSON.stringify(r));
       },
     },
@@ -269,10 +272,24 @@ export function libraryTools(sandbox: Sandbox, hooks: ToolHooks): ToolDefinition
       },
     },
   ] as ToolDefinition[];
-  return tools.map(tool => toolDescriptor(tool.name)?.effect === 'write' ? {
-    ...tool,
-    execute: (id, args, signal, update, ctx) => withLibraryMutation(sandbox.root, signal, () => tool.execute(id, args, signal, update, ctx)),
-  } : tool);
+  return tools.map(tool => {
+    if (tool.name === 'request_outside_access') return tool;
+    return { ...tool, execute: async (id, args, signal, update, ctx) => {
+      const waiting = (reason: WaitReason) => hooks.waiting?.(id, reason);
+      // cwd authorizes launching, but does not constrain the host process.
+      if (tool.name === 'run_command') return deviceResources.run({ kind: 'shell' }, signal,
+        () => tool.execute(id, args, signal, update, ctx), waiting);
+      const mode = tool.name === 'write_file' || tool.name === 'edit_file' ? 'write' : 'read';
+      const fileArgs = args as { path?: string };
+      const input = fileArgs.path ?? '.';
+      const path = await sandbox.resolve(input, { access: mode });
+      return deviceResources.run({ kind: 'file', path, mode }, signal, async () => {
+        if (await sandbox.resolve(input, { access: mode }) !== path) throw new Error('等待期间文件路径已变化，请重试');
+        hooks.started?.(id);
+        return tool.execute(id, { ...fileArgs, path }, signal, update, ctx);
+      }, waiting);
+    } };
+  });
 }
 
 /** Probe existing resources without mkdir, shell execution or outside-library access. */

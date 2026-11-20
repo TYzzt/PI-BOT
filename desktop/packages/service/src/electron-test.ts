@@ -13,6 +13,7 @@ interface ElectronTestOptions {
   canonical: (path: string) => Promise<string>;
   approveLaunch: (path: string, reason: string, signal?: AbortSignal) => Promise<boolean>;
   handoff: (signal?: AbortSignal) => Promise<boolean>;
+  input?: <T>(work: () => Promise<T>, signal?: AbortSignal) => Promise<T>;
 }
 
 const answer = (text: string) => ({ content: [{ type: 'text' as const, text }], details: {} });
@@ -86,10 +87,13 @@ export class ElectronTest {
     switch (input.action) {
       case 'observe': return answer((await window.locator('body').ariaSnapshot({ timeout })).slice(0, 8000));
       case 'login': {
-        const nativeWindow = await this.app.browserWindow(window);
-        try { await nativeWindow.evaluate(w => { w.show(); w.focus(); }); }
-        finally { await nativeWindow.dispose(); }
-        return answer(await this.o.handoff(signal) ? '用户已完成交接，请观察当前窗口' : '交接未完成，请根据当前情况向用户说明');
+        const login = async () => {
+          const nativeWindow = await this.app!.browserWindow(window);
+          try { await nativeWindow.evaluate(w => { w.show(); w.focus(); }); }
+          finally { await nativeWindow.dispose(); }
+          return answer(await this.o.handoff(signal) ? '用户已完成交接，请观察当前窗口' : '交接未完成，请根据当前情况向用户说明');
+        };
+        return this.o.input ? await this.o.input(login, signal) : await login();
       }
       case 'screenshot': {
         const folder = join(this.o.dataDir, 'electron-test-evidence', this.o.runId);

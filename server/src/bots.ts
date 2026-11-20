@@ -27,6 +27,8 @@ import { estimateTokens } from "@earendil-works/pi-coding-agent";
 import { wakeGoals, automationForRun, settleAutomation } from "./automations.js";
 import { recordRun } from "./observations.js";
 
+import { queueStatus } from './queue-status.js';
+
 export const ACTIVE: readonly string[] = ACTIVE_RUN_STATES;
 export const avatarSchema = z.object({
   shape: z.enum(SHAPES),
@@ -205,9 +207,11 @@ export async function botOut(tx: Tx, b: Row) {
   const status = approvals.length ? "waiting_approval" : running.length ? "running" : queuedCount ? "queued" : run?.status ?? null;
   const current = running[0];
   const title = String(current?.title || "").replace(/\s+/g, " ").trim().slice(0, 32);
+  const queued = queuedRuns.map(queueStatus).find(Boolean);
+  const waiting = running.map(queueStatus).find(Boolean);
   const description = current?.cancel_requested ? "正在停止任务" : title ? `正在${title}` : current?.origin === "automation" ? "正在检查目标" : toolDescriptor(activeTool?.name ?? "")?.label ?? "正在处理任务";
   const activity = { status, tool: activeTool?.name ?? null, running_count: running.length, queued_count: queuedCount,
-    summary: approvals.length ? "等你批准访问请求" : running.length > 1 ? `${description}，另有 ${running.length - 1} 个任务` : running.length ? description : queuedCount ? `有 ${queuedCount} 个任务排队中` : run?.origin === "voice" && ACTIVE.includes(run.status) ? "语音通话中" : run && ACTIVE.includes(run.status) ? "正在思考" : null };
+    summary: approvals.length ? "等你批准访问请求" : waiting ? waiting.label : running.length > 1 ? `${description}，另有 ${running.length - 1} 个任务` : running.length ? description : queuedCount ? `有 ${queuedCount} 个任务排队中${queued ? `：${queued.label}` : ""}` : run?.origin === "voice" && ACTIVE.includes(run.status) ? "语音通话中" : run && ACTIVE.includes(run.status) ? "正在思考" : null };
 
   return {
     id: b.bot_id,
