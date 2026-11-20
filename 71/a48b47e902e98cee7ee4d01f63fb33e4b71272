@@ -1,0 +1,18 @@
+desktop/packages/service/src/library.ts
+  h_0953b6dc91c7e5 283-284,289
+server/src/routes.ts
+  h_0953b6dc91c7e5 493
+server/tests/device-resource-lock.test.ts
+  h_0953b6dc91c7e5 5-6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "71a48b47e902e98cee7ee4d01f63fb33e4b71272",
+  "prompts": {},
+  "humans": {
+    "h_0953b6dc91c7e5": {
+      "author": "zhaotao1 <zhaotao1@lenovo.com>"
+    }
+  }
+}
