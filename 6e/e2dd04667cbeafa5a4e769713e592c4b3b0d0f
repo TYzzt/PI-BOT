@@ -1,0 +1,14 @@
+server/openapi.json
+  h_0953b6dc91c7e5 2300-2356
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6ee2dd04667cbeafa5a4e769713e592c4b3b0d0f",
+  "prompts": {},
+  "humans": {
+    "h_0953b6dc91c7e5": {
+      "author": "zhaotao1 <zhaotao1@lenovo.com>"
+    }
+  }
+}
