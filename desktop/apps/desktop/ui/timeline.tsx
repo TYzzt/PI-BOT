@@ -1,3 +1,4 @@
+import {liveReplySegments} from './timeline-cache.js';
 import {uploadDocument} from './documents.js';
 import { AttachmentMenu } from './attachment-menu.js';
 import type {ArtifactRef} from '../../../packages/protocol/src/index.js';
@@ -108,7 +109,7 @@ function ReportFiles({ message }: { message: Message }) {
 }
 
 function ReplyBubbles({ message }: { message: Message }) {
-  const segments = uniqueById(message.reply_segments ?? []);
+  const segments = uniqueById(liveReplySegments(message));
   const legacy = segments.length ? [] : (message.progress ?? []);
   const tail = segments.some(s=>s.phase === 'answer') ? '' : message.content;
   return <>
@@ -235,9 +236,24 @@ export function Timeline({ bot, messages, hasMore, mood, online, onLoadMore, onS
       })
       .finally(() => { loadingOlderRef.current = false; setLoadingOlder(false); });
   };
+  const readSeq = useRef({bot:'',seq:0,pending:false});
+  const markVisibleRead = () => {
+    const el=scroller.current;
+    if(!online || bot.unread_count===undefined || !el || document.visibilityState!=='visible' || el.scrollHeight-el.scrollTop-el.clientHeight>=80)return;
+    const seq=Math.max(0,...messages.filter(m=>m.status!=='running').map(m=>m.seq));
+    if(readSeq.current.bot===bot.id && (readSeq.current.pending || readSeq.current.seq>=seq))return;
+    const id=bot.id;
+    const confirmed=readSeq.current.bot===id?readSeq.current.seq:0;
+    readSeq.current={bot:id,seq:confirmed,pending:true};
+    void call('markRead',{botId:id,seq}).then((r:any)=>{
+      if(readSeq.current.bot===id) readSeq.current.seq=Math.max(readSeq.current.seq,Number(r.last_read_seq)||0);
+    }).catch(()=>{}).finally(()=>{if(readSeq.current.bot===id)readSeq.current.pending=false;});
+  };
+  useEffect(()=>{markVisibleRead();document.addEventListener('visibilitychange',markVisibleRead);return()=>document.removeEventListener('visibilitychange',markVisibleRead);},[bot.id,bot.unread_count,messages,online]);
   const onScroll = () => {
     const el = scroller.current;
     if (!el) return;
+    markVisibleRead();
     const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
     stick.current = gap < 80;
     setFarFromBottom(gap > el.clientHeight);

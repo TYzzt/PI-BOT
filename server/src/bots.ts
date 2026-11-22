@@ -115,6 +115,7 @@ export const messageOut = (m: Row, tasks: Row[] = []) => ({
   seq: m.seq,
   role: m.role,
   content: m.content,
+  stream_seq: Number(m.stream_seq ?? 0),
   provenance:m.provenance??{client:"unknown"},
   attachments: m.attachments ?? [],
   images: (m.images ?? []).map((image: ChatImage & { id: string }) => ({ id: image.id, name: image.name, mime_type: image.mime_type })),
@@ -791,6 +792,7 @@ export async function setContent(tx: Tx, run: Row, content: string) {
     "UPDATE bot_messages SET content=$2, updated_at=now() WHERE message_id=$1 AND status='running'",
     [run.assistant_message_id, content],
   );
+  if(run.lane!=="task") await tx.notify({user_id:run.user_id,bot_id:run.bot_id,message_id:run.assistant_message_id,stream:true});
   if (content.trim() && run.origin !== "automation") await tx.rows("UPDATE bot_runs SET first_reply_at=coalesce(first_reply_at,now()) WHERE run_id=$1", [run.run_id]);
 }
 export interface ToolEvent {
@@ -984,9 +986,10 @@ export async function markBotRead(tx: Tx, userId: string, botId: string, seq: nu
     WHERE bot_id=$1 AND visibility='public' AND status<>'running' AND seq<=$2
     AND seq<coalesce((SELECT min(seq) FROM bot_messages WHERE bot_id=$1
       AND role='assistant' AND status='running'),9223372036854775807)`,[botId,seq]);
-  await tx.rows(`INSERT INTO bot_reads(user_id,bot_id,last_read_seq) VALUES($1,$2,$3)
-    ON CONFLICT(user_id,bot_id) DO UPDATE SET last_read_seq=greatest(bot_reads.last_read_seq,excluded.last_read_seq)`,
+  const changed = await tx.rows(`INSERT INTO bot_reads(user_id,bot_id,last_read_seq) VALUES($1,$2,$3)
+    ON CONFLICT(user_id,bot_id) DO UPDATE SET last_read_seq=greatest(bot_reads.last_read_seq,excluded.last_read_seq)
+    WHERE bot_reads.last_read_seq<excluded.last_read_seq RETURNING last_read_seq`,
     [userId,botId,last!.seq]);
-  await tx.notify({user_id:userId,bot_id:botId});
+  if(changed.length) await tx.notify({user_id:userId,bot_id:botId});
   return unreadState(tx,userId,botId);
 }

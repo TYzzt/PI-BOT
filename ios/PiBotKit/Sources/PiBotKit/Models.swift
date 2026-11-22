@@ -320,6 +320,9 @@ public struct Bot: Decodable, Hashable, Identifiable, Sendable {
     public var avatar: Avatar
     public var isMain: Bool
     public var lastActiveAt: String
+    public var lastMessageAt: String? = nil
+    public var unreadCount: Int? = nil
+    public var lastReadSeq: Int? = nil
     public var latestRun: Run?
     public var lastMessage: LastMessage?
     public var activeTasks: [AgentTaskRef]
@@ -335,6 +338,7 @@ public struct Bot: Decodable, Hashable, Identifiable, Sendable {
         case id, name, slug, persona, modelId = "model_id", avatar, isMain = "is_main", lastActiveAt = "last_active_at"
         case latestRun = "latest_run", lastMessage = "last_message", activeTasks = "active_tasks", activity
         case pendingApprovals = "pending_approvals", executionDeviceId = "execution_device_id"
+        case lastMessageAt = "last_message_at", unreadCount = "unread_count", lastReadSeq = "last_read_seq"
         case runtime, cliProfile = "cli_profile", cliDirectory = "cli_directory", cliDeviceId = "cli_device_id"
     }
 
@@ -357,6 +361,9 @@ public struct Bot: Decodable, Hashable, Identifiable, Sendable {
         avatar = try c.value(.avatar, Avatar())
         isMain = try c.value(.isMain, false)
         lastActiveAt = try c.decode(String.self, forKey: .lastActiveAt)
+        lastMessageAt = try c.decodeIfPresent(String.self,forKey:.lastMessageAt)
+        unreadCount = try c.decodeIfPresent(Int.self,forKey:.unreadCount)
+        lastReadSeq = try c.decodeIfPresent(Int.self,forKey:.lastReadSeq)
         latestRun = try c.decodeIfPresent(Run.self, forKey: .latestRun)
         lastMessage = try c.decodeIfPresent(LastMessage.self, forKey: .lastMessage)
         activeTasks = try c.value(.activeTasks, [])
@@ -466,6 +473,7 @@ public struct ReplySegment: Codable, Hashable, Identifiable, Sendable {
 }
 
 public struct Message: Codable, Hashable, Identifiable, Sendable {
+    public var streamSeq: Int? = nil
     public var id: String
     public var botId: String
     public var runId: String?
@@ -486,6 +494,7 @@ public struct Message: Codable, Hashable, Identifiable, Sendable {
     public var createdAt: String
 
     enum CodingKeys: String, CodingKey {
+        case streamSeq = "stream_seq"
         case id, botId = "bot_id", runId = "run_id", taskId = "task_id", seq, role, content, images, attachments, status
         case executor, tools, progress, replySegments = "reply_segments", ui, fromBot = "from_bot"
         case agentTasks = "agent_tasks", createdAt = "created_at"
@@ -500,6 +509,7 @@ public struct Message: Codable, Hashable, Identifiable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        streamSeq = try c.decodeIfPresent(Int.self,forKey:.streamSeq)
         id = try c.decode(String.self, forKey: .id)
         botId = try c.decode(String.self, forKey: .botId)
         runId = try c.decodeIfPresent(String.self, forKey: .runId)
@@ -682,5 +692,15 @@ public struct BotInput: Encodable, Sendable {
         try c.encode(modelId, forKey: .modelId)
         try c.encode(avatar, forKey: .avatar)
         try c.encode(executionDeviceId, forKey: .executionDeviceId)
+    }
+}
+
+public func conversationOrder(_ list:[Bot])->[Bot] {
+    guard list.allSatisfy({$0.lastMessageAt != nil}) else {return list}
+    return list.sorted { a,b in
+        if a.isMain != b.isMain {return a.isMain}
+        let at=parseDate(a.lastMessageAt!) ?? .distantPast, bt=parseDate(b.lastMessageAt!) ?? .distantPast
+        if at != bt {return at>bt}
+        return a.id<b.id
     }
 }

@@ -1,3 +1,4 @@
+import { orderBots } from './conversation-order.js';
 import { confirmAction, showNotice } from './dialogs.js';
 import { StrictMode, useCallback, useEffect, useRef, useState, type FormEvent, type MouseEvent } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -8,7 +9,7 @@ import { uniqueById } from './unique.js';
 import { bridge, call, errorText } from './bridge.js';
 import { BotEditor } from './editor.js';
 import { Timeline } from './timeline.js';
-import { clearTimelines, mergeOlder, mergeTail, readTimeline, writeTimeline, type TimelinePage } from './timeline-cache.js';
+import { applyStream, clearTimelines, mergeOlder, mergeTail, readTimeline, writeTimeline, type TimelinePage } from './timeline-cache.js';
 import { BotListItem } from './bot-list-item.js';
 import { ClientUpdates } from './client-updates.js';
 import { SavedAuthorizations } from './saved-authorizations.js';
@@ -273,7 +274,7 @@ function App() {
       if (request !== botsRequest.current) return;
       setDevices(uniqueById(r.devices ?? []));
       setCloud(r.cloud_computer ?? null);
-      setBots(r.bots); setLoadError('');
+      setBots(orderBots(r.bots)); setLoadError('');
       setSelected(s => (s && r.bots.some(b => b.id === s) ? s : r.bots[0]?.id ?? null));
     } catch (e) { if (request === botsRequest.current) setLoadError(errorText(e)); }
     finally { botsInFlight.current--; }
@@ -329,10 +330,11 @@ function App() {
       else if (event.type === 'account') setAccount(event.state);
       else if (event.type === 'bots') void loadBots();
       else if (event.type === 'bot') { void loadBots(); if (event.bot_id === selectedRef.current) void loadTail(event.bot_id); }
+      else if(event.type==='stream') setPages(p=>{const page=applyStream(p[event.bot_id],event);return page?{...p,[event.bot_id]:page}:p;});
       else if (event.type === 'delta') setPages(p => {
         const page = p[event.bot_id];
         if (!page) return p;
-        return { ...p, [event.bot_id]: { ...page, messages: page.messages.map(m => (m.id === event.message_id && m.status === 'running' ? { ...m, content: event.content } : m)) } };
+        return { ...p, [event.bot_id]: { ...page, messages: page.messages.map(m => (m.id === event.message_id && m.status === 'running' && m.stream_seq===undefined ? { ...m, content: event.content } : m)) } };
       });
       else if (event.type === 'activity') setActivities(a => { const next = { ...a }; if (event.activity) next[event.botId] = event.activity; else delete next[event.botId]; return next; });
     });

@@ -178,7 +178,7 @@ export class Application {
       case 'event': {
         const e = m.event ?? {};
         if (e.type === 'presence') { this.o.emit({type:'bots'}); return; }
-        if (e.type === 'bot' || e.type === 'delta' || e.type === 'bots') this.o.emit(e as AppEvent);
+        if (e.type === 'bot' || e.type === 'delta' || e.type === 'stream' || e.type === 'bots') this.o.emit(e as AppEvent);
         return;
       }
     }
@@ -268,6 +268,7 @@ export class Application {
       case 'botUpdate': { const { id, ...patch } = input; return this.cloud<Bot>('PATCH', `/bots/${id}`, patch); }
       case 'botDelete': return this.cloud('DELETE', `/bots/${input.id}`);
       case 'taskConversation': return this.cloud('GET', `/bots/${input.botId}/tasks/${input.taskId}/conversation?after=${input.after ?? 0}`);
+      case 'markRead': return this.cloud('POST', `/bots/${input.botId}/read`, {seq:input.seq});
       case 'messages': return this.cloud<MessagePage>('GET', `/bots/${input.botId}/messages?limit=30${input.before ? `&before=${input.before}` : ''}`);
       case 'send': return this.cloud('POST', `/bots/${input.botId}/messages`, { client:"desktop", text: input.text, images: input.images, document_ids:input.document_ids, request_id: input.request_id ?? randomUUID() });
       case 'image': return this.cloud('GET', `/bots/${input.botId}/messages/${input.messageId}/images/${input.imageId}`);

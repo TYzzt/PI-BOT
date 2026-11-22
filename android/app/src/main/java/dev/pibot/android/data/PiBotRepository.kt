@@ -1,5 +1,12 @@
 package dev.pibot.android.data
 
+import dev.pibot.android.domain.applyStream
+import kotlinx.serialization.json.longOrNull
+
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.json.intOrNull
+
 import dev.pibot.android.domain.ServerUrl
 import dev.pibot.android.domain.Timeline
 import dev.pibot.android.domain.parseServerUrl
@@ -154,6 +161,7 @@ class PiBotRepository(
         val previous = _session.value
         stopEvents()
         storage.clear()
+        confirmedReads.clear()
         _session.value = null
         _bots.value = null
         _timelines.value = emptyMap()
@@ -207,7 +215,7 @@ class PiBotRepository(
                 if (counter.get() > version) current[bot.id] ?: bot
                 else { counter.updateAndGet { maxOf(it, version) }; bot }
             }
-            incoming + previous.orEmpty().filter { old -> incoming.none { it.id == old.id } && (botRefreshVersions[old.id]?.get() ?: 0) > version }
+            conversationOrder(incoming + previous.orEmpty().filter { old -> incoming.none { it.id == old.id } && (botRefreshVersions[old.id]?.get() ?: 0) > version })
         }
         _computer.value = list.computer
         _devices.value = list.devices.distinctBy { it.id }
@@ -221,7 +229,7 @@ class PiBotRepository(
         if (_session.value?.pushBindingId != bindingId) return
         _bots.update { current ->
             if (_session.value?.pushBindingId != bindingId) current
-            else current?.filterNot { it.id == botId }?.plus(result)?.sortedByDescending { it.lastActiveAt }
+            else current?.map {if(it.id==botId)result else it}?.let(::conversationOrder)
         }
         if (visibleBotId != botId) return
         val page = withContext(io) { api.messages(ServerUrl(session.serverUrl), session.token, botId) }
@@ -295,6 +303,18 @@ class PiBotRepository(
     suspend fun archiveBot(id: String) {
         authed { u, t -> api.archiveBot(u, t, id) }
         remove(id)
+    }
+
+    private val readMutex=Mutex()
+    private val confirmedReads=mutableMapOf<String,Int>()
+    suspend fun markRead(botId:String) {
+      readMutex.withLock {
+        if(_bots.value?.find {it.id==botId}?.unreadCount==null)return
+        val seq=_timelines.value[botId]?.messages?.filter {it.status!="running"}?.maxOfOrNull {it.seq} ?: 0
+        if(seq<=(confirmedReads[botId] ?: 0))return
+        val result=authed {u,t -> api.markRead(u,t,botId,seq)}
+        result["last_read_seq"]?.jsonPrimitive?.intOrNull?.let {confirmedReads[botId]=maxOf(confirmedReads[botId] ?: 0,it)}
+      }
     }
 
     suspend fun loadTail(botId: String) {
@@ -421,6 +441,17 @@ class PiBotRepository(
 
     internal fun handleEvent(event: JsonObject) {
         when (event["type"]?.jsonPrimitive?.contentOrNull) {
+            "stream" -> {
+                val id=event["bot_id"]?.jsonPrimitive?.contentOrNull ?: return
+                val messageId=event["message_id"]?.jsonPrimitive?.contentOrNull ?: return
+                val seq=event["seq"]?.jsonPrimitive?.longOrNull ?: return
+                if(event["reset"]?.jsonPrimitive?.booleanOrNull!=true || event["offset"]?.jsonPrimitive?.intOrNull!=0)return
+                val message=runCatching {kotlinx.serialization.json.Json {ignoreUnknownKeys=true}.decodeFromString<Message>((event["message"] ?: return).toString())}.getOrNull() ?: return
+                if(message.id!=messageId)return
+                val text=event["text"]?.jsonPrimitive?.contentOrNull ?: return
+                val status=event["status"]?.jsonPrimitive?.contentOrNull ?: return
+                _timelines.update {all->all+(id to (all[id] ?: Timeline()).applyStream(message.copy(content=text,status=status),seq))}
+            }
             "delta" -> {
                 val botId = event["bot_id"]?.jsonPrimitive?.contentOrNull ?: return
                 val messageId = event["message_id"]?.jsonPrimitive?.contentOrNull ?: return
