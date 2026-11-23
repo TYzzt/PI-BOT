@@ -20,7 +20,8 @@ permissions:
 
 jobs:
   ios:
-    runs-on: macos-15
+    # Pin Intel to avoid macOS ARM64 capacity failures before the job starts.
+    runs-on: macos-15-intel
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4

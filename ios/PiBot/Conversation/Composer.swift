@@ -12,8 +12,6 @@ struct Composer: View {
     let callEnabled: Bool
     let onCall: () -> Void
     @Environment(AppStore.self) private var store
-    @Environment(\.scenePhase) private var scenePhase
-    @StateObject private var speech = ComposerSpeech()
     let onSend: (String, String, [ChatImage], [String]) async -> Bool
     @State private var files: [FileDraft] = []
     @State private var uploads: [String: Task<Void, Never>] = [:]
@@ -33,8 +31,7 @@ struct Composer: View {
     @FocusState private var focused: Bool
 
     private var attachmentCount: Int { images.count + files.count }
-    private var voiceActive: Bool { speech.phase != .idle }
-    private var readyToSend: Bool { !sending && !reading && !voiceActive && files.allSatisfy { $0.artifact != nil } }
+    private var readyToSend: Bool { !sending && !reading && files.allSatisfy { $0.artifact != nil } }
     private var canSend: Bool {
         (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty || !files.isEmpty) && readyToSend
     }
@@ -55,7 +52,7 @@ struct Composer: View {
                                     Image(systemName: "xmark.circle.fill").font(.system(size: 20)).symbolRenderingMode(.palette)
                                         .foregroundStyle(.white, Palette.ink.opacity(0.7))
                                 }
-                                .disabled(sending || reading || voiceActive)
+                                .disabled(sending || reading)
                                 .accessibilityLabel("移除")
                                 .padding(4)
                             }
@@ -71,12 +68,12 @@ struct Composer: View {
                         Text(error).font(.footnote).foregroundStyle(Palette.danger)
                         Button("重试") { upload(file) }
                     }
-                    Button(file.artifact == nil ? "取消上传" : "移除") { removeFile(file.id) }.disabled(sending || voiceActive)
+                    Button(file.artifact == nil ? "取消上传" : "移除") { removeFile(file.id) }.disabled(sending)
                 }.font(.footnote).padding(.horizontal, 16)
             }
             HStack(alignment: .bottom, spacing: 2) {
                 Button(action: onCall) { Image(systemName: "phone.fill").frame(width: 40, height: 40) }
-                    .disabled(!callEnabled || sending || voiceActive)
+                    .disabled(!callEnabled || sending)
                     .accessibilityLabel("语音通话")
                 Menu {
                     Button("拍照", systemImage: "camera") {
@@ -92,15 +89,13 @@ struct Composer: View {
                 } label: {
                     Image(systemName: "plus").font(.system(size: 18, weight: .semibold)).frame(width: 40, height: 40)
                 }
-                .disabled(sending || reading || voiceActive)
+                .disabled(sending || reading)
                 .accessibilityLabel("添加附件")
                 TextField("向 \(botName) 提问", text: $text, axis: .vertical)
                     .lineLimit(1...5)
                     .focused($focused)
-                    .disabled(voiceActive)
                     .padding(.vertical, 10)
                     .padding(.horizontal, 4)
-                HoldToSpeak(speech: speech, enabled: readyToSend || voiceActive)
                 Button(action: { send() }) {
                     Image(systemName: "arrow.up").font(.system(size: 17, weight: .bold))
                         .foregroundStyle(canSend ? Color.white : Palette.muted)
@@ -123,7 +118,7 @@ struct Composer: View {
         .sheet(isPresented: $showingCamera) {
             CameraCapture { image in
                 showingCamera = false
-                guard let image, !voiceActive, hasAttachmentSlot() else { return }
+                guard let image, hasAttachmentSlot() else { return }
                 do { images = try appendCameraImage(image, existing: images) }
                 catch { imageError = errorText(error) }
             }.ignoresSafeArea()
@@ -131,7 +126,7 @@ struct Composer: View {
         .fileImporter(isPresented: $importing, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             switch result {
             case .success(let urls):
-                guard !reading, !sending, !voiceActive, hasAttachmentSlot(urls.count) else { return }
+                guard !reading, !sending, hasAttachmentSlot(urls.count) else { return }
                 imageError = nil
                 reading = true
                 importTask = Task {
@@ -149,30 +144,18 @@ struct Composer: View {
                 if (error as NSError).code != NSUserCancelledError { imageError = errorText(error) }
             }
         }
-        .onChange(of: scenePhase) { _, phase in if phase == .background { speech.cancel() } }
         .onDisappear {
-            speech.cancel()
             importTask?.cancel()
             for i in files.indices where files[i].artifact == nil { files[i].error = "上传已暂停，请重试" }
             uploads.values.forEach { $0.cancel() }; uploads = [:]
             let pending = files.filter { $0.artifact == nil }.map(\.id)
             Task { for id in pending { try? await store.cancelDocumentUpload(id) } }
         }
-        .onReceive(speech.events) { event in
-            switch event {
-            case .error(let message): imageError = message
-            case .recognized(let instruction):
-                imageError = nil
-                let draft = [text.trimmingCharacters(in: .whitespacesAndNewlines), instruction].filter { !$0.isEmpty }.joined(separator: "\n")
-                text = draft
-                send(draft)
-            }
-        }
         .onChange(of: picked) {
             let items = picked
             guard !items.isEmpty else { return }
             picked = []
-            guard !reading, !sending, !voiceActive, hasAttachmentSlot(items.count) else { return }
+            guard !reading, !sending, hasAttachmentSlot(items.count) else { return }
             reading = true
             imageError = nil
             let target = botId
@@ -217,8 +200,8 @@ struct Composer: View {
         }
     }
 
-    private func send(_ spokenDraft: String? = nil) {
-        let draft = spokenDraft ?? text
+    private func send() {
+        let draft = text
         let value = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = images
         guard readyToSend, !value.isEmpty || attachmentCount > 0, hasAttachmentSlot(0) else { return }
