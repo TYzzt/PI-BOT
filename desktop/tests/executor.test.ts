@@ -32,7 +32,7 @@ test('document tools remain available to ordinary tasks while browser tests keep
     });
     assert.equal(events.at(-1).event.state, 'completed', JSON.stringify(events.at(-1)));
     if (browser) assert.deepEqual(tools, ['browser_test']);
-    else for (const name of ['document_read', 'document_write', 'document_edit', 'document_publish']) assert.ok(tools.includes(name), name);
+    else for (const name of ['document_read', 'document_write', 'document_edit', 'document_publish', 'image_models', 'image_generate']) assert.ok(tools.includes(name), name);
   }
 });
 
