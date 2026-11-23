@@ -104,6 +104,17 @@ app.whenReady().then(async()=>{
     await js(`(()=>{const data=new DataTransfer();data.items.add(new File([new Uint8Array([0,255,1])],'opaque',{type:'application/octet-stream'}));document.querySelector('textarea').dispatchEvent(new ClipboardEvent('paste',{clipboardData:data,bubbles:true,cancelable:true}));})()`);
     await until(`window.__draftHarness.starts.at(-1).name==='opaque' && document.querySelector('.document-drafts').textContent.includes('opaque') && !document.querySelector('.document-drafts').textContent.includes('取消上传')`,'pasted binary did not upload as an ordinary file');
     await expect(`document.querySelectorAll('.image-drafts img').length===1`,'file paste removed the existing image');
+    // One existing image and file: reject a batch of nine with no partial additions.
+    const dropImages = count => js(`(()=>{const source=window.__draftHarness.sourceImage;const data=new DataTransfer();for(let i=0;i<${count};i++)data.items.add(new File([Uint8Array.from(atob(source.data),x=>x.charCodeAt(0))],\`extra-\${i}.png\`,{type:'image/png'}));document.querySelector('.composer').dispatchEvent(new DragEvent('drop',{dataTransfer:data,bubbles:true,cancelable:true}));})()`);
+    await dropImages(9);
+    await until(`document.querySelector('.composer .error')?.textContent.includes('最多 10 件附件')`,'overflow was not reported');
+    await expect(`document.querySelectorAll('.image-drafts img').length===1 && document.querySelector('.document-drafts').textContent.includes('opaque')`,'overflow changed the existing draft');
+    await dropImages(8);
+    await until(`document.querySelectorAll('.image-drafts img').length===9`,'exact mixed quota did not fit');
+    await send(4);
+    await expect(`window.__draftHarness.requests[3].images.length===9 && window.__draftHarness.requests[3].document_ids.length===1`,'mixed draft was not sent together');
+    await finish(false);
+    await expect(`document.querySelectorAll('.image-drafts img').length===9 && document.querySelector('.document-drafts').textContent.includes('opaque')`,'failed mixed send lost the draft');
     writeFileSync(join(directory,'result.json'),JSON.stringify({ok:true}));
     win.destroy();app.exit(0);
   } catch(error) {

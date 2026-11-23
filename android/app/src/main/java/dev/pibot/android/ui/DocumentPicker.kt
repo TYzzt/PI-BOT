@@ -17,20 +17,18 @@ import java.util.UUID
 private data class PendingDocument(val uri: Uri, val id: String = UUID.randomUUID().toString(), val name: String = "文件", val progress: Int = 0, val error: String? = null)
 
 @Composable
-internal fun DocumentPicker(botId: String, repository: PiBotRepository, ids: List<String>, onIds: (List<String>) -> Unit, onBusy: (Boolean) -> Unit, enabled: Boolean, content: @Composable (Boolean, () -> Unit) -> Unit) {
+internal fun DocumentPicker(botId: String, repository: PiBotRepository, ids: List<String>, onIds: ((List<String>) -> List<String>) -> Unit, imageCount: Int, enabled: Boolean, content: @Composable (Boolean, () -> Unit, () -> Int) -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var names by rememberSaveable(botId) { mutableStateOf(hashMapOf<String, String>()) }
     var pending by remember(botId) { mutableStateOf(emptyList<PendingDocument>()) }
     var error by remember(botId) { mutableStateOf<String?>(null) }
     var available by remember { mutableStateOf(false) }
-    val currentIds by rememberUpdatedState(ids)
     val currentBot by rememberUpdatedState(botId)
     var pickingFor by rememberSaveable { mutableStateOf<String?>(null) }
     val jobs = remember(botId) { mutableMapOf<String, Job>() }
     LaunchedEffect(repository, botId) { available = runCatching { repository.documentCapabilities(); true }.getOrDefault(false) }
-    LaunchedEffect(pending.isNotEmpty()) { onBusy(pending.isNotEmpty()) }
-    DisposableEffect(botId) { onDispose { jobs.values.forEach { it.cancel() }; onBusy(false) } }
+    DisposableEffect(botId) { onDispose { jobs.values.forEach { it.cancel() } } }
     fun start(item: PendingDocument) {
         pending = pending.filter { it.id != item.id } + item.copy(error = null)
         jobs[item.id] = scope.launch {
@@ -52,7 +50,8 @@ internal fun DocumentPicker(botId: String, repository: PiBotRepository, ids: Lis
                 }
                 ensureActive()
                 if (currentBot != botId) return@launch
-                if (artifact.id !in currentIds) { names = HashMap(names).apply { put(artifact.id, artifact.name) }; onIds(currentIds + artifact.id) }
+                names = HashMap(names).apply { put(artifact.id, artifact.name) }
+                onIds { if (artifact.id in it) it else it + artifact.id }
                 pending = pending.filter { it.id != item.id }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { pending = pending.map { if (it.id == item.id) it.copy(error = errorText(e)) else it } }
@@ -63,13 +62,14 @@ internal fun DocumentPicker(botId: String, repository: PiBotRepository, ids: Lis
         val target = pickingFor
         pickingFor = null
         if (target != botId || !enabled) return@rememberLauncherForActivityResult
-        if (ids.size + pending.size + uris.size > 4) error = "每条消息最多 4 个文件"
-        else uris.forEach { start(PendingDocument(it)) }
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        error = if (imageCount + ids.size + pending.size + uris.size > MAX_MESSAGE_ATTACHMENTS) ATTACHMENT_LIMIT_HINT else null
+        if (error == null) uris.forEach { start(PendingDocument(it)) }
     }
     Column {
         ids.forEach { id -> Row {
             Text(names[id] ?: "已上传文件", modifier = androidx.compose.ui.Modifier.weight(1f))
-            TextButton(enabled = enabled, onClick = { onIds(ids.filter { it != id }); names = HashMap(names).apply { remove(id) } }) { Text("移除") }
+            TextButton(enabled = enabled, onClick = { onIds { it.filterNot { value -> value == id } }; names = HashMap(names).apply { remove(id) } }) { Text("移除") }
         } }
         pending.forEach { item -> Column {
             Text("${item.name} · ${item.progress}% ${item.error ?: ""}")
@@ -79,9 +79,9 @@ internal fun DocumentPicker(botId: String, repository: PiBotRepository, ids: Lis
             }
         } }
         error?.let { Text(it, color = Danger) }
-        content(enabled && available && ids.size + pending.size < 4) {
-            pickingFor = botId
-            picker.launch(arrayOf("*/*"))
-        }
+        content(enabled && available, {
+            if (imageCount + ids.size + pending.size >= MAX_MESSAGE_ATTACHMENTS) error = ATTACHMENT_LIMIT_HINT
+            else { pickingFor = botId; picker.launch(arrayOf("*/*")) }
+        }, { pending.size })
     }
 }

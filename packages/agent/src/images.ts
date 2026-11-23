@@ -2,7 +2,10 @@
 export interface ChatImage { name: string; mime_type: string; data: string }
 export interface MessageImage { id: string; name: string; mime_type: string }
 export const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'] as const;
-export const MAX_IMAGES = 4;
+export const MAX_MESSAGE_ATTACHMENTS = 10;
+export const ATTACHMENT_LIMIT_HINT = `每条消息最多 ${MAX_MESSAGE_ATTACHMENTS} 件附件（图片和文件合计）`;
+export const withinAttachmentLimit = (...counts: number[]) => counts.reduce((total, count) => total + count, 0) <= MAX_MESSAGE_ATTACHMENTS;
+export const MAX_IMAGES = MAX_MESSAGE_ATTACHMENTS;
 // Upload limits apply to originals; model derivatives have a separate, smaller budget.
 export const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 export const MAX_IMAGES_BYTES = 32 * 1024 * 1024;
@@ -12,7 +15,7 @@ export const MAX_MODEL_IMAGE_BYTES = 2 * 1024 * 1024;
 export const MAX_MODEL_IMAGES_BYTES = 4 * 1024 * 1024;
 export const MAX_IMAGE_PIXELS = 40_000_000;
 export const IMAGE_REQUEST_BYTES = 48 * 1024 * 1024;
-export const IMAGE_LIMIT_HINT = '最多 4 张图片，单张原图不超过 20 MB，合计不超过 32 MB；原图保存，模型仅使用压缩副本；支持 JPEG、PNG、WebP、GIF';
+export const IMAGE_LIMIT_HINT = `${ATTACHMENT_LIMIT_HINT}；单张原图不超过 20 MB，图片合计不超过 32 MB；原图保存，模型仅使用压缩副本；支持 JPEG、PNG、WebP、GIF`;
 export const imageBytes = (image: ChatImage) => image.data.length * 3 / 4 - (image.data.endsWith('==') ? 2 : image.data.endsWith('=') ? 1 : 0);
 export function isChatImage(value: unknown): value is ChatImage {
   if (!value || typeof value !== 'object') return false;
