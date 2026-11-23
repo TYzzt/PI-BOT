@@ -43,7 +43,8 @@ test("admin saves selectable image models without exposing saved keys and genera
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   t.after(async () => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
-  const browser = await chromium.launch({ headless: true, ...(process.env.PI_BOT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PI_BOT_CHROMIUM_EXECUTABLE } : {}) });
+  // CI installs the full Chromium browser, not the separate headless-shell package.
+  const browser = await chromium.launch({ headless: true, channel: "chromium", ...(process.env.PI_BOT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PI_BOT_CHROMIUM_EXECUTABLE } : {}) });
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 1280, height: 980 } });
   const errors: string[] = []; page.on("pageerror", error => errors.push(error.message));
