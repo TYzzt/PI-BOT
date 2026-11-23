@@ -143,6 +143,8 @@ npm run desktop:dev
 
 文档附件的上传、读取和生成能力见 [文档说明](docs/documents.md)，持续授权范围及撤销方式见 [已保存授权](docs/saved-authorizations.md)。
 
+管理员可在后台「生图」配置 CLIProxy，支持 Grok、GPT Image 和 Gemini 图片生成；生成结果作为聊天附件提供预览和下载，见[生图说明](docs/image-generation.md)。
+
 ```sh
 npm run typecheck
 npm run build

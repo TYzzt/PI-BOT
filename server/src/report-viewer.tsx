@@ -29,7 +29,13 @@ try {
     blob,
   );
   download.download = decodeURIComponent(response.headers.get("x-report-name") ?? `${id}.md`);
-  if (mime.startsWith('application/pdf')) {
+  download.textContent = "下载文件";
+  if (["image/png", "image/jpeg", "image/webp"].includes(mime.split(";")[0].trim())) {
+    const image = document.createElement("img");
+    image.alt = document.title; image.src = download.href;
+    image.style.cssText = "display:block;max-width:100%;height:auto;margin:auto;border-radius:12px";
+    target.replaceChildren(image);
+  } else if (mime.startsWith('application/pdf')) {
     const frame=document.createElement('iframe'); frame.title=document.title;frame.src=download.href;frame.style.cssText='width:100%;height:80vh;border:0';target.append(frame);
   } else if (!mime.startsWith('text/')) {
     target.textContent='文件已就绪，请点击下载，使用适合此文件的应用打开。';

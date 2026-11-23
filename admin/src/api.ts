@@ -138,6 +138,13 @@ export interface JevSettings {
   configured: boolean;
   source: "database" | "environment" | "none";
 }
+export interface ImageGenerationSettings {
+  enabled: boolean;
+  base_url: string;
+  configured: boolean;
+  models: string[];
+  default_model: string;
+}
 
 export const api = {
   login: (username: string, password: string) =>
@@ -154,6 +161,9 @@ export const api = {
     request<User>(adminApi, `users/${id}`, "PATCH", body),
   deleteUser: (id: string) => request(adminApi, `users/${id}`, "DELETE"),
   models: () => request<Model[]>(adminApi, "models"),
+  imageGeneration: () => request<ImageGenerationSettings>(adminApi, "image-generation"),
+  saveImageGeneration: (body: Omit<ImageGenerationSettings, "configured"> & { api_key?: string }) =>
+    request<ImageGenerationSettings>(adminApi, "image-generation", "PUT", body),
   modelCatalog: (body: { provider: "xai" | "bailian"; api_key?: string; model_id?: string }) =>
     request<{ chat: CatalogModel[]; voice: CatalogModel[] }>(adminApi, "model-catalog", "POST", body),
   createModel: (body: ModelInput) => request<Model>(adminApi, "models", "POST", body),

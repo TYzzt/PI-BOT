@@ -114,6 +114,8 @@ export const TOOL_REGISTRY: Readonly<Record<string, ToolDescriptor>> =
     read_file: tool("阅读文件", "read", "public", "searching"),
     search_files: tool("搜索文件", "read", "public", "searching"),
     web_search: tool("查找资料", "read", "public", "searching"),
+    image_models: tool("查询生图模型", "read", "public", "searching"),
+    image_generate: { ...tool("生成图片", "write"), fileOutput: true },
     composio_search: tool("查找应用动作", "read", "public", "searching"),
     composio_connect: tool("连接应用账号", "control", "public", "waiting"),
     composio_execute: tool("执行应用动作", "control"),
