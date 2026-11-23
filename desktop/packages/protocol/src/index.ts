@@ -1,7 +1,7 @@
 import type { ArtifactRef } from "@pi-bot/runtime-contracts";
 export type { ArtifactRef } from "@pi-bot/runtime-contracts";
 import { z } from 'zod';
-import { validImages, IMAGE_TYPES, MAX_IMAGES, MAX_IMAGE_BYTES, IMAGE_LIMIT_HINT, type MessageImage } from '@pi-bot/agent/images';
+import { ATTACHMENT_LIMIT_HINT, MAX_MESSAGE_ATTACHMENTS, withinAttachmentLimit, validImages, IMAGE_TYPES, MAX_IMAGES, MAX_IMAGE_BYTES, IMAGE_LIMIT_HINT, type MessageImage } from '@pi-bot/agent/images';
 import type { UiDocument } from '@pi-bot/a2ui';
 import { COLORS, SCHEMES, SHAPES, type Avatar, type Mood } from '@pi-bot/bot-face';
 
@@ -54,7 +54,7 @@ export const schemas = {
   botDelete: z.object({ id }),
   taskConversation: z.object({ botId: id, taskId: id, after: z.number().int().nonnegative().optional() }),
   messages: z.object({ botId: id, before: z.number().int().positive().optional() }),
-  send: z.object({ botId: id, text: z.string().trim().max(100000).default(''), images: imagesSchema.default([]), document_ids:z.array(id).max(4).default([]), request_id: id.optional() }).refine(body => body.text.length > 0 || body.images.length > 0 || body.document_ids.length > 0, '请填写消息或选择图片'),
+  send: z.object({ botId: id, text: z.string().trim().max(100000).default(''), images: imagesSchema.default([]), document_ids:z.array(id).max(MAX_MESSAGE_ATTACHMENTS).default([]), request_id: id.optional() }).refine(body => withinAttachmentLimit(body.images.length, body.document_ids.length), ATTACHMENT_LIMIT_HINT).refine(body => body.text.length > 0 || body.images.length > 0 || body.document_ids.length > 0, '请填写消息或选择图片'),
   image: z.object({ botId: id, messageId: id, imageId: id }),
   voiceTicket: z.object({ botId: id }),
   uiState: z.object({ botId: id, messageId: id, revision: z.number().int().positive(), states: z.unknown() }),

@@ -13,7 +13,7 @@ import { uniqueById } from './unique.js';
 import { UiView } from '@pi-bot/a2ui/react';
 import '@pi-bot/a2ui/styles';
 import { bridge, call, errorText } from './bridge.js';
-import { imageSource, type ChatImage } from '@pi-bot/agent/images';
+import { ATTACHMENT_LIMIT_HINT, IMAGE_TYPES, imageSource, withinAttachmentLimit, type ChatImage } from '@pi-bot/agent/images';
 import { MessagePicture, readImages } from './images.js';
 import { readDrafts, stageDrafts, flushDrafts } from './drafts.js';
 import { Icon } from './icons.js';
@@ -194,12 +194,6 @@ export function Timeline({ bot, messages, hasMore, mood, online, onLoadMore, onS
       setUploads(current=>current.filter(x=>x.id!==item.id));
     }catch(e){if(!item.controller.signal.aborted)setUploads(current=>current.map(x=>x.id===item.id?{...x,error:errorText(e)}:x));}
   };
-  const addDocuments=(files:File[])=>{
-    if(!files.length || !online || submitting.current)return;
-    if(!documentReady){setError('服务器尚不支持文件上传，请升级服务器');return;}
-    if(documents.length+uploads.filter(x=>x.botId===bot.id).length+files.length>4){setError('每条消息最多 4 个文件');return;}
-    for(const file of files)void upload({botId:bot.id,file,id:crypto.randomUUID(),sent:0,controller:new AbortController()});
-  };
   const documentBusy=uploads.some(x=>x.botId===bot.id);
   const [reading, setReading] = useState(false);
   const readingRef = useRef(false);
@@ -290,25 +284,25 @@ export function Timeline({ bot, messages, hasMore, mood, online, onLoadMore, onS
     if (!files.length || readingRef.current || submitting.current || !online) return;
     const botId = bot.id;
     readingRef.current = true; setReading(true); setError('');
-    let next = images;
-    const generic: File[] = [];
     try {
-      for (const file of files) {
-        if (file.type.startsWith('image/')) {
-          try { next = await readImages([file], next); continue; }
-          catch { /* Unsupported images and images beyond the visual quota remain ordinary files. */ }
-        }
-        generic.push(file);
-      }
+      const pending = uploads.filter(x => x.botId === botId).length;
+      if (!withinAttachmentLimit(images.length, documents.length, pending, files.length)) throw new Error(ATTACHMENT_LIMIT_HINT);
+      const visual = files.filter(file => IMAGE_TYPES.some(type => type === file.type));
+      const generic = files.filter(file => !visual.includes(file));
+      if (generic.length && !documentReady) throw new Error('服务器尚不支持文件上传，请升级服务器');
+      const next = visual.length ? await readImages(visual, images) : images;
       if (activeBot.current === botId) {
-        setImages(next);
-        addDocuments(generic);
+        if (visual.length) setImages(next);
+        for (const file of generic) void upload({ botId, file, id: crypto.randomUUID(), sent: 0, controller: new AbortController() });
       }
+    } catch (e) {
+      if (activeBot.current === botId) setError(errorText(e));
     } finally { readingRef.current = false; setReading(false); }
   };
   const send = async () => {
     const value = text.trim();
     if ((!value && !images.length && !documents.length) || !online || submitting.current || readingRef.current || documentBusy) return;
+    if (!withinAttachmentLimit(images.length, documents.length)) { setError(ATTACHMENT_LIMIT_HINT); return; }
     const draft = text;
     const botId = bot.id;
     if (retry.current?.text !== value || retry.current.bot !== botId || retry.current.images !== images || retry.current.documents.map(d=>d.id).join() !== documents.map(d=>d.id).join()) retry.current = { text: value, images, documents, bot: botId, id: crypto.randomUUID() };
@@ -397,7 +391,7 @@ export function Timeline({ bot, messages, hasMore, mood, online, onLoadMore, onS
         </div>
         <div className="input">
           <input ref={documentPicker} type="file" multiple hidden onChange={e=>{const files=Array.from(e.target.files??[]);void addFiles(files);e.target.value='';}} />
-          <AttachmentMenu key={bot.id} disabled={!online || sending || reading || ((!documentReady || documents.length+uploads.filter(x=>x.botId===bot.id).length>=4) && images.length>=4)} onFiles={() => documentPicker.current?.click()} />
+          <AttachmentMenu key={bot.id} disabled={!online || sending || reading} onFiles={() => documentPicker.current?.click()} />
           <textarea value={text} onChange={e => setText(e.target.value)} onKeyDown={key} onPaste={e => { const files = Array.from(e.clipboardData.files); if (files.length) { e.preventDefault(); void addFiles(files); } }} rows={Math.min(8, Math.max(1, text.split('\n').length))} placeholder={`给 ${bot.name} 发消息`} aria-label="消息输入" />
           <button className="send" disabled={(!text.trim() && !images.length && !documents.length) || !online || sending || reading || documentBusy} onClick={send} title="发送（Enter）" aria-label="发送消息"><Icon name="arrow" size={19} /></button>
         </div>

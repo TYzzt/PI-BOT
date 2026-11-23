@@ -11,7 +11,8 @@ test('image validation checks MIME, signature, base64, count, individual and tot
   assert.ok(isChatImage(image));
   assert.ok(validImages([image]));
   for (const bad of [null, {}, { ...image, mime_type: 'image/svg+xml' }, { ...image, mime_type: 'image/jpeg' }, { ...image, data: 'not base64' }, { ...image, data: '' }, { ...image, name: '' }]) assert.equal(isChatImage(bad), false);
-  assert.equal(validImages(Array(5).fill(image)), false);
+  assert.ok(validImages(Array(10).fill(image)));
+  assert.equal(validImages(Array(11).fill(image)), false);
   const bytes = Buffer.alloc(MAX_IMAGE_BYTES);
   Buffer.from(image.data, 'base64').copy(bytes);
   const large = { ...image, data: bytes.toString('base64') };
@@ -32,6 +33,13 @@ test('desktop and HTTP schemas allow image-only messages and reject empty or inv
     const base = { botId: '00000000-0000-4000-8000-000000000001', request_id: '00000000-0000-4000-8000-000000000002' };
     assert.ok(schema.safeParse({ ...base, images: [image] }).success);
     assert.ok(schema.safeParse({ ...base, text: 'hello' }).success);
+    const ids = Array.from({ length: 11 }, (_, i) => `00000000-0000-4000-8000-${String(i + 10).padStart(12, '0')}`);
+    assert.ok(schema.safeParse({ ...base, images: Array(10).fill(image) }).success);
+    assert.ok(schema.safeParse({ ...base, document_ids: ids.slice(0, 10) }).success);
+    assert.ok(schema.safeParse({ ...base, text: '请比较图片', images: [image, image, image], document_ids: ids.slice(0, 7) }).success);
+    assert.equal(schema.safeParse({ ...base, images: [image, image, image], document_ids: ids.slice(0, 8) }).success, false);
+    assert.equal(schema.safeParse({ ...base, images: Array(11).fill(image) }).success, false);
+    assert.equal(schema.safeParse({ ...base, document_ids: ids }).success, false);
     assert.equal(schema.safeParse({ ...base, text: '  ', images: [] }).success, false);
     assert.equal(schema.safeParse({ ...base, text: 'hello', images: [{ ...image, mime_type: 'text/html' }] }).success, false);
   }

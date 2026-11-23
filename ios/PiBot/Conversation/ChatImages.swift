@@ -3,7 +3,9 @@ import PhotosUI
 import UniformTypeIdentifiers
 import PiBotKit
 
-let imageLimitHint = "最多 4 张图片，单张原图不超过 20 MB，合计不超过 32 MB；原图保存，模型仅使用压缩副本；支持 JPEG、PNG、WebP、GIF"
+let maxMessageAttachments = 10
+let attachmentLimitHint = "每条消息最多 \(maxMessageAttachments) 件附件（图片和文件合计）"
+let imageLimitHint = "单张原图不超过 20 MB，合计不超过 32 MB；原图保存，模型仅使用压缩副本；支持 JPEG、PNG、WebP、GIF"
 private let maxImageBytes = 20 * 1024 * 1024
 private let maxTotalBytes = 32 * 1024 * 1024
 private let allowedTypes: [(UTType, String)] = [(.jpeg, "image/jpeg"), (.png, "image/png"), (.webP, "image/webp"), (.gif, "image/gif")]
@@ -12,7 +14,7 @@ struct ImageLimitError: LocalizedError { var errorDescription: String? { imageLi
 
 /// Keep supported originals byte-for-byte; only the model boundary resizes images.
 func readChatImages(_ items: [PhotosPickerItem], existing: [ChatImage]) async throws -> [ChatImage] {
-    guard existing.count + items.count <= 4 else { throw ImageLimitError() }
+    guard existing.count + items.count <= maxMessageAttachments else { throw ImageLimitError() }
     var added: [ChatImage] = []
     for (index, item) in items.enumerated() {
         guard let data = try await item.loadTransferable(type: Data.self) else { throw ImageLimitError() }
@@ -32,7 +34,7 @@ func readChatImages(_ items: [PhotosPickerItem], existing: [ChatImage]) async th
 }
 
 func appendCameraImage(_ image: UIImage, existing: [ChatImage]) throws -> [ChatImage] {
-    guard existing.count < 4, let raw = image.jpegData(compressionQuality: 0.9) else { throw ImageLimitError() }
+    guard existing.count < maxMessageAttachments, let raw = image.jpegData(compressionQuality: 0.9) else { throw ImageLimitError() }
     guard raw.count <= maxImageBytes else { throw ImageLimitError() }
     let data = raw
     let result = existing + [ChatImage(name: "拍照.jpg", mimeType: "image/jpeg", data: data.base64EncodedString())]

@@ -14,7 +14,7 @@ import { pushRoutes, type AndroidPushConfig } from './push.js';
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import type { ChatImage } from '@pi-bot/agent/images';
+import { ATTACHMENT_LIMIT_HINT, MAX_MESSAGE_ATTACHMENTS, withinAttachmentLimit, type ChatImage } from '@pi-bot/agent/images';
 import { imagesSchema } from './images.js';
 import { composioGateway, composioPublic, composioResult, composioSaveBody, saveComposio } from "./composio.js";
 import { jevCredentials, jevPublic, jevSaveBody, probeJev, saveJev } from "./jev.js";
@@ -612,7 +612,7 @@ export const routes: Route[] = [
   },
   {
     method: "POST", path: "/bots/:id/messages", auth: "actor", tag: "bots", summary: "给 Bot 发消息；由云端统一处理对话与任务调度",
-    body: z.object({ text: z.string().trim().max(100000).default(''), images: imagesSchema.default([]), request_id: z.string().min(8).max(80), client:z.enum(['android','ios','desktop','web']).optional(), source_device_id:uuid.optional(), document_ids:z.array(uuid).max(4).default([]) }).refine(body => body.text.length > 0 || body.images.length > 0 || body.document_ids.length > 0, '请填写消息或选择图片、文档'),
+    body: z.object({ text: z.string().trim().max(100000).default(''), images: imagesSchema.default([]), request_id: z.string().min(8).max(80), client:z.enum(['android','ios','desktop','web']).optional(), source_device_id:uuid.optional(), document_ids:z.array(uuid).max(MAX_MESSAGE_ATTACHMENTS).default([]) }).refine(body => withinAttachmentLimit(body.images.length, body.document_ids.length), ATTACHMENT_LIMIT_HINT).refine(body => body.text.length > 0 || body.images.length > 0 || body.document_ids.length > 0, '请填写消息或选择图片、文档'),
     handler: async ({ db, tx, s, hub, user, device, params, body, after }) => {
       await ownBot(tx,user.user_id,params.id,true);
       if(device && body.source_device_id && body.source_device_id!==device.device_id) fail(422,"来源电脑必须与签名设备一致");

@@ -3143,7 +3143,7 @@
                   },
                   "images": {
                     "default": [],
-                    "maxItems": 4,
+                    "maxItems": 10,
                     "type": "array",
                     "items": {
                       "type": "object",
@@ -3196,7 +3196,7 @@
                   },
                   "document_ids": {
                     "default": [],
-                    "maxItems": 4,
+                    "maxItems": 10,
                     "type": "array",
                     "items": {
                       "type": "string",

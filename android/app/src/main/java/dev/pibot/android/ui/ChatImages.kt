@@ -35,7 +35,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 
-const val IMAGE_LIMIT_HINT = "最多 4 张图片，单张原图不超过 20 MB，合计不超过 32 MB；原图保存，模型仅使用压缩副本；支持 JPEG、PNG、WebP、GIF"
+internal const val MAX_MESSAGE_ATTACHMENTS = 10
+internal const val ATTACHMENT_LIMIT_HINT = "每条消息最多 $MAX_MESSAGE_ATTACHMENTS 件附件（图片和文件合计）"
+const val IMAGE_LIMIT_HINT = "单张原图不超过 20 MB，合计不超过 32 MB；原图保存，模型仅使用压缩副本；支持 JPEG、PNG、WebP、GIF"
 private const val MAX_IMAGE_BYTES = 20 * 1024 * 1024
 private const val MAX_TOTAL_BYTES = 32L * 1024 * 1024
 private val ACCEPTED_TYPES = listOf("image/jpeg", "image/png", "image/webp", "image/gif")
@@ -45,28 +47,17 @@ data class ReadImagesResult(
     val warnings: List<String>,
 )
 
-suspend fun readChatImages(context: Context, uris: List<Uri>, existing: List<ChatImage>): ReadImagesResult = withContext(Dispatchers.IO) {
+suspend fun readChatImages(context: Context, uris: List<Uri>, existing: List<ChatImage>, documents: Int = 0): ReadImagesResult = withContext(Dispatchers.IO) {
     val warnings = mutableListOf<String>()
     val added = mutableListOf<ChatImage>()
-    val maxCount = 4
-
-    if (existing.size >= maxCount) {
-        warnings.add("已有 ${existing.size} 张图片，无法再添加")
-        return@withContext ReadImagesResult(existing, warnings)
-    }
-
-    val availableSlots = maxCount - existing.size
-    val urisToProcess = if (uris.size > availableSlots) {
-        warnings.add("最多 $maxCount 张，已有 ${existing.size} 张，本次只取前 $availableSlots 张")
-        uris.take(availableSlots)
-    } else {
-        uris
+    if (existing.size + documents + uris.size > MAX_MESSAGE_ATTACHMENTS) {
+        return@withContext ReadImagesResult(existing, listOf(ATTACHMENT_LIMIT_HINT))
     }
 
     // Calculate existing total bytes
     var totalBytes = existing.sumOf { Base64.decode(it.data, Base64.DEFAULT).size.toLong() }
 
-    for (uri in urisToProcess) {
+    for (uri in uris) {
         try {
             val type = context.contentResolver.getType(uri).orEmpty()
             val name = context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
