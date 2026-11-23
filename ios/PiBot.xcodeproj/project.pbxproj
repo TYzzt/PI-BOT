@@ -224,7 +224,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = "Pi Bot";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "连接局域网里的 Pi Bot 服务器。";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "和 Bot 语音通话时需要使用麦克风。";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "语音通话时需要使用麦克风。";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
@@ -258,7 +258,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = "Pi Bot";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "连接局域网里的 Pi Bot 服务器。";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "和 Bot 语音通话时需要使用麦克风。";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "语音通话时需要使用麦克风。";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";

@@ -1,3 +1,4 @@
+import { MAX_MESSAGE_ATTACHMENTS } from '@pi-bot/agent/images';
 import { randomUUID, createHash } from "node:crypto";
 import { posix } from "node:path";
 import { Readable } from "node:stream";
@@ -226,7 +227,7 @@ export const documentRoutes: Route[] = [
       version: 2,
       upload: "any-file",
       max_bytes: DOCUMENT_LIMIT,
-      max_files: 4,
+      max_files: MAX_MESSAGE_ATTACHMENTS,
       chunk_bytes: DOCUMENT_CHUNK,
       pdf: "read",
       docx: "read-write",

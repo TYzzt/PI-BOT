@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 import AVFoundation
 import PiBotKit
 
+@MainActor
 struct Composer: View {
     let botId: String
     let botName: String
@@ -29,8 +30,10 @@ struct Composer: View {
     @State private var requestId = UUID().uuidString.lowercased()
     @FocusState private var focused: Bool
 
+    private var attachmentCount: Int { images.count + files.count }
+    private var readyToSend: Bool { !sending && !reading && files.allSatisfy { $0.artifact != nil } }
     private var canSend: Bool {
-        (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty || !files.isEmpty) && !sending && !reading && files.allSatisfy { $0.artifact != nil }
+        (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty || !files.isEmpty) && readyToSend
     }
 
     var body: some View {
@@ -74,14 +77,15 @@ struct Composer: View {
                     .accessibilityLabel("语音通话")
                 Menu {
                     Button("拍照", systemImage: "camera") {
+                        guard hasAttachmentSlot() else { return }
                         Task {
                             guard UIImagePickerController.isSourceTypeAvailable(.camera) else { imageError = "此设备没有可用相机"; return }
                             let allowed = await AVCaptureDevice.requestAccess(for: .video)
                             if allowed { showingCamera = true } else { imageError = "请在系统设置中允许相机访问" }
                         }
-                    }.disabled(images.count >= 4)
-                    Button("照片", systemImage: "photo") { showingPhotos = true }.disabled(images.count >= 4)
-                    Button("文件", systemImage: "doc") { importing = true }.disabled(files.count >= 4)
+                    }
+                    Button("照片", systemImage: "photo") { if hasAttachmentSlot() { showingPhotos = true } }
+                    Button("文件", systemImage: "doc") { if hasAttachmentSlot() { importing = true } }
                 } label: {
                     Image(systemName: "plus").font(.system(size: 18, weight: .semibold)).frame(width: 40, height: 40)
                 }
@@ -92,7 +96,7 @@ struct Composer: View {
                     .focused($focused)
                     .padding(.vertical, 10)
                     .padding(.horizontal, 4)
-                Button(action: send) {
+                Button(action: { send() }) {
                     Image(systemName: "arrow.up").font(.system(size: 17, weight: .bold))
                         .foregroundStyle(canSend ? Color.white : Palette.muted)
                         .frame(width: 38, height: 38)
@@ -110,11 +114,11 @@ struct Composer: View {
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 16).padding(.top, 6).padding(.bottom, 10)
         }
-        .photosPicker(isPresented: $showingPhotos, selection: $picked, maxSelectionCount: max(1, 4 - images.count), matching: .images)
+        .photosPicker(isPresented: $showingPhotos, selection: $picked, maxSelectionCount: maxMessageAttachments, matching: .images)
         .sheet(isPresented: $showingCamera) {
             CameraCapture { image in
                 showingCamera = false
-                guard let image else { return }
+                guard let image, hasAttachmentSlot() else { return }
                 do { images = try appendCameraImage(image, existing: images) }
                 catch { imageError = errorText(error) }
             }.ignoresSafeArea()
@@ -122,7 +126,8 @@ struct Composer: View {
         .fileImporter(isPresented: $importing, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             switch result {
             case .success(let urls):
-                guard files.count + urls.count <= 4 else { imageError = "每条消息最多 4 个文件"; return }
+                guard !reading, !sending, hasAttachmentSlot(urls.count) else { return }
+                imageError = nil
                 reading = true
                 importTask = Task {
                     defer { reading = false; importTask = nil }
@@ -150,7 +155,7 @@ struct Composer: View {
             let items = picked
             guard !items.isEmpty else { return }
             picked = []
-            guard !reading, !sending else { return }
+            guard !reading, !sending, hasAttachmentSlot(items.count) else { return }
             reading = true
             imageError = nil
             let target = botId
@@ -164,6 +169,11 @@ struct Composer: View {
                 }
             }
         }
+    }
+
+    private func hasAttachmentSlot(_ adding: Int = 1) -> Bool {
+        guard attachmentCount + adding <= maxMessageAttachments else { imageError = attachmentLimitHint; return false }
+        return true
     }
 
     private func removeFile(_ id: String) {
@@ -194,7 +204,7 @@ struct Composer: View {
         let draft = text
         let value = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = images
-        guard canSend else { return }
+        guard readyToSend, !value.isEmpty || attachmentCount > 0, hasAttachmentSlot(0) else { return }
         // Retrying the same content reuses the request id so the server can deduplicate it.
         let documentIds = files.compactMap { $0.artifact?.id }
         if retryText != value || retryImages != attachments || retryFiles != documentIds {

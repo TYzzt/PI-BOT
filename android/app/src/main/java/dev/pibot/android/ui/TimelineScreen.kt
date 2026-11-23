@@ -1,5 +1,8 @@
 package dev.pibot.android.ui
 
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import dev.pibot.android.domain.liveReplySegments
 
 import androidx.compose.runtime.collectAsState
@@ -568,7 +571,6 @@ private fun CallOverlay(bot: Bot, call: LiveCall, onMute: (Boolean) -> Unit, onH
 @Composable
 private fun Composer(botId: String, botName: String, text: String, onTextChange: (String) -> Unit, onCall: () -> Unit, callEnabled: Boolean, repository: PiBotRepository, onSend: suspend (String, String, List<ChatImage>, List<String>) -> Boolean) {
     var documentIds by rememberSaveable(botId) { mutableStateOf(emptyList<String>()) }
-    var documentsBusy by remember(botId) { mutableStateOf(false) }
     var retryDocuments by rememberSaveable(botId) { mutableStateOf(emptyList<String>()) }
     val currentText by rememberUpdatedState(text)
     var sending by remember(botId) { mutableStateOf(false) }
@@ -583,6 +585,7 @@ private fun Composer(botId: String, botName: String, text: String, onTextChange:
     var pickingFor by remember { mutableStateOf<String?>(null) }
     var attachmentMenuOpen by remember(botId) { mutableStateOf(false) }
     val currentBotId by rememberUpdatedState(botId)
+    DocumentPicker(botId, repository, documentIds, { update -> documentIds = update(documentIds) }, images.size, !sending && !reading) { canPickDocument, pickDocument, pendingCount ->
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         val targetBot = pickingFor
         pickingFor = null
@@ -591,7 +594,7 @@ private fun Composer(botId: String, botName: String, text: String, onTextChange:
             imageError = null
             scope.launch {
                 try {
-                    val result = readChatImages(context, uris, images)
+                    val result = readChatImages(context, uris, images, documentIds.size + pendingCount())
                     if (currentBotId == targetBot) {
                         images = result.images
                         imageError = result.warnings.takeIf { it.isNotEmpty() }?.joinToString("\n")
@@ -613,7 +616,7 @@ private fun Composer(botId: String, botName: String, text: String, onTextChange:
             scope.launch {
                 try {
                     val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.updates", file)
-                    val result = readChatImages(context, listOf(uri), images)
+                    val result = readChatImages(context, listOf(uri), images, documentIds.size + pendingCount())
                     if (currentBotId == targetBot) {
                         images = result.images
                         imageError = result.warnings.takeIf { it.isNotEmpty() }?.joinToString("\n")
@@ -623,17 +626,38 @@ private fun Composer(botId: String, botName: String, text: String, onTextChange:
             }
         } else file?.delete()
     }
-    DocumentPicker(botId,repository,documentIds,{ documentIds=it },{ documentsBusy=it },!sending && !reading) { canPickDocument, pickDocument ->
 
         imageError?.let { Text(it, color = Danger, modifier = Modifier.padding(horizontal = 16.dp)) }
-        if (images.isNotEmpty()) Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (images.isNotEmpty()) Row(Modifier.padding(horizontal = 16.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             images.forEachIndexed { index, image ->
-                Column(Modifier.weight(1f)) {
+                Column(Modifier.width(88.dp)) {
                     ChatPicture(image = image, modifier = Modifier.height(76.dp))
                     TextButton(enabled = !sending && !reading, onClick = { images = images.filterIndexed { i, _ -> i != index } }) { Text("移除") }
                 }
             }
         }
+    fun send(value: String) {
+        val draft = currentText
+        val attachments = images
+        if (attachments.size + documentIds.size > MAX_MESSAGE_ATTACHMENTS) { imageError = ATTACHMENT_LIMIT_HINT; return }
+        val targetBot = botId
+        if ((value.isNotEmpty() || attachments.isNotEmpty() || documentIds.isNotEmpty()) && !sending && !reading && pendingCount() == 0) {
+            if (retryText != value || retryImages != attachments || retryDocuments != documentIds) { retryText = value; retryImages = attachments; retryDocuments = documentIds; requestId = java.util.UUID.randomUUID().toString() }
+            sending = true
+            scope.launch {
+                try {
+                    if (onSend(value, requestId, attachments, retryDocuments) && currentBotId == targetBot) {
+                        if (currentText == draft) onTextChange("")
+                        images = emptyList()
+                        documentIds = emptyList()
+                        retryDocuments = emptyList()
+                        retryImages = emptyList()
+                        retryText = ""
+                    }
+                } finally { if (currentBotId == targetBot) sending = false }
+            }
+        }
+    }
     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         Row(
             Modifier.widthIn(max = 760.dp).fillMaxWidth().navigationBarsPadding().padding(horizontal = 16.dp, vertical = 12.dp)
@@ -642,11 +666,14 @@ private fun Composer(botId: String, botName: String, text: String, onTextChange:
         ) {
             IconButton(enabled = callEnabled && !sending, onClick = onCall) { Icon(Icons.Filled.Phone, "语音通话") }
             Box {
-                IconButton(enabled = !sending && !reading && (images.size < 4 || canPickDocument), onClick = { attachmentMenuOpen = !attachmentMenuOpen }) {
+                IconButton(enabled = !sending && !reading, onClick = {
+                    if (images.size + documentIds.size + pendingCount() >= MAX_MESSAGE_ATTACHMENTS) imageError = ATTACHMENT_LIMIT_HINT
+                    else attachmentMenuOpen = !attachmentMenuOpen
+                }) {
                     Icon(Icons.Filled.Add, "添加附件")
                 }
                 DropdownMenu(expanded = attachmentMenuOpen, onDismissRequest = { attachmentMenuOpen = false }) {
-                    DropdownMenuItem(text = { Text("拍照") }, enabled = !sending && !reading && images.size < 4, onClick = {
+                    DropdownMenuItem(text = { Text("拍照") }, enabled = !sending && !reading, onClick = {
                         attachmentMenuOpen = false
                         try {
                             val folder = java.io.File(context.cacheDir, "camera").apply { mkdirs() }
@@ -655,7 +682,7 @@ private fun Composer(botId: String, botName: String, text: String, onTextChange:
                             camera.launch(androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.updates", file))
                         } catch (e: Exception) { cameraPath?.let { java.io.File(it).delete() }; cameraPath = null; cameraBot = null; imageError = "无法打开相机：${errorText(e)}" }
                     })
-                    DropdownMenuItem(text = { Text("照片") }, enabled = !sending && !reading && images.size < 4, onClick = {
+                    DropdownMenuItem(text = { Text("照片") }, enabled = !sending && !reading, onClick = {
                         attachmentMenuOpen = false
                         pickingFor = botId
                         picker.launch(arrayOf("image/jpeg", "image/png", "image/webp", "image/gif"))
@@ -681,29 +708,8 @@ private fun Composer(botId: String, botName: String, text: String, onTextChange:
                 ),
             )
             IconButton(
-                onClick = {
-                    val draft = text
-                    val value = draft.trim()
-                    val attachments = images
-                    val targetBot = botId
-                    if ((value.isNotEmpty() || attachments.isNotEmpty() || documentIds.isNotEmpty()) && !sending && !reading && !documentsBusy) {
-                        if (retryText != value || retryImages != attachments || retryDocuments != documentIds) { retryText = value; retryImages = attachments; retryDocuments = documentIds; requestId = java.util.UUID.randomUUID().toString() }
-                        sending = true
-                        scope.launch {
-                            try {
-                                if (onSend(value, requestId, attachments, retryDocuments) && currentBotId == targetBot) {
-                                    if (currentText == draft) onTextChange("")
-                                    images = emptyList()
-                                    documentIds = emptyList()
-                                    retryDocuments = emptyList()
-                                    retryImages = emptyList()
-                                    retryText = ""
-                                }
-                            } finally { if (currentBotId == targetBot) sending = false }
-                        }
-                    }
-                },
-                enabled = (text.isNotBlank() || images.isNotEmpty() || documentIds.isNotEmpty()) && !sending && !reading && !documentsBusy,
+                onClick = { send(currentText.trim()) },
+                enabled = (text.isNotBlank() || images.isNotEmpty() || documentIds.isNotEmpty()) && !sending && !reading && pendingCount() == 0,
                 colors = IconButtonDefaults.iconButtonColors(containerColor = Accent, contentColor = Color.White, disabledContainerColor = Line, disabledContentColor = Muted),
             ) { Icon(Icons.AutoMirrored.Filled.Send, "发送", Modifier.size(20.dp)) }
         }
