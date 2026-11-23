@@ -585,12 +585,11 @@ private fun Composer(botId: String, botName: String, text: String, onTextChange:
     var pickingFor by remember { mutableStateOf<String?>(null) }
     var attachmentMenuOpen by remember(botId) { mutableStateOf(false) }
     val currentBotId by rememberUpdatedState(botId)
-    var voiceActive by remember(botId) { mutableStateOf(false) }
-    DocumentPicker(botId, repository, documentIds, { update -> documentIds = update(documentIds) }, images.size, !sending && !reading && !voiceActive) { canPickDocument, pickDocument, pendingCount ->
+    DocumentPicker(botId, repository, documentIds, { update -> documentIds = update(documentIds) }, images.size, !sending && !reading) { canPickDocument, pickDocument, pendingCount ->
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         val targetBot = pickingFor
         pickingFor = null
-        if (uris.isNotEmpty() && targetBot == botId && !reading && !sending && !voiceActive) {
+        if (uris.isNotEmpty() && targetBot == botId && !reading && !sending) {
             reading = true
             imageError = null
             scope.launch {
@@ -612,7 +611,7 @@ private fun Composer(botId: String, botName: String, text: String, onTextChange:
         val file = cameraPath?.let { java.io.File(it) }
         val targetBot = cameraBot
         cameraPath = null; cameraBot = null
-        if (success && file != null && targetBot == botId && !sending && !reading && !voiceActive) {
+        if (success && file != null && targetBot == botId && !sending && !reading) {
             reading = true; imageError = null
             scope.launch {
                 try {
@@ -633,11 +632,12 @@ private fun Composer(botId: String, botName: String, text: String, onTextChange:
             images.forEachIndexed { index, image ->
                 Column(Modifier.width(88.dp)) {
                     ChatPicture(image = image, modifier = Modifier.height(76.dp))
-                    TextButton(enabled = !sending && !reading && !voiceActive, onClick = { images = images.filterIndexed { i, _ -> i != index } }) { Text("移除") }
+                    TextButton(enabled = !sending && !reading, onClick = { images = images.filterIndexed { i, _ -> i != index } }) { Text("移除") }
                 }
             }
         }
-    fun send(value: String, draft: String = currentText) {
+    fun send(value: String) {
+        val draft = currentText
         val attachments = images
         if (attachments.size + documentIds.size > MAX_MESSAGE_ATTACHMENTS) { imageError = ATTACHMENT_LIMIT_HINT; return }
         val targetBot = botId
@@ -664,16 +664,16 @@ private fun Composer(botId: String, botName: String, text: String, onTextChange:
                 .background(Card, RoundedCornerShape(28.dp)).border(1.dp, Line, RoundedCornerShape(28.dp)).padding(start = 4.dp, end = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconButton(enabled = callEnabled && !sending && !voiceActive, onClick = onCall) { Icon(Icons.Filled.Phone, "语音通话") }
+            IconButton(enabled = callEnabled && !sending, onClick = onCall) { Icon(Icons.Filled.Phone, "语音通话") }
             Box {
-                IconButton(enabled = !sending && !reading && !voiceActive, onClick = {
+                IconButton(enabled = !sending && !reading, onClick = {
                     if (images.size + documentIds.size + pendingCount() >= MAX_MESSAGE_ATTACHMENTS) imageError = ATTACHMENT_LIMIT_HINT
                     else attachmentMenuOpen = !attachmentMenuOpen
                 }) {
                     Icon(Icons.Filled.Add, "添加附件")
                 }
                 DropdownMenu(expanded = attachmentMenuOpen, onDismissRequest = { attachmentMenuOpen = false }) {
-                    DropdownMenuItem(text = { Text("拍照") }, enabled = !sending && !reading && !voiceActive, onClick = {
+                    DropdownMenuItem(text = { Text("拍照") }, enabled = !sending && !reading, onClick = {
                         attachmentMenuOpen = false
                         try {
                             val folder = java.io.File(context.cacheDir, "camera").apply { mkdirs() }
@@ -682,7 +682,7 @@ private fun Composer(botId: String, botName: String, text: String, onTextChange:
                             camera.launch(androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.updates", file))
                         } catch (e: Exception) { cameraPath?.let { java.io.File(it).delete() }; cameraPath = null; cameraBot = null; imageError = "无法打开相机：${errorText(e)}" }
                     })
-                    DropdownMenuItem(text = { Text("照片") }, enabled = !sending && !reading && !voiceActive, onClick = {
+                    DropdownMenuItem(text = { Text("照片") }, enabled = !sending && !reading, onClick = {
                         attachmentMenuOpen = false
                         pickingFor = botId
                         picker.launch(arrayOf("image/jpeg", "image/png", "image/webp", "image/gif"))
@@ -697,7 +697,6 @@ private fun Composer(botId: String, botName: String, text: String, onTextChange:
                 text, onTextChange,
                 placeholder = { Text("向 $botName 提问", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 maxLines = 5,
-                enabled = !voiceActive,
                 modifier = Modifier.weight(1f),
                 colors = TextFieldDefaults.colors(
                     focusedContainerColor = Color.Transparent,
@@ -708,20 +707,9 @@ private fun Composer(botId: String, botName: String, text: String, onTextChange:
                     disabledIndicatorColor = Color.Transparent,
                 ),
             )
-            HoldToSpeak(
-                botId = botId,
-                enabled = !sending && !reading && pendingCount() == 0,
-                onActive = { voiceActive = it },
-                onError = { imageError = it },
-                onRecognized = { instruction ->
-                    val spokenDraft = listOf(currentText.trim(), instruction).filter { it.isNotEmpty() }.joinToString("\n")
-                    onTextChange(spokenDraft)
-                    send(spokenDraft, spokenDraft)
-                },
-            )
             IconButton(
                 onClick = { send(currentText.trim()) },
-                enabled = (text.isNotBlank() || images.isNotEmpty() || documentIds.isNotEmpty()) && !sending && !reading && !voiceActive && pendingCount() == 0,
+                enabled = (text.isNotBlank() || images.isNotEmpty() || documentIds.isNotEmpty()) && !sending && !reading && pendingCount() == 0,
                 colors = IconButtonDefaults.iconButtonColors(containerColor = Accent, contentColor = Color.White, disabledContainerColor = Line, disabledContentColor = Muted),
             ) { Icon(Icons.AutoMirrored.Filled.Send, "发送", Modifier.size(20.dp)) }
         }
