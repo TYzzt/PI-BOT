@@ -23,6 +23,19 @@ export class OutsideError extends Error {
 }
 const inside = (root: string, path: string) => path === root || path.startsWith(root + sep);
 
+/** A host-qualified resource must never become a relative path in this machine's library. */
+export function assertLocalPath(input: string, platform = process.platform) {
+  const value = input.trim();
+  // Keep Windows drive paths distinct from SCP's host:path syntax.
+  if (/^[a-z]:[\\/]/i.test(value)) {
+    if (platform !== 'win32') throw new Error('Windows 盘符路径不属于当前执行电脑的本机路径，请在对应电脑上启动任务');
+    return;
+  }
+  if (/^(?:[^/\\:\s]+@)?(?:\[[^\]]+\]|[^/\\:\s]+):/.test(value)) {
+    throw new Error('该路径包含远端主机或 URI；当前路径工具和 request_outside_access 只作用于本次执行电脑的本机路径，不能授予 SSH 远端访问权限。请在目标电脑上启动任务，或使用明确绑定目标主机的远端工具；不要去掉主机名后当作本机路径重试。');
+  }
+}
+
 export async function libraryDir(root: string, slug: string) {
   if (!SLUG.test(slug)) throw new Error('资料库名称无效');
   await mkdir(root, { recursive: true, mode: 0o755 });
@@ -41,6 +54,7 @@ export class Sandbox {
   get allowed() { return [...this.roots]; }
   expand(input: string) {
     const value = input || '.';
+    assertLocalPath(value);
     if (process.platform === 'win32') validateWindowsPath(value);
     if (value === '~' || (value.startsWith('~/') || value.startsWith('~\\'))) return join(homedir(), value.slice(1));
     return isAbsolute(value) ? resolve(value) : resolve(this.root, value);
@@ -257,12 +271,12 @@ export function libraryTools(sandbox: Sandbox, hooks: ToolHooks): ToolDefinition
       },
     },
     {
-      name: 'request_outside_access', label: '申请访问', description: '申请资料库以外的文件或目录访问；access 默认为 read（可选择 write 或 execute）。读取授权不含写入或命令；读、写和命令权限分别保存，不互相包含。命令授权仅针对启动目录，不隔离命令的文件访问。',
+      name: 'request_outside_access', label: '申请访问', description: '仅申请本次执行电脑本机资料库以外的文件或目录访问，不授予 SSH 远端主机权限；不能传 host:path 或 ssh:// 地址，也不能去掉主机名后当作本机路径申请。access 默认为 read（可选择 write 或 execute）。读取授权不含写入或命令；读、写和命令权限分别保存，不互相包含。命令授权仅针对启动目录，不隔离命令的文件访问。',
       parameters: Type.Object({ path: Type.String({ minLength: 1 }), reason: Type.String({ minLength: 1, maxLength: 1000 }), access: Type.Optional(Type.Union([Type.Literal('read'),Type.Literal('write'),Type.Literal('execute')])) }),
       execute: async (_id, args: any, signal) => {
         const full = await sandbox.canonical(args.path), access = args.access ?? 'read';
         if (full === parse(full).root || full === resolve(homedir())) throw new Error('请指定具体资源，不能授权整个磁盘或主目录');
-        try { await sandbox.resolve(full, { access }); return text(`已可${access}访问 ${full}，无需申请`); } catch (e) { if (!(e instanceof OutsideError)) throw e; }
+        try { await sandbox.resolve(full, { access }); return text(`当前执行电脑本机已可${access}访问 ${full}，无需申请；这不代表已获准访问任何 SSH 远端主机`); } catch (e) { if (!(e instanceof OutsideError)) throw e; }
         const info = await stat(full).catch(() => null);
         if (access === 'read' && !info) throw new Error('读取授权需要已存在的文件或目录');
         const approved = await hooks.requestOutside(full, args.reason, signal, access, info?.isDirectory() ? 'directory' : 'file');

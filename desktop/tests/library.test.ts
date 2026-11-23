@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, symlinkSync, writeFileSync, mkdirSync, existsSync, readFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, parse } from 'node:path';
-import { preflightLibrary, libraryDir, libraryTools, OutsideError, previewList, previewRead, Sandbox } from '../packages/service/src/library.js';
+import { assertLocalPath, preflightLibrary, libraryDir, libraryTools, OutsideError, previewList, previewRead, Sandbox } from '../packages/service/src/library.js';
 
 function temp() {
   const path = realpathSync.native(mkdtempSync(join(tmpdir(), 'pi-bot-lib-')));
@@ -98,6 +98,60 @@ test('request_outside_access asks the user and extends the sandbox only when app
     assert.match(await call(tools, 'request_outside_access', { path: join(outside, 'todo.txt'), reason: 'again' }), /无需申请/);
     assert.deepEqual(asked, [`${outside}|整理桌面`, `${outside}|整理桌面`]);
   } finally { dir.cleanup(); }
+});
+
+test('host-qualified paths cannot receive local approval or reach local file tools', async t => {
+  const dir = temp(); t.after(() => dir.cleanup());
+  const root = await libraryDir(dir.path, 'bot');
+  let savedChecks = 0, approvals = 0;
+  // Even an existing broad local authorization must not turn into SSH authorization.
+  const sandbox = new Sandbox(root, [], async () => { savedChecks++; return true; });
+  const tools = libraryTools(sandbox, { requestOutside: async () => { approvals++; return true; } });
+  const remotePaths = [
+    'aly:/opt/CLIProxyAPI', 'aly:~/CLIProxyAPI', 'aly:relative/project',
+    'root@aly:/opt/CLIProxyAPI', 'root@aly:~/CLIProxyAPI',
+    '[2001:db8::1]:/opt/app', 'root@[2001:db8::1]:/opt/app',
+    'ssh://root@aly:22/opt/CLIProxyAPI', 'sftp://aly/opt/app',
+  ];
+  for (const path of remotePaths) {
+    for (const platform of ['linux', 'darwin', 'win32'] as const)
+      assert.throws(() => assertLocalPath(path, platform), /不能授予 SSH 远端访问权限/, `${platform}: ${path}`);
+    for (const access of ['read', 'write', 'execute'])
+      await assert.rejects(call(tools, 'request_outside_access', { path, reason: '升级 aly', access }), /不能授予 SSH 远端访问权限/);
+    await assert.rejects(call(tools, 'list_files', { path }), /不能授予 SSH 远端访问权限/);
+    await assert.rejects(call(tools, 'read_file', { path }), /不能授予 SSH 远端访问权限/);
+    await assert.rejects(call(tools, 'search_files', { path, pattern: 'secret' }), /不能授予 SSH 远端访问权限/);
+    await assert.rejects(call(tools, 'write_file', { path, content: 'bad' }), /不能授予 SSH 远端访问权限/);
+    await assert.rejects(call(tools, 'edit_file', { path, old_text: 'a', new_text: 'b' }), /不能授予 SSH 远端访问权限/);
+    await assert.rejects(call(tools, 'run_command', { cwd: path, command: 'exit 0' }), /不能授予 SSH 远端访问权限/);
+    await assert.rejects(sandbox.allow(path, 'execute'), /不能授予 SSH 远端访问权限/);
+  }
+  assert.equal(savedChecks, 0);
+  assert.equal(approvals, 0);
+  assert.deepEqual(await previewList(dir.path, 'bot', '.'), { path: '', entries: [] });
+  assert.deepEqual(await preflightLibrary(dir.path, 'bot', [remotePaths[0]]), { available: false, reason: 'unavailable' });
+});
+
+test('local path validation preserves native paths and explicit relative colon filenames', async t => {
+  const dir = temp(); t.after(() => dir.cleanup());
+  const root = await libraryDir(dir.path, 'bot');
+  const sandbox = new Sandbox(root);
+  for (const path of ['.', 'notes/a.md', '../project', '~/workspace/app', root])
+    assert.doesNotThrow(() => assertLocalPath(path));
+  for (const platform of ['linux', 'darwin'] as const) {
+    assert.doesNotThrow(() => assertLocalPath('./notes:today.md', platform));
+    assert.throws(() => assertLocalPath('C:/projects/app', platform), /Windows 盘符路径/);
+    assert.throws(() => assertLocalPath('C:\\projects\\app', platform), /Windows 盘符路径/);
+  }
+  assert.doesNotThrow(() => assertLocalPath('C:/projects/app', 'win32'));
+  assert.doesNotThrow(() => assertLocalPath('C:\\projects\\app', 'win32'));
+  if (process.platform !== 'win32') {
+    writeFileSync(join(root, 'notes:today.md'), 'local file');
+    const tools = libraryTools(sandbox, { requestOutside: async () => false });
+    assert.equal(await call(tools, 'read_file', { path: './notes:today.md' }), 'local file');
+  }
+  const tools = libraryTools(sandbox, { requestOutside: async () => { throw new Error('must not ask'); } });
+  assert.match(await call(tools, 'request_outside_access', { path: '.', reason: '查看资料库' }), /当前执行电脑本机.*无需申请/);
 });
 
 test('phone previews list and read only inside the library', async () => {

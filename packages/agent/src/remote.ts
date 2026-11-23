@@ -108,7 +108,7 @@ export function remoteTools(
     ],
     [
       "request_outside_access",
-      "申请访问资料库之外的具体绝对路径。access 默认 read；读取不含写入或命令，用户可记住读取权限并随时撤销；write/execute 需要逐次确认。",
+      "仅申请本任务固定云端执行环境中资料库之外的具体绝对路径，不能授予其他 SSH 主机的权限；不要传 host:path 或 ssh:// 地址，也不要去掉主机名后重试。access 默认 read；读取、写入、命令权限分别审批和保存，可随时撤销。",
       Type.Object({
         path: str(),
         reason: Type.String({ minLength: 1, maxLength: 1000 }),
