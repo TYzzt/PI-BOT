@@ -8,6 +8,7 @@ import {
 } from "@a2ui/web_core/v0_9";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { CATALOG_ID, protocolCatalog } from "./catalog.js";
+import { validateWidget, widgetActions, checkWidgetInput } from './widgets.js';
 export { CATALOG_ID, protocolCatalog } from "./catalog.js";
 export { calculate } from "./math.js";
 export type UiComponent = {
@@ -29,7 +30,7 @@ export interface UiDocument {
 export type UiAction = Pick<
   ActionPayload,
   "name" | "surfaceId" | "sourceComponentId"
-> & { context: Record<string, unknown> };
+> & { context: Record<string, unknown>; sourceDataPath?: string };
 export interface UiState {
   surfaceId: string;
   data: Record<string, unknown>;
@@ -40,6 +41,7 @@ export const uiActionSchema = z
     name: z.string().min(1).max(80),
     surfaceId: identifier,
     sourceComponentId: identifier,
+    sourceDataPath: z.string().startsWith('/').max(2000).optional(),
     context: z.record(z.unknown()),
   })
   .strict();
@@ -145,6 +147,7 @@ function validateSurfaces(doc: UiDocument) {
     identifier.parse(s.id);
     if (s.components.length > 200) throw new Error("交互界面组件过多");
     const all = new Map(s.components.map((c) => [c.id, c]));
+    if(s.components.some(c=>c.component.startsWith('Aui')) && s.components.some(c=>!c.component.startsWith('Aui'))) throw new Error('同一 surface 内请统一使用 Aui 组件；旧组件可放在其他 surface');
     if (all.size !== s.components.length) throw new Error("组件 ID 重复");
     for (const c of s.components) {
       identifier.parse(c.id);
@@ -199,6 +202,26 @@ function validateSurfaces(doc: UiDocument) {
     checkArrays(s.data);
   }
   boundedJson(doc);
+  const processor = new MessageProcessor([protocolCatalog]);
+  try {
+    processor.processMessages(documentMessages(doc));
+    for (const s of doc.surfaces) {
+      const context = new DataContext(processor.getSurface(s.id)!, '/');
+      const all = new Map(s.components.map(c=>[c.id,c]));
+      const visit = (id:string, ctx:DataContext) => {
+        const c=all.get(id)!;
+        validateWidget(c,ctx);
+        if(!c.component.startsWith('Aui'))return;
+        const children=c.children as any;
+        if(Array.isArray(children))children.forEach((child:string)=>visit(child,ctx));
+        else if(children?.componentId && children.path){
+          const rows=ctx.resolveDynamicValue<unknown[]>({path:children.path});
+          if(Array.isArray(rows))rows.forEach((_,i)=>visit(children.componentId,ctx.nested(`${children.path}/${i}`)));
+        }
+      };
+      visit('root',context);
+    }
+  } finally { processor.dispose(); }
 }
 /** Apply real A2UI messages and keep a bounded canonical snapshot instead of an unbounded replay log. */
 export function applyUiMessages(
@@ -285,15 +308,46 @@ export function validateUiAction(doc: UiDocument, input: unknown): UiAction {
   const source = surface?.components.find(
     (c) => c.id === action.sourceComponentId,
   );
-  const event = (source?.action as { event?: { name?: string } } | undefined)
-    ?.event;
-  if (!event || event.name !== action.name)
+  const published = source?.component.startsWith('Aui') ? widgetActions(source).find(a => a.event?.name === action.name) : source?.action as Record<string, any> | undefined;
+  if (!published?.event || published.event.name !== action.name)
     throw new Error("操作不属于当前交互界面");
   const processor = new MessageProcessor([protocolCatalog]);
   try {
     processor.processMessages(documentMessages(doc));
     const model = processor.getSurface(action.surfaceId)!;
-    const context = new DataContext(model, "/");
+    let context = new DataContext(model, "/");
+    if(source!.component.startsWith('Aui')) {
+      const path=action.sourceDataPath ?? '/';
+      let found=false;
+      let visits=0;
+      const visit=(id:string,ctx:DataContext)=>{
+        if(found)return;
+        if(++visits>1500)throw new Error('操作来源过于复杂');
+        const node=surface!.components.find(c=>c.id===id)!;
+        if(id===action.sourceComponentId && ctx.path===path){context=ctx;found=true;return;}
+        const children=node.children as any;
+        if(Array.isArray(children))children.forEach((child:string)=>visit(child,ctx));
+        else if(children?.componentId && children.path){
+          const rows=ctx.resolveDynamicValue<unknown[]>({path:children.path});
+          if(Array.isArray(rows))rows.forEach((_,i)=>visit(children.componentId,ctx.nested(`${children.path}/${i}`)));
+        }
+      };
+      visit('root',context);
+      if(!found)throw new Error('操作不属于当前界面中的有效模板实例');
+    } else if(action.sourceDataPath && action.sourceDataPath !== '/') throw new Error('旧组件不支持模板操作路径');
+    if (source!.component === 'AuiForm' || source!.component === 'AuiCard' && published !== (source!.cancel as any)?.action) {
+      const visit = (id: string, ctx: DataContext) => {
+        const node = surface!.components.find(c => c.id === id)!;
+        checkWidgetInput(node, ctx);
+        const children = node.children as any;
+        if (Array.isArray(children)) children.forEach((child: string) => visit(child, ctx));
+        else if (children?.componentId && children.path) {
+          const items = ctx.resolveDynamicValue<unknown[]>({path: children.path});
+          if (Array.isArray(items)) items.forEach((_, i) => visit(children.componentId, ctx.nested(`${children.path}/${i}`)));
+        }
+      };
+      visit(source!.id, context);
+    }
     for (const check of (source!.checks ?? []) as {
       condition: unknown;
       message?: string;
@@ -302,7 +356,7 @@ export function validateUiAction(doc: UiDocument, input: unknown): UiAction {
         throw new Error(check.message ?? "请检查表单输入");
     }
     const resolved = context.resolveAction(
-      source!.action as Record<string, unknown>,
+      published,
     ) as { event?: { context?: Record<string, unknown> } };
     const canonical = { ...action, context: resolved.event?.context ?? {} };
     boundedJson(canonical, 60000);
@@ -333,9 +387,10 @@ export function getUiCatalog(component?: string, fn?: string) {
         components: [...protocolCatalog.components.keys()],
         functions: [...protocolCatalog.functions.keys()],
         instructions: UI_INSTRUCTIONS,
+        libraries: { assistant_ui: { prefix: 'Aui', components: [...protocolCatalog.components.keys()].filter(n => n.startsWith('Aui')) } },
       };
 }
-export const UI_INSTRUCTIONS = `你可以用 get_ui_catalog 查看可用组件和函数的准确参数，用 show_ui 给用户展示 A2UI 交互工具。普通问答、解释和排查问题默认用文字回答；用户明确要求交互界面，或当前任务确实需要用户操作滑块、表单或方案选择时再使用。界面内容必须围绕用户当前需求，不要展示无关界面；对已有界面的追问先解释，不要重复创建。先查询要用的组件/函数参数，不要猜字段。输入绑定和操作参数绑定请使用绝对路径。界面只能使用目录 ${CATALOG_ID}，协议 v0.9。一次 show_ui 接收 messages 数组（createSurface、updateDataModel、updateComponents、deleteSurface）；必须包含完整可渲染的 root 组件和有效引用。单条回复最多 4 个 surface、每个 200 个组件，展开后的节点最多 1500 个，数据列表最多 100 项。调用同一个 surfaceId 可增量更新。绑定 {path:'/field'} 双向联动，函数 {call:'calculate',args:{expression:'amount*2',variables:{amount:{path:'/amount'}}},returnType:'number'} 在客户端实时计算，无需逐次调用模型。Chart、DataTable、Metric、Grid 是已注册扩展。按钮使用 action:{event:{name:'submit',context:{selection:{path:'/field'}}}}；用户点击后操作和当前状态会作为下一条消息交给你；这是用户输入，沿用既有权限与审批规则。不要收集密码或身份凭据。不得输出脚本、iframe 或让用户运行 HTML 代替 show_ui。媒体使用内联 data: 资源，外部地址不会载入。UI 展示成功后简短说明如何使用。`;
+export const UI_INSTRUCTIONS = `你可以用 get_ui_catalog 查看可用组件和函数的准确参数，用 show_ui 给用户展示 A2UI 交互工具。普通问答、解释和排查问题默认用文字回答；用户明确要求交互界面，或当前任务确实需要用户操作滑块、表单或方案选择时再使用。界面内容必须围绕用户当前需求，不要展示无关界面；对已有界面的追问先解释，不要重复创建。先查询要用的组件/函数参数，不要猜字段。输入绑定使用绝对路径，操作参数通常使用绝对路径；列表模板的动作参数可使用相对路径，宿主会提供并验证当前行定位。界面只能使用目录 ${CATALOG_ID}，协议 v0.9。一次 show_ui 接收 messages 数组（createSurface、updateDataModel、updateComponents、deleteSurface）；必须包含完整可渲染的 root 组件和有效引用。单条回复最多 4 个 surface、每个 200 个组件，展开后的节点最多 1500 个，数据列表最多 100 项。调用同一个 surfaceId 可增量更新。绑定 {path:'/field'} 双向联动，函数 {call:'calculate',args:{expression:'amount*2',variables:{amount:{path:'/amount'}}},returnType:'number'} 在客户端实时计算，无需逐次调用模型。优先使用 Aui 前缀的 assistant-ui 35 个组件，布局用 AuiCol/AuiRow/AuiCard，表格 AuiTable，图表 AuiChart，图示 AuiDiagram，地图 AuiMap；旧组件继续支持。新组件的 children 为子组件 ID 数组；同一新界面使用 Aui 组件。所有输入控件必须把 defaultValue（AuiCheckbox 用 defaultChecked，AuiDatePicker 用 value）绑定到绝对数据路径，并在 updateDataModel 里提供初值。AuiForm 或 AuiCard 的 action/confirm.action/cancel.action 沿用 A2UI event 格式，context 显式绑定需要提交的数据；不使用 _action/$field。表单提交使用 AuiButton 的 submit:true。生成图片用 AuiImage 的 artifact_id 引用工具返回的附件 ID，alt 提供描述，不要复制图片字节；可组合到卡片、轮播或多图布局。没有自定义布局时附件也会自动显示图片。Chart、DataTable、Metric、Grid 是旧目录扩展。按钮使用 action:{event:{name:'submit',context:{selection:{path:'/field'}}}}；用户点击后操作和当前状态会作为下一条消息交给你；这是用户输入，沿用既有权限与审批规则。不要收集密码或身份凭据。不得输出脚本、iframe 或让用户运行 HTML 代替 show_ui。图片可使用附件 artifact_id 或内联 data: 资源；外部媒体地址不会载入；地图仅使用内置固定瓦片源。UI 展示成功后简短说明如何使用。`;
 export const EXAMPLE = [
   {
     version: "v0.9",

@@ -6,7 +6,7 @@ import {
   injectBasicCatalogStyles,
   setMarkdownRenderer,
 } from "@a2ui/web_core/v0_9/basic_catalog";
-import { renderMarkdown } from "@a2ui/markdown-it";
+import { safeMarkdown } from '@pi-bot/generative-ui/react';
 import {
   GridApi,
   MetricApi,
@@ -17,12 +17,16 @@ import {
 } from "./catalog.js";
 import { UiSession, type UiCallbacks } from "./session.js";
 import type { UiDocument } from "./index.js";
+import { WidgetSurface, type MediaHost } from './widget-renderer.js';
+import { WIDGET_APIS } from './widgets.js';
+import '@pi-bot/generative-ui/styles';
+export { ArtifactImage, type MediaHost } from '@pi-bot/generative-ui/react';
 export { UiSession };
 let initialized = false;
 function initialize() {
   if (!initialized) {
     injectBasicCatalogStyles();
-    setMarkdownRenderer(renderMarkdown);
+    setMarkdownRenderer(safeMarkdown);
     initialized = true;
   }
 }
@@ -248,10 +252,11 @@ const Table = createComponentImplementation(TableApi, ({ props }) => {
     </div>
   );
 });
-export const renderCatalog = new Catalog(
+// Aui entries use WidgetSurface's single React tree; the processor still needs their schemas.
+export const renderCatalog = new Catalog<any>(
   CATALOG_ID,
   "v0.9",
-  [...basicCatalog.components.values(), Grid, Metric, Chart, Table],
+  [...basicCatalog.components.values(), Grid, Metric, Chart, Table, ...WIDGET_APIS],
   FUNCTIONS,
   basicCatalog.themeSchema,
 );
@@ -260,7 +265,8 @@ function UiContent({
   disabled = false,
   save,
   action,
-}: { document: UiDocument; disabled?: boolean } & Pick<
+  media,
+}: { document: UiDocument; disabled?: boolean; media?: MediaHost } & Pick<
   UiCallbacks,
   "save" | "action"
 >) {
@@ -294,11 +300,17 @@ function UiContent({
   }, [session, document]);
   session.enabled = !disabled;
   return (
-    <section className="pi-a2ui" aria-label="Bot 交互工具">
+    <section className={`pi-a2ui${document.surfaces.every(s=>s.components.every(c=>c.component.startsWith('Aui')))?' pi-generative-ui':''}`} aria-label="Bot 交互工具" onClickCapture={e=>{
+      const link=(e.target as Element).closest?.('a[href]') as HTMLAnchorElement|null;
+      if(link?.getAttribute('href')?.startsWith('#'))return;
+      if(link){e.preventDefault();if(/^https?:$/.test(link.protocol)&&!link.username&&!link.password)void media?.openExternal?.(link.href);}
+    }}>
       <fieldset disabled={disabled || session.busy} className="pi-ui-content">
         <div {...(disabled || session.busy ? { inert: true } : {})}>
           {[...session.processor.getSurfaces().values()].map((s) => (
-            <A2uiSurface key={s.id} surface={s} />
+            [...s.componentsModel.values].find(c=>c.id==='root')?.type.startsWith('Aui')
+              ? <WidgetSurface key={s.id} surface={s} session={session} host={media}/>
+              : <A2uiSurface key={s.id} surface={s} />
           ))}
         </div>
       </fieldset>
@@ -320,13 +332,14 @@ function UiContent({
 }
 
 class UiGuard extends React.Component<
-  { revision: number; children: React.ReactNode },
+  { revision: number; children: React.ReactNode; failed?(): void },
   { failed: boolean }
 > {
   state = { failed: false };
   static getDerivedStateFromError() {
     return { failed: true };
   }
+  componentDidCatch() { this.props.failed?.(); }
   componentDidUpdate(previous: { revision: number }) {
     if (this.state.failed && previous.revision !== this.props.revision)
       this.setState({ failed: false });
@@ -343,7 +356,7 @@ class UiGuard extends React.Component<
 }
 export function UiView(props: Parameters<typeof UiContent>[0]) {
   return (
-    <UiGuard revision={props.document.revision}>
+    <UiGuard revision={props.document.revision} failed={()=>props.media?.displayed?.([])}>
       <UiContent {...props} />
     </UiGuard>
   );

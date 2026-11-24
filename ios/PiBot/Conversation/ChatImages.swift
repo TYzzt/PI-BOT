@@ -73,10 +73,12 @@ struct ChatPicture: View {
     @Environment(AppStore.self) private var store
     var image: ChatImage?
     var remote: MessageImage?
+    var artifactId: String?
     var botId = ""
     var messageId = ""
     var maxHeight: CGFloat = 220
     @State private var loaded: UIImage?
+    @State private var original: UIImage?
     @State private var failed = false
     @State private var attempt = 0
     @State private var expanded = false
@@ -96,11 +98,11 @@ struct ChatPicture: View {
                 .disabled(!failed)
             }
         }
-        .task(id: "\(image?.data.count ?? 0)-\(remote?.id ?? "")-\(attempt)") {
+        .task(id: "\(image?.data.count ?? 0)-\(remote?.id ?? artifactId ?? "")-\(attempt)") {
             failed = false
             do {
                 let source: ChatImage
-                if let image { source = image } else { source = try await store.image(botId: botId, messageId: messageId, imageId: remote?.id ?? "") }
+                if let image { source = image } else if let artifactId { source = try await store.artifactImage(botId: botId, messageId: messageId, artifactId: artifactId) } else { source = try await store.image(botId: botId, messageId: messageId, imageId: remote?.id ?? "") }
                 loaded = try await preview(source)
             } catch is CancellationError {
             } catch {
@@ -110,7 +112,10 @@ struct ChatPicture: View {
         .fullScreenCover(isPresented: $expanded) {
             ZStack {
                 Color.black.ignoresSafeArea()
-                if let loaded { Image(uiImage: loaded).resizable().scaledToFit() }
+                if let image = original ?? loaded { Image(uiImage: image).resizable().scaledToFit() }
+            }
+            .task {
+                if let artifactId, let full = try? await store.artifactImage(botId: botId, messageId: messageId, artifactId: artifactId, variant: "original") { original = try? await preview(full) }
             }
             .onTapGesture { expanded = false }
             .accessibilityAddTraits(.isButton)

@@ -1,0 +1,87 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import { readFile, mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
+import { build } from 'esbuild';
+import { chromium } from 'playwright';
+import sharp from 'sharp';
+import { tempDir } from './helpers.js';
+
+test('35 widgets render; forms retain focus, calculate and submit; actual timeline previews and deduplicates images', {skip:!process.env.PI_BOT_TEST_BROWSER,timeout:90000},async t=>{
+  const dir=tempDir();t.after(()=>dir.cleanup());
+  await build({entryPoints:['desktop/tests/generative-ui-browser/main.tsx'],bundle:true,format:'esm',jsx:'automatic',outdir:dir.path,loader:{'.png':'dataurl'}});
+  const poster=Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="720" height="480"><defs><linearGradient id="sky" x2="0" y2="1"><stop stop-color="#d9eaf0"/><stop offset="1" stop-color="#f6e8cf"/></linearGradient></defs><rect width="720" height="480" fill="url(#sky)"/><circle cx="570" cy="102" r="44" fill="#f0b070"/><path d="M0 268 Q190 238 360 280 T720 260 V480 H0" fill="#91bdb8"/><path d="M0 328 Q220 295 380 340 T720 316 V480 H0" fill="#d7dfcb"/><path d="M0 408 Q220 370 450 408 T720 380 V480 H0" fill="#f4e7d2"/><text x="44" y="62" fill="#53716f" font-family="Segoe UI,sans-serif" font-size="12" letter-spacing="3">A LITTLE TIME FOR YOURSELF</text><text x="42" y="132" fill="#2d4544" font-family="Microsoft YaHei,sans-serif" font-size="47" font-weight="600">慢一点，</text><text x="42" y="194" fill="#2d4544" font-family="Microsoft YaHei,sans-serif" font-size="47" font-weight="600">也很好。</text><text x="44" y="235" fill="#627d79" font-family="Microsoft YaHei,sans-serif" font-size="16">海风 · 咖啡 · 不赶时间的一天</text><path d="M46 430h44" stroke="#78918a" stroke-width="2"/><text x="104" y="435" fill="#78918a" font-family="Segoe UI,sans-serif" font-size="11" letter-spacing="2">WEEKEND WITH PIBOT</text></svg>`);
+  const avatar=await sharp('desktop/apps/desktop/assets/pi-bot.png').resize(280,280).toBuffer();
+  const data=(await sharp(poster).composite([{input:avatar,left:409,top:170}]).png().toBuffer()).toString('base64');
+  const mapTile=await sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256"><rect width="256" height="256" fill="#eef1e9"/><path d="M190 0 Q140 88 182 168 T218 256 H256 V0" fill="#d5e6ec"/><path d="M0 60L178 108M0 200L166 155M56 0L97 256M129 0L135 256" stroke="#fff" stroke-width="10" fill="none"/><path d="M0 60L178 108M0 200L166 155M56 0L97 256M129 0L135 256" stroke="#e5ddd1" stroke-width="2" fill="none"/><rect x="14" y="104" width="35" height="44" rx="4" fill="#dfe6d6"/><rect x="104" y="122" width="18" height="25" rx="3" fill="#dfe6d6"/></svg>`)).png().toBuffer();
+  const server=createServer(async(req,res)=>{
+    if(req.url==='/'){res.setHeader('Content-Type','text/html');res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://tile.openstreetmap.org; connect-src 'none'; object-src 'none'");res.end(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><link rel="stylesheet" href="/main.css"><body><div id="root"></div><script>window.fixtureImage=${JSON.stringify(data)}</script><script type="module" src="/main.js"></script></body></html>`);return;}
+    if(req.url==='/main.js'||req.url==='/main.css'){res.setHeader('Content-Type',req.url.endsWith('.css')?'text/css':'text/javascript');res.end(await readFile(join(dir.path,req.url.slice(1))));return;}
+    res.writeHead(404).end();
+  });
+  await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise<void>(resolve=>server.close(()=>resolve())));
+  const browser=await chromium.launch({headless:true,...(process.env.PI_BOT_CHROMIUM_EXECUTABLE?{executablePath:process.env.PI_BOT_CHROMIUM_EXECUTABLE}:{channel:'chromium'})});t.after(()=>browser.close());
+  const page=await browser.newPage({viewport:{width:1280,height:960},timezoneId:'Asia/Hong_Kong'}),errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
+  let failTiles=true;
+  await page.route('https://tile.openstreetmap.org/**',route=>failTiles?route.abort():route.fulfill({status:200,contentType:'image/png',body:mapTile}));
+  await page.goto(`http://127.0.0.1:${(server.address() as any).port}/`);
+  await page.locator('[data-widget]').last().waitFor();assert.equal(await page.locator('[data-widget]').count(),35);
+  assert.equal(await page.getByText('交互界面无法显示',{exact:false}).count(),0);
+  await page.locator('#gallery [data-aui="diagram"] img').waitFor();
+  await page.getByText('地图加载失败，地点仍可查看',{exact:true}).waitFor();
+  failTiles=false;await page.locator('#gallery .leaflet-control-zoom-in').click();assert.equal(await page.evaluate(()=>(window as any).widgetTest.external),0,'map zoom stays inside the widget');
+  await page.getByText('地图加载失败，地点仍可查看',{exact:true}).waitFor({state:'hidden'});
+  assert.equal(await page.locator('#gallery [data-widget="Markdown"] strong').textContent(),'加粗文字');
+  await page.locator('#regression > summary').click();
+  const note=page.locator('#form').getByRole('textbox',{name:'备注'});
+  await note.fill('修改后的备注');await note.press('End');await note.pressSequentially('ABC');assert.equal(await note.inputValue(),'修改后的备注ABC');assert.equal(await note.evaluate(el=>document.activeElement===el),true);
+  const slider=page.locator('#form input[type="range"]');await slider.fill('4');await slider.dispatchEvent('input');await slider.dispatchEvent('change');
+  await page.waitForFunction(()=>document.querySelector('#form [data-aui="fact-value"]')?.textContent==='8');
+  await page.locator('#form').getByRole('button',{name:'提交方案'}).click();await page.waitForFunction(()=>!!(window as any).widgetTest.action);
+  assert.deepEqual(await page.evaluate(()=> ((window as any).widgetTest.action as any).context),{note:'修改后的备注ABC',count:4});
+  await page.waitForFunction(()=>document.querySelectorAll('#timeline .pi-artifact-image').length===2);
+  await page.locator('#timeline').getByRole('button',{name:'放大 橙色机器人'}).click();await page.getByRole('dialog',{name:'橙色机器人'}).waitFor();
+  await page.waitForFunction(()=>(window as any).widgetTest.reads.includes('original'));await page.keyboard.press('Escape');
+  await page.locator('#timeline').getByRole('button',{name:'下载 / 打开原图'}).first().click();assert.equal(await page.evaluate(()=>(window as any).widgetTest.opened),1);
+  const reply=page.locator('[data-message="12345678-1234-4234-8234-123456789002"]');
+  await page.evaluate(()=>(window as any).widgetTest.setLayout('two'));
+  await page.waitForFunction(()=>document.querySelectorAll('#timeline .pi-artifact-image').length===3);
+  await page.evaluate(()=>(window as any).widgetTest.setLayout('one'));
+  await page.waitForFunction(()=>document.querySelectorAll('#timeline .pi-artifact-image').length===2);
+  assert.equal(await reply.locator('.report-files .pi-artifact-image').count(),0,'removing one placement keeps the remaining image deduplicated');
+  await page.evaluate(()=>(window as any).widgetTest.setLayout('plain'));
+  await reply.locator('.report-files .pi-artifact-image').waitFor();
+  await page.evaluate(()=>{(window as any).widgetTest.failImages=true;(window as any).widgetTest.setLayout('one');});
+  const retry=reply.locator('.pi-a2ui').getByRole('button',{name:'图片加载失败，点击重试'});await retry.waitFor();
+  assert.equal(await reply.locator('.report-files .pi-artifact-image').count(),1,'a failed custom preview retains the automatic image');
+  await page.evaluate(()=>(window as any).widgetTest.failImages=false);await retry.click();
+  await page.waitForFunction(()=>document.querySelectorAll('[data-message="12345678-1234-4234-8234-123456789002"] .report-files .pi-artifact-image').length===0);
+  await page.evaluate(()=>(window as any).widgetTest.setLayout('tabs'));
+  await reply.locator('.report-files .pi-artifact-image').waitFor();
+  await reply.getByRole('tab',{name:'生成的图片'}).click();
+  await page.waitForFunction(()=>document.querySelectorAll('[data-message="12345678-1234-4234-8234-123456789002"] .report-files .pi-artifact-image').length===0);
+  await reply.getByRole('tab',{name:'说明'}).click();await reply.locator('.report-files .pi-artifact-image').waitFor();
+  await page.locator('#template-case').getByRole('button',{name:'Second',exact:true}).click();
+  await page.waitForFunction(()=>(window as any).widgetTest.templateAction?.context?.selection==='Second');
+  const date=page.locator('#temporal-case').getByLabel('带偏移的时间');
+  assert.equal(await date.inputValue(),'2026-11-28T09:30');assert.equal(await date.getAttribute('min'),'2026-11-28T08:00');assert.equal(await date.getAttribute('max'),'2026-11-28T12:00');
+  await date.fill('2026-11-28T10:15');
+  await page.locator('#temporal-case').getByLabel('UTC 时间').fill('2026-11-28T10:45');
+  await page.locator('#temporal-case').getByLabel('不带时区的时间').fill('2026-11-28T11:00');
+  assert.equal(await page.locator('#temporal-case').getByLabel('原始文本').inputValue(),'保留原始文本');
+  await page.waitForFunction(()=>{const data=(window as any).widgetTest.dateSaved?.surfaces[0].data;return data?.offset==='2026-11-28T10:15:00+08:00'&&data?.utc==='2026-11-28T02:45:00Z'&&data?.floating==='2026-11-28T11:00';});
+  assert.deepEqual(errors,[]);
+  const utcPage=await browser.newPage({viewport:{width:1000,height:800},timezoneId:'UTC'});
+  await utcPage.route('https://tile.openstreetmap.org/**',route=>route.fulfill({status:200,contentType:'image/png',body:mapTile}));
+  await utcPage.goto(`http://127.0.0.1:${(server.address() as any).port}/`);await utcPage.locator('#regression > summary').click();
+  const utcOffset=utcPage.locator('#temporal-case').getByLabel('带偏移的时间');
+  assert.equal(await utcOffset.inputValue(),'2026-11-28T01:30');assert.equal(await utcOffset.getAttribute('min'),'2026-11-28T00:00');
+  await utcOffset.fill('2026-11-28T02:15');await utcPage.waitForFunction(()=>(window as any).widgetTest.dateSaved?.surfaces[0].data.offset==='2026-11-28T10:15:00+08:00');await utcPage.close();
+  await page.locator('#regression > summary').click();
+  for(const width of [1280,390]){await page.setViewportSize({width,height:960});await page.evaluate(()=>window.scrollTo(0,0));if(process.env.PI_BOT_SCREENSHOT_DIR){await mkdir(process.env.PI_BOT_SCREENSHOT_DIR,{recursive:true});await page.screenshot({path:join(process.env.PI_BOT_SCREENSHOT_DIR,`generative-ui-${width}.png`),fullPage:true});const bounds=await page.locator('#showcases').boundingBox();const height=Math.ceil(bounds!.y+bounds!.height+32);await page.setViewportSize({width,height});await page.screenshot({path:join(process.env.PI_BOT_SCREENSHOT_DIR,`generative-ui-preview-${width}.png`),clip:{x:0,y:0,width,height}});}}
+  await page.setViewportSize({width:1280,height:960});await page.emulateMedia({colorScheme:'dark'});await page.evaluate(()=>document.documentElement.dataset.theme='dark');
+  await page.waitForFunction(()=>getComputedStyle(document.querySelector('#showcases [data-aui="card"]')!).backgroundColor==='rgb(28, 32, 40)');
+  if(process.env.PI_BOT_SCREENSHOT_DIR){const bounds=await page.locator('#showcases').boundingBox();const height=Math.ceil(bounds!.y+bounds!.height+32);await page.setViewportSize({width:1280,height});await page.screenshot({path:join(process.env.PI_BOT_SCREENSHOT_DIR,'generative-ui-preview-dark.png'),clip:{x:0,y:0,width:1280,height}});}
+  assert.deepEqual(errors,[]);
+});

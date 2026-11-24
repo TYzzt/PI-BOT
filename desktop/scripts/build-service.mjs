@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const workspace = { name:'pi-bot-workspace', setup(build) {
+  build.onResolve({filter:/^@pi-bot\/generative-ui$/},()=>({path:resolve('../packages/generative-ui/src/catalog.generated.ts')}));
   build.onResolve({filter:/^@pi-bot\/agent\/images$/},()=>({path:resolve('../packages/agent/src/images.ts')}));
   build.onResolve({filter:/^zod$/},args=>args.importer.replaceAll('\\','/').includes('packages/a2ui/')?{path:createRequire(resolve('../packages/a2ui/package.json')).resolve('zod')}:undefined);
   build.onResolve({filter:/^@pi-bot\/(agent|bot-face|a2ui|runtime-contracts)$/},args=>({path:resolve('../packages',args.path.split('/')[1],'src/index.ts')}));

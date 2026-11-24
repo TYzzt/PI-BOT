@@ -34,6 +34,7 @@ export const schemas = {
   documentUploadCancel:z.object({id}),
   remoteArtifact:z.object({id}),
   reportOpen:z.object({id}),
+  artifactImage:z.object({botId:id,messageId:id,artifactId:id,variant:z.enum(['thumbnail','original']).default('thumbnail')}),
   remoteDesktop:z.object({botId:id}),
   status: z.object({}),
   'connection.check': z.object({}),

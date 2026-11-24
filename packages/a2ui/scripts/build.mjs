@@ -12,6 +12,7 @@ await build({
     cssCodeSplit: false,
     rollupOptions: {
       output: {
+        codeSplitting: false,
         entryFileNames: "renderer.js",
         assetFileNames: "[name][extname]",
       },

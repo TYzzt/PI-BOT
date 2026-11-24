@@ -21,7 +21,7 @@ export function imageGenerationTools(base: string, token: () => string, runId: s
   }];
   if (writable) tools.push({
     name: "image_generate", label: "生成图片",
-    description: "根据用户提示词生成一张图片并保存为本次任务的附件。可先用 image_models 查询，再按用户指定选择模型；省略 model 使用默认模型。可选横纵比 1:1、3:2、2:3。生成后的附件可供用户预览下载，返回元数据不含图片字节。超时、中断或结果未确认时不要自动再次生图，避免重复计费；说明情况，等待用户明确要求重试。",
+    description: "根据用户提示词生成一张图片并保存为本次任务的附件。可先用 image_models 查询，再按用户指定选择模型；省略 model 使用默认模型。可选横纵比 1:1、3:2、2:3。生成后的附件会在聊天中自动显示预览并支持下载；需要定制布局时用 show_ui 的 AuiImage.artifact_id 引用返回的 artifact.id。返回元数据不含图片字节。超时、中断或结果未确认时不要自动再次生图，避免重复计费；说明情况，等待用户明确要求重试。",
     parameters: Type.Object({ prompt: Type.String({ minLength: 1, maxLength: 8000 }),
       model: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
       aspect_ratio: Type.Optional(Type.Union(["1:1", "3:2", "2:3"].map(value => Type.Literal(value)))),

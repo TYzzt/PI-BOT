@@ -6,12 +6,18 @@ on:
     paths:
       - "ios/**"
       - "packages/bot-face/spec.json"
+      - "packages/a2ui/**"
+      - "packages/generative-ui/**"
+      - "package-lock.json"
       - ".github/workflows/ios.yml"
   push:
     branches: [main]
     paths:
       - "ios/**"
       - "packages/bot-face/spec.json"
+      - "packages/a2ui/**"
+      - "packages/generative-ui/**"
+      - "package-lock.json"
       - ".github/workflows/ios.yml"
   workflow_dispatch:
 

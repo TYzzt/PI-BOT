@@ -6,6 +6,7 @@ import {
 } from "@a2ui/web_core/v0_9";
 import { basicCatalog } from "@a2ui/web_core/v0_9/basic_catalog";
 import { calculate } from "./math.js";
+import { WIDGET_APIS } from './widgets.js';
 export const CATALOG_ID = "urn:pi-bot:a2ui:catalog:v1";
 const N = CommonSchemas.DynamicNumber,
   S = CommonSchemas.DynamicString;
@@ -132,7 +133,7 @@ export const FUNCTIONS = [
 export const protocolCatalog = new Catalog(
   CATALOG_ID,
   "v0.9",
-  [...basicCatalog.components.values(), ...CUSTOM_APIS],
+  [...basicCatalog.components.values(), ...CUSTOM_APIS, ...WIDGET_APIS],
   FUNCTIONS,
   basicCatalog.themeSchema,
 );

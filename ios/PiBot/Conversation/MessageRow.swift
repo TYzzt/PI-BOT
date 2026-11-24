@@ -9,6 +9,8 @@ struct MessageRow: View {
     let onOpenBot: (String) -> Void
     @State private var selectedTask: AgentTaskRef?
     @State private var artifactError: String?
+    @State private var displayedImages: Set<String> = []
+    @State private var visibleImageCounts: [String: Int] = [:]
 
     var body: some View {
         Group {
@@ -41,6 +43,7 @@ struct MessageRow: View {
             }
             .buttonStyle(.plain)
             bubble(message.content, markdown: false, fill: Palette.accentSoft)
+            ForEach(message.attachments) { file in attachment(file) }
             Text(dayLabel(message.createdAt) + " " + clockTime(message.createdAt)).font(.system(size: 11)).foregroundStyle(Palette.muted)
         }
     }
@@ -64,7 +67,7 @@ struct MessageRow: View {
                     .padding(.horizontal, 14)
                 }
             }
-            ForEach(message.attachments) { file in attachment(file) }
+            ForEach(message.attachments.filter { message.ui == nil || !displayedImages.contains($0.id) }) { file in attachment(file) }
             if let artifactError { Text(artifactError).font(.footnote).foregroundStyle(Palette.danger) }
             if !message.images.isEmpty {
                 VStack(alignment: user ? .trailing : .leading, spacing: 6) {
@@ -84,7 +87,14 @@ struct MessageRow: View {
                 }
             }
             if !user, message.ui != nil {
-                A2UIView(message: message, disabled: message.status != "completed")
+                A2UIView(message: message, disabled: message.status != "completed", onDisplayed: { ids, remove in
+                    if ids.isEmpty { visibleImageCounts.removeAll() }
+                    for id in ids {
+                        let count = (visibleImageCounts[id] ?? 0) + (remove ? -1 : 1)
+                        if count > 0 { visibleImageCounts[id] = count } else { visibleImageCounts.removeValue(forKey: id) }
+                    }
+                    displayedImages = Set(visibleImageCounts.keys)
+                })
                     .frame(maxWidth: bubbleWidth)
                     .padding(.top, 2)
             }
@@ -125,6 +135,10 @@ struct MessageRow: View {
     }
 
     private func attachment(_ file: ReportAttachment) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if ["image/png", "image/jpeg", "image/webp"].contains(file.mime) {
+                ChatPicture(artifactId: file.id, botId: message.botId, messageId: message.id).frame(maxWidth: bubbleWidth)
+            }
         Button {
             Task {
                 do { openURL(try await store.reportOpen(file.id)) } catch { artifactError = errorText(error) }
@@ -132,7 +146,7 @@ struct MessageRow: View {
         } label: {
             VStack(alignment: .leading, spacing: 4) {
                 Text(file.title).fontWeight(.semibold).foregroundStyle(Palette.ink)
-                Text("Markdown · \(file.size / 1024 + 1) KB · 打开报告 ›").font(.subheadline).foregroundStyle(Palette.muted)
+                Text("\(file.name.split(separator: ".").last?.uppercased() ?? "文件") · \(file.size / 1024 + 1) KB · 下载 / 打开文件 ›").font(.subheadline).foregroundStyle(Palette.muted)
             }
             .padding(16)
             .frame(maxWidth: bubbleWidth, alignment: .leading)
@@ -140,6 +154,7 @@ struct MessageRow: View {
             .overlay(RoundedRectangle(cornerRadius: 14).stroke(Palette.line))
         }
         .buttonStyle(.plain)
+        }
     }
 }
 

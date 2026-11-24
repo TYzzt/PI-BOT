@@ -3,14 +3,14 @@ import {uploadDocument} from './documents.js';
 import { AttachmentMenu } from './attachment-menu.js';
 import type {ArtifactRef} from '../../../packages/protocol/src/index.js';
 import { confirmAction, showNotice } from './dialogs.js';
-import { memo, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { memo, useMemo, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { PiBot } from './bot-avatar.js';
 import type { Mood } from '@pi-bot/bot-face';
 import type { AgentTaskRef, Approval, Bot, FromBot, Message, MessagePage, TaskConversation } from '../../../packages/protocol/src/index.js';
 import { uniqueById } from './unique.js';
-import { UiView } from '@pi-bot/a2ui/react';
+import { UiView, ArtifactImage, type MediaHost } from '@pi-bot/a2ui/react';
 import '@pi-bot/a2ui/styles';
 import { bridge, call, errorText } from './bridge.js';
 import { ATTACHMENT_LIMIT_HINT, IMAGE_TYPES, imageSource, withinAttachmentLimit, type ChatImage } from '@pi-bot/agent/images';
@@ -25,6 +25,7 @@ const NO_IMAGES: ChatImage[] = [];
 const Markdown = memo(function Markdown({ text }: { text: string }) {
   return (
     <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+      img: ({src,alt}) => src && /^data:image\/(png|jpeg|webp|gif);base64,/.test(src) ? <img src={src} alt={alt??''}/> : <span>{alt}</span>,
       a: ({ href, children }) => <a href={href} onClick={e => { e.preventDefault(); if(href&&/^\/remote\/artifacts\/[0-9a-f-]{36}$/.test(href))void call<{url:string}>('remoteArtifact',{id:href.split('/').at(-1)}).then(r=>bridge.openExternal(r.url)).catch(e=>showNotice(errorText(e)));else if (href && /^https?:/.test(href)) void bridge.openExternal(href); }}>{children}</a>,
     }}>{text}</ReactMarkdown>
   );
@@ -99,11 +100,19 @@ function ConversationDialog({ bot, task, onClose, onOpenBot }: { bot: Bot; task:
   </dialog>;
 }
 
-function ReportFiles({ message }: { message: Message }) {
+function useMedia(message: Message, displayed?: (ids:string[],remove?:boolean)=>void): MediaHost {
+  return useMemo(()=>({
+    image: async (id:string, variant:'thumbnail'|'original'='thumbnail')=>imageSource(await call<ChatImage>('artifactImage',{botId:message.bot_id,messageId:message.id,artifactId:id,variant})),
+    open: async (id:string)=>{const result=await call<{url:string}>('reportOpen',{id});await bridge.openExternal(result.url);},
+    openExternal: (url:string)=>bridge.openExternal(url), displayed,
+  }),[message.id,message.bot_id,displayed]);
+}
+function ReportFiles({ message, hidden = new Set<string>(), media }: { message: Message; hidden?:Set<string>; media?:MediaHost }) {
+  const fallback=useMedia(message);
   const [error,setError]=useState('');
   const [opening,setOpening]=useState<string|null>(null);
   if(!message.attachments?.length)return null;
-  return <div className="report-files">{message.attachments.map(file=><button type="button" className="report-file" key={file.id} disabled={opening===file.id} onClick={()=>{setError('');setOpening(file.id);void call<{url:string}>('reportOpen',{id:file.id}).then(r=>bridge.openExternal(r.url)).catch(e=>setError(errorText(e))).finally(()=>setOpening(null));}}>
+  return <div className="report-files">{message.attachments.filter(file=>!hidden.has(file.id)).map(file=>['image/png','image/jpeg','image/webp'].includes(file.mime)?<ArtifactImage key={file.id} id={file.id} alt={file.title} host={media??fallback}/>:<button type="button" className="report-file" key={file.id} disabled={opening===file.id} onClick={()=>{setError('');setOpening(file.id);void call<{url:string}>('reportOpen',{id:file.id}).then(r=>bridge.openExternal(r.url)).catch(e=>setError(errorText(e))).finally(()=>setOpening(null));}}>
     <span className="report-file-icon" aria-hidden="true">▤</span><span className="report-file-info"><strong>{file.title}</strong><span>{file.name.split('.').at(-1)?.toUpperCase()} · {file.size<1024 ? `${file.size} B` : `${(file.size/1024).toFixed(1)} KB`} · {time(file.created_at)}</span></span><span className="report-file-action">{opening===file.id?'打开中…':'打开文件 ›'}</span>
   </button>)}{error&&<p role="alert" className="error">{error}</p>}</div>;
 }
@@ -116,8 +125,21 @@ function ReplyBubbles({ message }: { message: Message }) {
     <Progress lines={legacy} />
     {segments.map(s => <div className="reply-segment" key={s.id}><div className="bubble markdown"><Markdown text={s.text} /></div><time className="meta">{time(s.created_at)}</time></div>)}
     {tail ? <div className="bubble markdown"><Markdown text={tail} /></div> : !segments.length && message.status === 'running' ? <div className="typing"><i /><i /><i /></div> : null}
-    <ReportFiles message={message} />
   </>;
+}
+
+function MessageAssets({message,online,onSent}:{message:Message;online:boolean;onSent(messages:Message[]):void}) {
+  const [hidden,setHidden]=useState(new Set<string>());
+  const visible=useRef(new Map<string,number>());
+  const displayed=useMemo(()=> (ids:string[],remove=false)=>{
+    if(!ids.length)visible.current.clear();
+    for(const id of ids){const count=(visible.current.get(id)??0)+(remove?-1:1);if(count>0)visible.current.set(id,count);else visible.current.delete(id);}
+    setHidden(new Set(visible.current.keys()));
+  },[]);
+  const media=useMedia(message,displayed);
+  return <><ReportFiles message={message} hidden={message.ui?hidden:undefined} media={media}/>{message.ui&&<UiView document={message.ui} disabled={!online||message.status!=='completed'} media={media}
+    save={async(states,revision)=>{const saved=await call<Message>('uiState',{botId:message.bot_id,messageId:message.id,states,revision});return saved.ui!;}}
+    action={async input=>{const result=await call<{messages:Message[]}>('uiAction',{botId:message.bot_id,messageId:message.id,...input});onSent(result.messages);}}/>}</>;
 }
 
 function RelayMessage({ m, onOpenBot }: { m: Message & { from_bot: FromBot }; onOpenBot(id: string): void }) {
@@ -364,9 +386,7 @@ export function Timeline({ bot, messages, hasMore, mood, online, onLoadMore, onS
               <div className="body">
                 <ReplyBubbles message={m} />
                 <Delegations tasks={m.agent_tasks ?? []} onSelect={setConversationTask} />
-                {m.ui && <UiView key={m.id} document={m.ui} disabled={!online || m.status !== 'completed'}
-                  save={async (states, revision) => { const saved = await call<Message>('uiState', { botId: bot.id, messageId: m.id, states, revision }); return saved.ui!; }}
-                  action={async input => { const result=await call<{messages:Message[]}>('uiAction',{botId:bot.id,messageId:m.id,...input}); onSent({messages:result.messages,has_more:hasMore}); }} />}
+                <MessageAssets message={m} online={online} onSent={messages=>onSent({messages,has_more:hasMore})}/>
                 <span className="meta">
                   {!m.reply_segments?.length && time(m.created_at)}
                   {m.status === 'failed' && <span className="tag bad">{run?.assistant_message_id === m.id && run.error ? run.error : '运行失败'}</span>}

@@ -5,11 +5,17 @@ on:
   pull_request:
     paths:
       - "android/**"
+      - "packages/a2ui/**"
+      - "packages/generative-ui/**"
+      - "package-lock.json"
       - ".github/workflows/android.yml"
   push:
     branches: [main]
     paths:
       - "android/**"
+      - "packages/a2ui/**"
+      - "packages/generative-ui/**"
+      - "package-lock.json"
       - ".github/workflows/android.yml"
   workflow_dispatch:
 
