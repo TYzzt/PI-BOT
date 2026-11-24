@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@pi-bot/generative-ui": "*",
     "@a2ui/web_core": "0.13.0",
     "@a2ui/react": "0.13.0",
     "@a2ui/markdown-it": "0.2.1",

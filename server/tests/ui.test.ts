@@ -9,7 +9,9 @@ import { createRunner } from "../src/runner.js";
 import { Database } from "../src/db.js";
 import { Worker } from "../src/worker.js";
 import { settings } from "../src/config.js";
-import { EXAMPLE } from "@pi-bot/a2ui";
+import { EXAMPLE, documentMessages } from "@pi-bot/a2ui";
+import { formDocument, documentOf } from '../../packages/a2ui/tests/widget-fixtures.js';
+import { recordUi } from '../src/ui.js';
 import {
   mockProvider,
   resetDatabase,
@@ -51,6 +53,8 @@ before(async () => {
   runner = await createRunner({ token: "r".repeat(40), dir: dir.path });
   await runner.listen({ host: "127.0.0.1", port: 0 });
   const env = {
+    PI_BOT_LOCAL_WORK_ROOT: "/pibot-test-workspaces",
+    PI_BOT_REMOTE_BACKEND: "none",
     PI_BOT_DATABASE_URL: TEST_DB,
     PI_BOT_ADMIN_PASSWORD: "admin-password",
     PI_BOT_JWT_SECRET: "j".repeat(40),
@@ -243,6 +247,42 @@ test(
     );
   },
 );
+test('new assistant-ui forms persist, validate and submit through the authenticated message APIs', {skip}, async()=>{
+  const user=(await api('GET','/me')).json.user;
+  const run=await db.tx(async tx=>{
+    const r=await insertRun(tx,{userId:user.id,botId,requestId:randomUUID(),text:'生成表单',computer:null});
+    await tx.update('bot_messages',r.assistant_message_id,{status:'running'});
+    await recordUi(tx,r,documentMessages(formDocument()));
+    await finishRun(tx,r.run_id,'completed',null,'填写方案');
+    return r;
+  });
+  const path=`/bots/${botId}/messages/${run.assistant_message_id}`;
+  const saved=await api('POST',path+'/ui-state',{revision:1,states:[{surfaceId:'example',data:{note:'跨端修改',count:4}}]});
+  assert.equal(saved.status,200,JSON.stringify(saved.json));
+  const input={revision:saved.json.ui.revision,request_id:randomUUID(),states:[{surfaceId:'example',data:{note:'提交值',count:5}}],action:{surfaceId:'example',sourceComponentId:'root',name:'submit',context:{note:'伪造上下文',count:999}}};
+  const sent=await api('POST',path+'/ui-actions',input);assert.equal(sent.status,200,JSON.stringify(sent.json));
+  const message=await db.tx(tx=>tx.get('bot_messages',sent.json.run.user_message_id));
+  assert.deepEqual(message.ui_action.action.context,{note:'提交值',count:5});
+  assert.match(message.content,/提交方案/);
+  assert.equal((await api('POST',path+'/ui-actions',input)).json.run.id,sent.json.run.id);
+  await worker.runOnce();
+});
+
+test('template instance paths are scoped and canonicalized by the message action API', {skip},async()=>{
+  const user=(await api('GET','/me')).json.user;
+  const doc=documentOf([{id:'root',component:'AuiCol',children:{componentId:'choose',path:'/items'}},{id:'choose',component:'AuiButton',label:{path:'name'},action:{event:{name:'select',context:{selection:{path:'name'}}}}}],{items:[{name:'First'},{name:'Second'}]});
+  const run=await db.tx(async tx=>{
+    const r=await insertRun(tx,{userId:user.id,botId,requestId:randomUUID(),text:'选择当前行',computer:null});
+    await tx.update('bot_messages',r.assistant_message_id,{status:'running'});await recordUi(tx,r,documentMessages(doc));await finishRun(tx,r.run_id,'completed',null,'请选择');return r;
+  });
+  const path=`/bots/${botId}/messages/${run.assistant_message_id}/ui-actions`;
+  const input={revision:1,request_id:randomUUID(),states:[{surfaceId:'example',data:doc.surfaces[0].data}],action:{surfaceId:'example',sourceComponentId:'choose',sourceDataPath:'/items/1',name:'select',context:{selection:'forged'}}};
+  assert.equal((await api('POST',path,{...input,request_id:randomUUID(),action:{...input.action,sourceDataPath:'/other'}})).status,422);
+  const sent=await api('POST',path,input);assert.equal(sent.status,200,JSON.stringify(sent.json));
+  const message=await db.tx(tx=>tx.get('bot_messages',sent.json.run.user_message_id));assert.deepEqual(message.ui_action.action.context,{selection:'Second'});assert.equal(message.ui_action.action.sourceDataPath,'/items/1');
+  await worker.runOnce();
+});
+
 test("device task A2UI stays private until the cloud publishes the completed report",{skip},async()=>{
   const keys=deviceKeys(),reg=await api("POST","/devices/register",{public_key:keys.publicKey,label:"UI test computer"});keys.setId(reg.json.device.id);
   const computer=socket(base.replace("http","ws")+"/ws/device",keys.headers("GET","/ws/device"));await computer.next(m=>m.type==='hello');
@@ -253,10 +293,10 @@ test("device task A2UI stays private until the cloud publishes the completed rep
     const task=await db.tx(async tx=>{
       const parent=await insertRun(tx,{userId:user.id,botId,requestId:randomUUID(),text:'show UI',computer:null});
       await tx.update('bot_runs',parent.run_id,{status:'running'});
-      const task=await createTask(tx,(app as any).hub,user.id,{sub:user.id,src:'cloud',bot:botId},{run_id:parent.run_id,kind:'background',task:'show UI',execution:'device',device_id:reg.json.device.id,wait:false},settings({PI_BOT_DATABASE_URL:TEST_DB,PI_BOT_JWT_SECRET:"j".repeat(40)}));
+      const task=await createTask(tx,(app as any).hub,user.id,{sub:user.id,src:'cloud',bot:botId},{run_id:parent.run_id,kind:'background',task:'show UI',execution:'device',device_id:reg.json.device.id,wait:false},settings({PI_BOT_LOCAL_WORK_ROOT:"/pibot-test-workspaces",PI_BOT_REMOTE_BACKEND:"none",PI_BOT_DATABASE_URL:TEST_DB,PI_BOT_JWT_SECRET:"j".repeat(40)}));
       await finishRun(tx,parent.run_id,'completed',null,'已安排');return task;
     });
-    const config=settings({PI_BOT_DATABASE_URL:TEST_DB,PI_BOT_JWT_SECRET:'j'.repeat(40)});
+    const config=settings({PI_BOT_LOCAL_WORK_ROOT:"/pibot-test-workspaces",PI_BOT_REMOTE_BACKEND:"none",PI_BOT_DATABASE_URL:TEST_DB,PI_BOT_JWT_SECRET:'j'.repeat(40)});
     await dispatchDevice(db,config,(app as any).hub,task.run!.run_id);
     const job=(await computer.next(m=>m.type==='run' && m.run.run_id===task.run!.run_id)).run;
     computer.send({type:'run_event',run_id:job.run_id,event:{kind:'ui',messages:EXAMPLE}});

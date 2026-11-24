@@ -122,6 +122,11 @@ class PiBotRepository(
     /** A call failure to show once, after the call itself has gone. */
     val voiceNotice: StateFlow<String?> = _voiceNotice.asStateFlow()
 
+    suspend fun artifactImage(botId: String, messageId: String, artifactId: String, variant: String = "thumbnail"): ChatImage {
+        val account = _session.value ?: error("请先登录")
+        return withContext(io) { api.artifactImage(ServerUrl(account.serverUrl), account.token, botId, messageId, artifactId, variant) }
+    }
+
     suspend fun reportOpen(id: String): String {
         val account = _session.value ?: error("请先登录")
         val result = withContext(io) { api.reportOpen(ServerUrl(account.serverUrl),account.token,id) }

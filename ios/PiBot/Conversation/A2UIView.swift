@@ -15,10 +15,11 @@ struct A2UIView: View {
     @Environment(AppStore.self) private var store
     let message: Message
     let disabled: Bool
+    var onDisplayed: (Set<String>, Bool) -> Void = { _, _ in }
     @State private var height: CGFloat = 180
 
     var body: some View {
-        A2UIWebView(message: message, disabled: disabled, store: store, height: $height)
+        A2UIWebView(message: message, disabled: disabled, store: store, height: $height, onDisplayed: onDisplayed)
             .frame(height: height)
             .frame(maxWidth: .infinity)
     }
@@ -29,6 +30,7 @@ private struct A2UIWebView: UIViewRepresentable {
     let disabled: Bool
     let store: AppStore
     @Binding var height: CGFloat
+    var onDisplayed: (Set<String>, Bool) -> Void = { _, _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -97,17 +99,37 @@ private struct A2UIWebView: UIViewRepresentable {
                 sendDocumentIfChanged()
             case "height":
                 if let value = packet["height"]?.intValue { parent.height = CGFloat(min(max(value, 100), 6000)) }
-            case "state", "action":
+            case "displayed":
+                if case .array(let items)? = packet["ids"] {
+                    let allowed = Set(parent.message.attachments.map(\.id))
+                    parent.onDisplayed(Set(items.compactMap(\.stringValue)).intersection(allowed), packet["remove"]?.boolValue ?? false)
+                }
+            case "state", "action", "image", "open", "external":
                 guard let id = packet["id"]?.stringValue, let body = packet["payload"], case .object = body else { return }
-                let isState = packet["type"]?.stringValue == "state"
+                let kind = packet["type"]?.stringValue
+                let isState = kind == "state"
                 let target = parent.message
                 let locked = parent.disabled
                 let store = parent.store
                 Task { @MainActor in
                     var response: [String: JSONValue] = ["id": .string(id)]
                     do {
-                        if locked { throw APIError(status: 0, message: "请等待 Bot 完成当前任务后再操作") }
-                        if isState {
+                        if (kind == "state" || kind == "action") && locked { throw APIError(status: 0, message: "请等待 Bot 完成当前任务后再操作") }
+                        if kind == "image" || kind == "open" {
+                            guard let artifactId = body["id"]?.stringValue, target.attachments.contains(where: { $0.id == artifactId }) else { throw APIError(status: 404, message: "附件不属于当前消息") }
+                            if kind == "image" {
+                                let variant = body["variant"]?.stringValue == "original" ? "original" : "thumbnail"
+                                let image = try await store.artifactImage(botId: target.botId, messageId: target.id, artifactId: artifactId, variant: variant)
+                                response["result"] = .string("data:\(image.mimeType);base64,\(image.data)")
+                            } else {
+                                await UIApplication.shared.open(try await store.reportOpen(artifactId))
+                                response["result"] = .null
+                            }
+                        } else if kind == "external" {
+                            guard let text = body["url"]?.stringValue, let url = URL(string: text), ["https", "http"].contains(url.scheme ?? ""), url.host != nil, url.user == nil, url.password == nil else { throw APIError(status: 422, message: "链接无效") }
+                            await UIApplication.shared.open(url)
+                            response["result"] = .null
+                        } else if isState {
                             response["result"] = try await store.saveUiState(botId: target.botId, messageId: target.id, payload: body)
                         } else {
                             try await store.submitUiAction(botId: target.botId, messageId: target.id, payload: body)

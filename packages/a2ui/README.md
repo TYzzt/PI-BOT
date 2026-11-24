@@ -1,8 +1,9 @@
 # Pi Bot A2UI
 
-Mac 和 Android 共用的 A2UI v0.9 协议、目录、计算函数和渲染器。官方库固定为 `@a2ui/react` / `@a2ui/web_core` 0.13.0。
+桌面、Android 和 iOS 共用的 A2UI v0.9 协议、目录、计算函数和渲染器。官方库固定为 `@a2ui/react` / `@a2ui/web_core` 0.13.0。
 
 - 官方基础目录：Text、Button、TextField、Row、Column、List、Image、Icon、Video、AudioPlayer、Card、Divider、CheckBox、Slider、DateTimeInput、ChoicePicker、Tabs、Modal。
+- assistant-ui 生成式 UI：新增 Aui 前缀的 35 个组件，包含卡片、表单、图表、表格、图片、流程图和地图；三端共享样式，组件名与旧目录隔离。详见 [Generative UI](../../docs/generative-ui.md)。
 - 注册扩展：Grid（响应式布局 / 列表模板）、Metric、Chart（环形 / 柱状 / 折线）、DataTable。
 - 注册函数：calculate（受限算术，无 eval）、numberValue、displayNumber，以及官方校验 / 格式化 / 布尔函数。openUrl 不开放，媒体使用内联 data: 资源。
 - `get_ui_catalog` 返回准确目录和单个组件 / 函数 schema，不提供预置界面。

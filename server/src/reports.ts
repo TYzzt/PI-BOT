@@ -3,6 +3,8 @@ import { SignJWT, jwtVerify } from "jose";
 import { z } from "zod";
 import { MAX_REPORT_BYTES } from "@pi-bot/runtime-contracts";
 import { callerRun } from "./agents.js";
+import sharp from "sharp";
+import { ownBot } from "./bots.js";
 import { fail, type Row, type Tx } from "./db.js";
 import type { Route } from "./routes.js";
 
@@ -45,6 +47,38 @@ export async function copyPublishedRunArtifacts(tx: Tx, runId: string, messageId
   );
 }
 export const reportRoutes: Route[] = [
+  {
+    method: "GET",
+    path: "/bots/:botId/messages/:messageId/artifacts/:artifactId/image",
+    auth: "actor", tag: "reports", summary: "读取消息图片附件的预览或原图",
+    query: z.object({ variant: z.enum(["thumbnail", "original"]).default("thumbnail"), encoding: z.enum(["base64"]).optional() }),
+    handler: async ({ tx, user, params, query, reply }) => {
+      await ownBot(tx, user.user_id, params.botId);
+      const file = await tx.one(`SELECT a.name,a.mime,a.body FROM message_artifacts ma
+        JOIN report_artifacts a USING(artifact_id) JOIN bot_messages m USING(message_id)
+        WHERE ma.message_id=$1 AND ma.artifact_id=$2 AND m.bot_id=$3 AND a.user_id=$4 AND m.visibility='public'`,
+        [params.messageId, params.artifactId, params.botId, user.user_id]);
+      if (!file) return fail(404, "图片附件不存在");
+      if (!["image/png", "image/jpeg", "image/webp"].includes(file.mime)) return fail(422, "附件不是支持的静态图片");
+      let bytes = Buffer.from(file.body), mime = String(file.mime);
+      if (bytes.length > MAX_REPORT_BYTES) return fail(413, "图片附件过大");
+      if (query.variant === "thumbnail") {
+        try {
+          // Keep previews small enough for native message bridges, with no image bytes in UI snapshots.
+          let edge = 1024;
+          do {
+            bytes = await sharp(file.body, { limitInputPixels: 40_000_000 }).rotate().resize(edge, edge, { fit: "inside", withoutEnlargement: true }).webp({ quality: 70 }).toBuffer();
+            edge = Math.floor(edge * 0.7);
+          } while (bytes.length > 128 * 1024 && edge >= 64);
+          if (bytes.length > 128 * 1024) return fail(422, "无法生成图片预览");
+          mime = "image/webp";
+        } catch { return fail(422, "图片无法解码"); }
+      }
+      reply.header("cache-control", "no-store").header("referrer-policy", "no-referrer").header("x-content-type-options", "nosniff");
+      if (query.encoding) return { name: file.name, mime_type: mime, data: bytes.toString("base64") };
+      return reply.type(mime).send(bytes);
+    },
+  },
   {
     method: "POST",
     path: "/agent/reports",

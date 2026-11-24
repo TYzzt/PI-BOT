@@ -49,6 +49,7 @@ window.piBotUi = {
     else p.resolve(v.result);
   },
 };
+const media = { image: (id:string,variant:'thumbnail'|'original'='thumbnail')=>request('image',{id,variant}), open:(id:string)=>request('open',{id}), preview:(id:string)=>request('open',{id}), openExternal:(url:string)=>request('external',{url}), displayed:(ids:string[],remove=false)=>post({type:'displayed',ids,remove}) };
 function App() {
   const [value, setValue] = useState<{
     document: UiDocument;
@@ -61,6 +62,7 @@ function App() {
       setError("");
     } catch (e) {
       setError(e instanceof Error ? e.message : "界面无法显示");
+      media.displayed([]);
     }
   };
   return error ? (
@@ -71,6 +73,7 @@ function App() {
       disabled={value.disabled}
       save={(states, revision) => request("state", { states, revision })}
       action={(input) => request("action", input)}
+      media={media}
     />
   ) : (
     <p className="loading">正在加载交互工具…</p>

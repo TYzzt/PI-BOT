@@ -132,6 +132,7 @@ export class UiSession {
     )
       return;
     this.dirty = true;
+    this.callbacks.changed?.();
     clearTimeout(this.timer);
     this.timer = setTimeout(() => {
       void this.flush().catch(() => {});
@@ -166,7 +167,7 @@ export class UiSession {
     })();
     return this.writing;
   }
-  async submit(event: ActionPayload) {
+  async submit(event: ActionPayload & {sourceDataPath?:string}) {
     if (!this.enabled || this.busy || this.disposed) return;
     this.busy = true;
     this.error = "";
@@ -178,6 +179,7 @@ export class UiSession {
         surfaceId: event.surfaceId,
         sourceComponentId: event.sourceComponentId,
         context: event.context,
+        ...(event.sourceDataPath ? {sourceDataPath:event.sourceDataPath}:{}),
       };
       const states = this.states();
       const key = JSON.stringify({ action, states });

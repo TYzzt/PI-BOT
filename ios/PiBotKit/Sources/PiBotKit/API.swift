@@ -167,6 +167,10 @@ public final class PiBotAPI: @unchecked Sendable {
         try await call(url, "GET", "/bots/\(botId)/messages/\(messageId)/images/\(imageId)", token: token)
     }
 
+    public func artifactImage(_ url: ServerURL, token: String, botId: String, messageId: String, artifactId: String, variant: String = "thumbnail") async throws -> ChatImage {
+        try await call(url, "GET", "/bots/\(botId)/messages/\(messageId)/artifacts/\(artifactId)/image", token: token, query: [("variant", variant), ("encoding", "base64")])
+    }
+
     public func uiState(_ url: ServerURL, token: String, botId: String, messageId: String, payload: JSONValue) async throws -> Message {
         try await call(url, "POST", "/bots/\(botId)/messages/\(messageId)/ui-state", token: token, body: payload)
     }

@@ -82,6 +82,9 @@ val buildA2ui = tasks.register<Exec>("buildA2ui") {
     val nodeCommand = if (vendoredNode.isFile) vendoredNode.absolutePath else "node"
     commandLine(nodeCommand, "packages/a2ui/scripts/build.mjs")
     inputs.dir(rootProject.projectDir.resolve("../packages/a2ui/src"))
+    inputs.dir(rootProject.projectDir.resolve("../packages/a2ui/scripts"))
+    inputs.dir(rootProject.projectDir.resolve("../packages/generative-ui/src"))
+    inputs.file(rootProject.projectDir.resolve("../package-lock.json"))
     inputs.dir(rootProject.projectDir.resolve("../packages/a2ui/web"))
     inputs.file(rootProject.projectDir.resolve("../package-lock.json"))
     outputs.dir(rootProject.projectDir.resolve("../packages/a2ui/dist"))

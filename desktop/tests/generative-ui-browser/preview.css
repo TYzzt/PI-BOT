@@ -1,0 +1,42 @@
+body{background:#f6f7f9;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif;}
+.preview-page{max-width:1120px;margin:auto;padding:28px 32px 60px;}
+.preview-nav{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:42px;}
+.preview-brand{display:flex;align-items:center;gap:10px;font-size:15px;font-weight:650;letter-spacing:-.4px;}
+.preview-brand svg{width:28px;height:28px;}
+.preview-brand em{font-style:normal;font-weight:400;color:#8b929f;font-size:13px;letter-spacing:0;padding-left:10px;border-left:1px solid #dce0e6;margin-left:2px;}
+.preview-status{display:flex;align-items:center;gap:7px;font-size:11px;color:#7b8492;}
+.preview-status i{height:6px;width:6px;background:#4caa82;border-radius:50%;}
+.preview-heading{margin-bottom:30px;}
+.preview-heading small{display:block;color:#7c8796;font-size:10px;font-weight:600;letter-spacing:1.8px;margin-bottom:10px;}
+.preview-heading h1{font-size:29px;letter-spacing:-1px;font-weight:650;margin:0 0 10px;line-height:1.3;}
+.preview-heading p{margin:0;font-size:13px;color:#7c8490;line-height:1.75;}
+.preview-showcases{display:grid;grid-template-columns:1.07fr 1fr;gap:22px;align-items:start;}
+.preview-label{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:11px;color:#89919e;letter-spacing:.2px;margin-bottom:12px;}
+.preview-label b{font-size:12px;font-weight:550;color:#4b5563;letter-spacing:0;}
+.preview-label small{font-size:10px;}
+.preview-dashboard{grid-column:1/-1;margin-top:3px;}
+.preview-dashboard [data-aui="card"]>[data-aui="row"]>[data-aui="box"]{flex:1;min-width:240px;}
+.preview-dashboard [data-aui="card"]>[data-aui="row"]{gap:28px;}
+.preview-dashboard [data-aui="fact-value"]{font-size:27px;}
+.preview-image [data-aui="card"]{gap:12px;}
+.preview-image .pi-artifact-image figcaption{justify-content:flex-end;padding-top:8px;}
+.preview-image [data-aui="caption"]{font-size:12px;}
+.preview-section-heading{display:flex;align-items:end;justify-content:space-between;gap:16px;margin:45px 0 20px;border-top:1px solid #e3e7ec;padding-top:28px;}
+.preview-section-heading h2{font-size:17px;font-weight:600;letter-spacing:-.3px;margin:0 0 5px;}
+.preview-section-heading p{font-size:12px;color:#8c94a1;margin:0;}
+.preview-count{font-size:11px;color:#8791a1;font-variant-numeric:tabular-nums;}
+.preview-catalog{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;align-items:start;}
+.preview-sample{padding:18px;background:#fff;border:1px solid #e4e8ee;border-radius:14px;min-width:0;}
+.preview-sample>h3{display:flex;justify-content:space-between;gap:8px;margin:0 0 22px;font-size:11px;font-weight:550;color:#8791a1;}
+.preview-sample>h3 span{font-size:10px;color:#b0b7c1;}
+.preview-sample .pi-generative-ui [data-aui="card"]{padding:14px;border-radius:10px;background:#fbfcfd;box-shadow:none;}
+.preview-sample .pi-generative-ui [data-aui="card-title"]{font-size:13px;}
+.preview-sample .pi-generative-ui [data-aui="image"]{display:block;width:100%;height:auto;max-height:210px;object-fit:cover;border-radius:9px;}
+.preview-debug{margin-top:28px;border-top:1px solid #e3e7ec;padding-top:18px;font-size:12px;color:#8c94a1;}
+.preview-debug>summary{cursor:pointer;}
+.preview-debug[open]>summary{margin-bottom:18px;}
+.preview-debug>div{padding:18px;background:white;border:1px solid #e4e8ee;border-radius:14px;margin-top:14px;}
+@media(max-width:700px){.preview-page{padding:22px 18px 36px;}.preview-nav{margin-bottom:32px;}.preview-status{font-size:10px;}.preview-brand em{font-size:11px;}.preview-heading h1{font-size:25px;}.preview-showcases{grid-template-columns:1fr;gap:24px;}.preview-catalog{grid-template-columns:1fr;gap:14px;}.preview-sample{padding:20px;}.preview-heading p{font-size:12px;}.preview-section-heading{margin-top:34px;}.preview-dashboard [data-aui="card"]>[data-aui="row"]>[data-aui="box"]{min-width:100%;}}
+@media(prefers-color-scheme:dark){body{background:#13171e;}.preview-brand,.preview-heading h1,.preview-section-heading h2{color:#edf0f5;}.preview-sample,.preview-debug>div{background:#1c2028;border-color:#343a45;}.preview-sample .pi-generative-ui [data-aui="card"]{background:#242933;}.preview-label b{color:#c5cdd9;}.preview-section-heading,.preview-debug{border-color:#343a45;}}
+
+.preview-dashboard>.pi-generative-ui{max-width:none;}

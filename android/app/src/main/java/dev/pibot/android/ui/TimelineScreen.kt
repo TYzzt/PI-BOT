@@ -387,6 +387,8 @@ private fun RelayItem(message: Message, from: FromBot, onOpenBot: (String) -> Un
 private fun MessageItem(message: Message, onOpenBot: (String) -> Unit, repository: PiBotRepository) {
     val context=LocalContext.current
     val scope=rememberCoroutineScope()
+    var displayedImages by remember(message.id) { mutableStateOf(setOf<String>()) }
+    val visibleImageCounts = remember(message.id) { mutableMapOf<String, Int>() }
     var artifactError by remember { mutableStateOf<String?>(null) }
     var selectedTask by remember(message.id) { mutableStateOf<AgentTaskRef?>(null) }
     selectedTask?.let { TaskConversationDialog(message.botId, it, repository, { selectedTask = null }, onOpenBot) }
@@ -432,7 +434,7 @@ private fun MessageItem(message: Message, onOpenBot: (String) -> Unit, repositor
                     }
                     Spacer(Modifier.height(6.dp))
                 }
-                message.attachments.forEach { file ->
+                message.attachments.filter { message.ui == null || it.id !in displayedImages }.forEach { file ->
                     androidx.compose.material3.OutlinedCard(
                         onClick = {
                             scope.launch {
@@ -445,6 +447,9 @@ private fun MessageItem(message: Message, onOpenBot: (String) -> Unit, repositor
                         modifier = Modifier.widthIn(max = bubbleWidth),
                     ) {
                         Column(Modifier.padding(16.dp)) {
+                            if (file.mime in listOf("image/png", "image/jpeg", "image/webp")) {
+                                ChatPicture(artifactId = file.id, botId = message.botId, messageId = message.id, repository = repository)
+                            }
                             Text(file.title,fontWeight=androidx.compose.ui.text.font.FontWeight.SemiBold)
                             Text("${file.name.substringAfterLast('.').uppercase()} · ${file.size / 1024 + 1} KB · 打开文件 ›",color=Muted)
                         }
@@ -472,7 +477,14 @@ private fun MessageItem(message: Message, onOpenBot: (String) -> Unit, repositor
                 }
                 if (!user && message.ui != null) {
                     Spacer(Modifier.height(8.dp))
-                    A2uiContent(message, repository, message.status != "completed")
+                    A2uiContent(message, repository, message.status != "completed", onDisplayed = { ids, remove ->
+                        if (ids.isEmpty()) visibleImageCounts.clear()
+                        ids.forEach { id ->
+                            val count = (visibleImageCounts[id] ?: 0) + if (remove) -1 else 1
+                            if (count > 0) visibleImageCounts[id] = count else visibleImageCounts.remove(id)
+                        }
+                        displayedImages = visibleImageCounts.keys.toSet()
+                    })
                 }
                 Spacer(Modifier.height(3.dp))
                 val note = when (message.status) {

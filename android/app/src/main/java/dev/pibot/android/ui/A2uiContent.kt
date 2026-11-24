@@ -54,12 +54,13 @@ private class UiBridge(private val post: (String) -> Unit) {
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-fun A2uiContent(message: Message, repository: PiBotRepository, disabled: Boolean) {
+fun A2uiContent(message: Message, repository: PiBotRepository, disabled: Boolean, onDisplayed: (Set<String>, Boolean) -> Unit = { _, _ -> }) {
     val scope = rememberCoroutineScope()
     var height by remember(message.id) { mutableStateOf(180) }
     var ready by remember(message.id) { mutableStateOf(false) }
     val latest by rememberUpdatedState(message)
     val locked by rememberUpdatedState(disabled)
+    val displayed by rememberUpdatedState(onDisplayed)
     var web by remember(message.id) { mutableStateOf<WebView?>(null) }
     fun sendDocument(view: WebView) {
         val payload = buildJsonObject { put("document", latest.ui ?: JsonNull); put("disabled", JsonPrimitive(locked)) }
@@ -83,7 +84,8 @@ fun A2uiContent(message: Message, repository: PiBotRepository, disabled: Boolean
                 settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
                 webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?) = true
-                    override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse {
+                    override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
+                        if (request?.url?.toString()?.matches(Regex("https://tile\\.openstreetmap\\.org/[0-9]+/[0-9]+/[0-9]+\\.png")) == true) return null
                         val path = request?.url?.toString()?.let(::a2uiAssetPath)
                         if (path != null) {
                             val mime = when { path.endsWith(".js") -> "text/javascript"; path.endsWith(".css") -> "text/css"; else -> "text/html" }
@@ -100,13 +102,38 @@ fun A2uiContent(message: Message, repository: PiBotRepository, disabled: Boolean
                         when (packet["type"]?.jsonPrimitive?.contentOrNull) {
                             "ready" -> { ready = true; web?.let(::sendDocument) }
                             "height" -> packet["height"]?.jsonPrimitive?.intOrNull?.let { height = it.coerceIn(100, 6000) }
-                            "state", "action" -> {
+                            "displayed" -> {
+                                val ids = packet["ids"] as? kotlinx.serialization.json.JsonArray ?: return@launch
+                                displayed(ids.mapNotNull { it.jsonPrimitive.contentOrNull }.filter { id -> latest.attachments.any { it.id == id } }.toSet(), packet["remove"]?.jsonPrimitive?.contentOrNull == "true")
+                            }
+                            "state", "action", "image", "open", "external" -> {
                                 val id = packet["id"]?.jsonPrimitive?.contentOrNull ?: return@launch
                                 val payload = packet["payload"] as? JsonObject ?: return@launch
                                 val result = runCatching {
-                                    if (locked) throw IllegalStateException("请等待 Bot 完成当前任务后再操作")
-                                    if (packet["type"]?.jsonPrimitive?.contentOrNull == "state") repository.saveUiState(latest.botId, latest.id, payload)
-                                    else { repository.submitUiAction(latest.botId, latest.id, payload); JsonNull }
+                                    val type = packet["type"]?.jsonPrimitive?.contentOrNull
+                                    if ((type == "state" || type == "action") && locked) throw IllegalStateException("请等待 Bot 完成当前任务后再操作")
+                                    when (type) {
+                                        "image", "open" -> {
+                                            val artifactId = payload["id"]?.jsonPrimitive?.contentOrNull ?: error("图片无效")
+                                            require(latest.attachments.any { it.id == artifactId }) { "附件不属于当前消息" }
+                                            if (type == "image") {
+                                                val variant = if (payload["variant"]?.jsonPrimitive?.contentOrNull == "original") "original" else "thumbnail"
+                                                val image = repository.artifactImage(latest.botId, latest.id, artifactId, variant)
+                                                JsonPrimitive("data:${image.mimeType};base64,${image.data}")
+                                            } else {
+                                                context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(repository.reportOpen(artifactId))))
+                                                JsonNull
+                                            }
+                                        }
+                                        "external" -> {
+                                            val uri = URI(payload["url"]?.jsonPrimitive?.contentOrNull ?: error("链接无效"))
+                                            require(uri.scheme in listOf("https", "http") && uri.host != null && uri.userInfo == null)
+                                            context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(uri.toString())))
+                                            JsonNull
+                                        }
+                                        "state" -> repository.saveUiState(latest.botId, latest.id, payload)
+                                        else -> { repository.submitUiAction(latest.botId, latest.id, payload); JsonNull }
+                                    }
                                 }
                                 val response = buildJsonObject {
                                     put("id", JsonPrimitive(id))

@@ -302,6 +302,10 @@ public final class AppStore {
         try await authed { try await self.api.image($0, token: $1, botId: botId, messageId: messageId, imageId: imageId) }
     }
 
+    public func artifactImage(botId: String, messageId: String, artifactId: String, variant: String = "thumbnail") async throws -> ChatImage {
+        try await authed { try await self.api.artifactImage($0, token: $1, botId: botId, messageId: messageId, artifactId: artifactId, variant: variant) }
+    }
+
     public func saveUiState(botId: String, messageId: String, payload: JSONValue) async throws -> JSONValue {
         let message = try await authed { try await self.api.uiState($0, token: $1, botId: botId, messageId: messageId, payload: payload) }
         timelines[botId] = timeline(botId).merge([message])

@@ -100,10 +100,9 @@ export async function submitUiAction(
     (c) => c.id === action.sourceComponentId,
   )!;
   const child = surface.components.find((c) => c.id === component.child);
-  const label =
-    typeof child?.text === "string"
-      ? child.text.replace(/\s+/g, " ").slice(0, 80)
-      : "提交当前选择";
+  const footer = [component.confirm,component.cancel].find((slot:any)=>slot?.action?.event?.name===action.name) as {label?:unknown}|undefined;
+  const labelValue = footer?.label ?? component.label ?? child?.text ?? component.title;
+  const label = typeof labelValue === 'string' ? labelValue.replace(/\s+/g, ' ').slice(0,80) : '提交当前选择';
   const text = `在交互工具中选择了「${label}」`;
   const detail = {
     source_message_id: messageId,

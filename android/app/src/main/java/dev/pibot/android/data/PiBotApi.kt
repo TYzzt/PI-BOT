@@ -350,6 +350,9 @@ class PiBotApi(private val http: OkHttpClient, private val json: Json = API_JSON
     fun image(url: ServerUrl, token: String, botId: String, messageId: String, imageId: String): ChatImage =
         call(url, "GET", "/bots/$botId/messages/$messageId/images/$imageId", token)
 
+    fun artifactImage(url: ServerUrl, token: String, botId: String, messageId: String, artifactId: String, variant: String = "thumbnail"): ChatImage =
+        call(url, "GET", "/bots/$botId/messages/$messageId/artifacts/$artifactId/image", token, query = listOf("variant" to variant, "encoding" to "base64"))
+
     fun uiState(url: ServerUrl, token: String, botId: String, messageId: String, body: JsonObject): Message =
         call(url, "POST", "/bots/$botId/messages/$messageId/ui-state", token, body)
 

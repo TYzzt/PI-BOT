@@ -248,6 +248,7 @@ export class Application {
       case 'documentUploadComplete': return this.cloud('POST',`/documents/uploads/${input.id}/complete`,{sha256:input.sha256});
       case 'documentUploadCancel': return this.cloud('DELETE',`/documents/uploads/${input.id}`);
       case 'reportOpen': { const result=await this.cloud<{url:string}>('POST',`/reports/${input.id}/open`,{}); return {url:this.account!.serverUrl.replace(/\/$/,'')+result.url}; }
+      case 'artifactImage': return this.cloud('GET',`/bots/${input.botId}/messages/${input.messageId}/artifacts/${input.artifactId}/image?variant=${input.variant}&encoding=base64`);
       case 'remoteArtifact':{const result=await this.cloud<{url:string}>('POST',`/remote/artifacts/${input.id}/open`,{});return {url:this.account!.serverUrl.replace(/\/+$/,'')+result.url};}
       case 'remoteDesktop': {const result=await this.cloud<{url:string}>('POST','/remote/desktop/open',{bot_id:input.botId});return {url:this.account!.serverUrl.replace(/\/+$/,'')+result.url};}
       case 'connection.check': this.socket?.reconnectNow(); return this.state();

@@ -5,7 +5,7 @@ import { createApp } from "../src/app.js";
 import { Database } from "../src/db.js";
 import { settings } from "../src/config.js";
 import { insertRun, createBot, buildContext, finishRun } from "../src/bots.js";
-import { AgentDispatcher, createTask, readTask } from "../src/agents.js";
+import { createTask, readTask } from "../src/agents.js";
 import { recordReply } from "../src/replies.js";
 import { searchHistory, resumeTask } from "../src/memory.js";
 import { messageAttachments } from "../src/reports.js";
@@ -15,7 +15,7 @@ import { processDocument } from "../../packages/agent/src/documents/runtime.js";
 import { DOCUMENT_CHUNK } from "../../packages/agent/src/documents/spec.js";
 import { RemoteService } from "../src/remote/service.js";
 import { Readable } from "node:stream";
-import { TEST_DB, resetDatabase, tempDir, vaultFile } from "./helpers.js";
+import { TEST_DB, eventually, resetDatabase, tempDir, vaultFile } from "./helpers.js";
 test(
   "documents upload idempotently, attach to context, enforce bot isolation and publish binary downloads",
   { skip: !TEST_DB },
@@ -564,12 +564,11 @@ test("document tasks preserve answers and forward only published files in wait, 
       assert.deepEqual(task.attachments.map((a: any) => a.id).sort(), expected);
     });
     if (mode === "report") {
-      await new AgentDispatcher(db, s, hub).once();
-      const report = await db.tx(async tx => {
-        const task = await tx.get("agent_tasks", created.task.id);
-        assert.ok(task.report_run_id);
-        return tx.get("bot_runs", task.report_run_id);
-      });
+      // createApp already runs a dispatcher; another pass can skip its locked task
+      // before the background transaction commits. Await the durable delivery.
+      const reportId = await eventually(async () =>
+        (await db.tx(tx => tx.get("agent_tasks", created.task.id))).report_run_id);
+      const report = await db.tx(tx => tx.get("bot_runs", reportId));
       const forwarded = await files(report.assistant_message_id);
       assert.deepEqual(forwarded.map(a => a.id).sort(), expected);
       assert.ok(!forwarded.some(a => a.id === draft.id));

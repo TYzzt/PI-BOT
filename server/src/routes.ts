@@ -645,7 +645,7 @@ export const routes: Route[] = [
   },
   {
     method:"POST",path:"/bots/:id/messages/:messageId/ui-actions",auth:"actor",tag:"bots",summary:"提交界面操作并启动下一次 Bot 任务",
-    body:z.object({source_device_id:uuid.optional(),client:z.enum(["desktop","android","ios","web"]).optional(),revision:z.number().int().positive(),request_id:z.string().uuid(),states:z.array(z.object({surfaceId:z.string().min(1).max(80),data:z.record(z.string(),z.unknown())})).max(4),action:z.object({name:z.string().min(1).max(80),surfaceId:z.string().min(1).max(80),sourceComponentId:z.string().min(1).max(80),context:z.record(z.string(),z.unknown())})}),
+    body:z.object({source_device_id:uuid.optional(),client:z.enum(["desktop","android","ios","web"]).optional(),revision:z.number().int().positive(),request_id:z.string().uuid(),states:z.array(z.object({surfaceId:z.string().min(1).max(80),data:z.record(z.string(),z.unknown())})).max(4),action:z.object({name:z.string().min(1).max(80),surfaceId:z.string().min(1).max(80),sourceComponentId:z.string().min(1).max(80),sourceDataPath:z.string().startsWith('/').max(2000).optional(),context:z.record(z.string(),z.unknown())})}),
     handler:async({db,tx,s,hub,user,device,params,body,after})=>{
       await ownBot(tx,user.user_id,params.id,true);
       if(device && body.source_device_id && body.source_device_id!==device.device_id) fail(422,"来源电脑必须与签名设备一致");

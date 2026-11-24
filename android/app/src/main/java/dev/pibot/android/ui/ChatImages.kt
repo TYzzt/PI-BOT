@@ -137,15 +137,19 @@ private suspend fun preview(image: ChatImage): ImageBitmap = withContext(Dispatc
 }
 
 @Composable
-fun ChatPicture(image: ChatImage? = null, remote: MessageImage? = null, botId: String = "", messageId: String = "", repository: PiBotRepository? = null, modifier: Modifier = Modifier) {
-    var bitmap by remember(image, remote?.id) { mutableStateOf<ImageBitmap?>(null) }
-    var failed by remember(image, remote?.id) { mutableStateOf(false) }
+fun ChatPicture(image: ChatImage? = null, remote: MessageImage? = null, botId: String = "", messageId: String = "", repository: PiBotRepository? = null, artifactId: String? = null, modifier: Modifier = Modifier) {
+    var bitmap by remember(image, remote?.id, artifactId) { mutableStateOf<ImageBitmap?>(null) }
+    var failed by remember(image, remote?.id, artifactId) { mutableStateOf(false) }
     var attempt by remember { mutableStateOf(0) }
     var expanded by remember { mutableStateOf(false) }
-    LaunchedEffect(image, remote?.id, attempt) {
+    LaunchedEffect(image, remote?.id, artifactId, attempt) {
         failed = false
-        runCatching { preview(image ?: repository!!.image(botId, messageId, remote!!.id)) }
+        runCatching { preview(image ?: if (artifactId != null) repository!!.artifactImage(botId, messageId, artifactId) else repository!!.image(botId, messageId, remote!!.id)) }
             .onSuccess { bitmap = it }.onFailure { failed = true }
+    }
+    var original by remember(artifactId) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(expanded, artifactId) {
+        if (expanded && artifactId != null) runCatching { preview(repository!!.artifactImage(botId, messageId, artifactId, "original")) }.onSuccess { original = it }
     }
     val current = bitmap
     Box(modifier.clickable { if (current != null) expanded = true else if (failed) attempt++ }) {
@@ -153,6 +157,6 @@ fun ChatPicture(image: ChatImage? = null, remote: MessageImage? = null, botId: S
         else Text(if (failed) "图片加载失败，点击重试" else "图片加载中…", color = Muted, modifier = Modifier.padding(8.dp))
     }
     if (expanded && current != null) Dialog(onDismissRequest = { expanded = false }) {
-        Image(current, image?.name ?: remote?.name, Modifier.fillMaxWidth().clickable { expanded = false }, contentScale = ContentScale.Fit)
+        Image(original ?: current, image?.name ?: remote?.name, Modifier.fillMaxWidth().clickable { expanded = false }, contentScale = ContentScale.Fit)
     }
 }
