@@ -306,6 +306,83 @@
         }
       }
     },
+    "/bots/{botId}/messages/{messageId}/artifacts/{artifactId}/image": {
+      "get": {
+        "tags": [
+          "reports"
+        ],
+        "summary": "读取消息图片附件的预览或原图",
+        "security": [
+          {
+            "UserBearer": []
+          },
+          {
+            "DeviceSignature": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "botId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "messageId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "artifactId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "variant",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "default": "thumbnail",
+              "type": "string",
+              "enum": [
+                "thumbnail",
+                "original"
+              ]
+            }
+          },
+          {
+            "name": "encoding",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "base64"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "default": {
+            "description": "{ detail }"
+          }
+        }
+      }
+    },
     "/reports/{id}/open": {
       "post": {
         "tags": [
@@ -3566,6 +3643,12 @@
                         "type": "string",
                         "minLength": 1,
                         "maxLength": 80
+                      },
+                      "sourceDataPath": {
+                        "type": "string",
+                        "maxLength": 2000,
+                        "format": "starts_with",
+                        "pattern": "^\\/.*"
                       },
                       "context": {
                         "type": "object",
