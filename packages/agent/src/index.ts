@@ -445,3 +445,4 @@ export const createBotAgent: AgentFactory = async (o) => {
 export {remoteTools} from "./remote.js";
 
 export {documentTools} from './documents/tools.js';
+export { imageGenerationTools } from './image-generation.js';

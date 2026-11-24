@@ -1,4 +1,5 @@
 import { markBotRead } from "./bots.js";
+import { imageGenerationRoutes } from "./image-generation-routes.js";
 import { endpointExperience, resolveExperienceConflict } from './endpoint-experience.js';
 import {documentRoutes,readableDocument} from './documents.js';
 import { isCliRuntime } from "./cli.js";
@@ -222,6 +223,7 @@ async function deviceFiles(ctx: Context, method: "list" | "read") {
 const MODEL_TEST_TIMEOUT_MS = 120_000;
 
 export const routes: Route[] = [
+  ...imageGenerationRoutes,
   ...authorizationRoutes,
   ...pushRoutes,
   ...reportRoutes,

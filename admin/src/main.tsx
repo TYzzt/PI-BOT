@@ -4,12 +4,14 @@ import { PiBot } from "@pi-bot/bot-face/react";
 import type { Mood } from "@pi-bot/bot-face";
 import { api, ApiError, session, type CatalogModel, type ComposioSettings, type Device, type JevSettings, type Model, type ModelInput, type Overview, type ProviderName, type Usage, type User } from "./api.js";
 import "./style.css";
+import { ImageGenerationPage } from "./image-generation.js";
 
-type Page = "overview" | "users" | "models" | "devices" | "usage" | "composio" | "jev";
+type Page = "overview" | "users" | "models" | "devices" | "usage" | "composio" | "jev" | "image-generation";
 const PAGES: { id: Page; label: string }[] = [
   { id: "overview", label: "概览" },
   { id: "users", label: "用户" },
   { id: "models", label: "模型" },
+  { id: "image-generation", label: "生图" },
   { id: "devices", label: "电脑设备" },
   { id: "usage", label: "用量" },
   { id: "composio", label: "连接器" },
@@ -843,6 +845,7 @@ function App() {
         {page === "overview" && <OverviewPage />}
         {page === "users" && <UsersPage me={me} />}
         {page === "models" && <ModelsPage />}
+        {page === "image-generation" && <ImageGenerationPage />}
         {page === "devices" && <DevicesPage />}
         {page === "usage" && <UsagePage />}
         {page === "composio" && <ComposioPage />}

@@ -634,6 +634,9 @@ export function systemPrompt(
   ].join("\n"));
   if (options.lane === "task") parts.push("后台执行回报：最终结果供发起方整理，保留核实后的关键数据、依据、来源和必要的技术细节，不要为缩短聊天而丢失结果。公开进展仍用短句。发起方负责按用户的问题用日常语言转述，需要细节时可读取本次完整任务记录。");
   parts.push(UI_INSTRUCTIONS);
+  if (options.lane === "conversation" || options.lane === "task") parts.push(options.lane === "conversation"
+    ? "用户要求生图时，先用 start_task(execution=cloud) 安排后台任务，由后台用 image_models 和 image_generate 生成图片。"
+    : "用户要求生成图片时，优先用 image_models 查询可用生图模型，再用 image_generate 生成附件；按用户指定选择模型，未指定用默认模型。图片成功生成后简短说明，附件已保存，不要把图片 base64 写进回答、记忆或检查点。服务返回失败或结果未确认时不自动重复生成，避免重复计费。" );
   if (options.search && options.lane === "conversation") parts.push("需要联网搜索时用 start_task(execution=cloud) 安排后台任务，后台任务用 web_search 检索。");
   else if (options.search) parts.push("联网检索请优先使用 web_search，支持中文查询和 site: 域名限定；它返回标题、链接和摘要。重要结论要核对原始来源，不要把搜索摘要当作已读过网页全文。搜索失败时及时说明，不要反复重试同一查询。工具返回‘搜索额度到了’时，直接告知用户搜索额度到了，停止搜索，不要重试或重新创建搜索任务。");
   if (options.agents?.length) parts.push(collaborationPrompt(options.agents, options.depth ?? 0));

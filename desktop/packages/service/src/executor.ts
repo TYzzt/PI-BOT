@@ -2,6 +2,7 @@ import {readFile,writeFile,mkdir,rename,stat} from 'node:fs/promises';
 import {dirname} from 'node:path';
 import {deviceResources, type WaitReason} from './resource-lock.js';
 import { reportTools, documentTools } from "@pi-bot/agent";
+import { imageGenerationTools } from "@pi-bot/agent";
 import { toolDescriptor, errorInfo } from "@pi-bot/runtime-contracts";
 import { randomUUID } from 'node:crypto';
 import type { ChatImage } from '@pi-bot/agent/images';
@@ -268,6 +269,7 @@ export class Executor {
           write:async(path,bytes)=>{const file=await sandbox.resolve(path,{access:'write'});return deviceResources.run({kind:'file',path:file,mode:'write'},undefined,async()=>{if(await sandbox.resolve(path,{access:'write'})!==file)throw new Error('文件路径已变化');await mkdir(dirname(file),{recursive:true});const tmp=file+'.'+randomUUID()+'.tmp';await writeFile(tmp,bytes);await rename(tmp,file);});},
         }));
         tools.push(...reportTools(api, () => token, run.run_id, run.lane === "task" && !run.automation));
+        if (run.lane === "task") tools.push(...imageGenerationTools(api, () => token, run.run_id, !run.automation_readonly && !run.automation));
         tools.push(...a2uiTools(messages => { event({ kind: 'ui', messages }); }));
       }
       const onTool = (t: ToolActivity) => {
