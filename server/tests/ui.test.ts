@@ -167,6 +167,10 @@ test(
     assert.equal(reply.status, "completed");
     assert.equal(reply.content, "");
     assert.ok(reply.ui);
+    const previousRequests = provider.requests.length;
+    assert.equal((await api('POST', `/bots/${id}/messages`, {text: '解释一下刚才的界面', request_id: randomUUID()})).status, 200);
+    await worker.runOnce();
+    assert.ok(provider.requests.slice(previousRequests).some(request => JSON.stringify(request.body.input ?? request.body.messages).includes('此前已展示的界面摘要')), 'UI-only replies are included in follow-up model history');
   },
 );
 test(

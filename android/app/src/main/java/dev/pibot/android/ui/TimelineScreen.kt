@@ -300,7 +300,7 @@ fun TimelineScreen(
                                 }
                             }
                         }
-                        items(reversed, key = { it.id }) { message -> MessageItem(message, onOpenBot, repository) }
+                        items(reversed, key = { it.id }) { message -> MessageItem(message, onOpenBot, repository, viewport.height() / androidx.compose.ui.platform.LocalDensity.current.density) }
                         if (displayTimeline.hasMore && displayTimeline.messages.isNotEmpty()) {
                             item(key = "older") {
                                 Box(Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
@@ -384,7 +384,7 @@ private fun RelayItem(message: Message, from: FromBot, onOpenBot: (String) -> Un
 }
 
 @Composable
-private fun MessageItem(message: Message, onOpenBot: (String) -> Unit, repository: PiBotRepository) {
+private fun MessageItem(message: Message, onOpenBot: (String) -> Unit, repository: PiBotRepository, viewportHeight: Float) {
     val context=LocalContext.current
     val scope=rememberCoroutineScope()
     var displayedImages by remember(message.id) { mutableStateOf(setOf<String>()) }
@@ -477,7 +477,7 @@ private fun MessageItem(message: Message, onOpenBot: (String) -> Unit, repositor
                 }
                 if (!user && message.ui != null) {
                     Spacer(Modifier.height(8.dp))
-                    A2uiContent(message, repository, message.status != "completed", onDisplayed = { ids, remove ->
+                    A2uiContent(message, repository, message.status != "completed", viewportHeight, onDisplayed = { ids, remove ->
                         if (ids.isEmpty()) visibleImageCounts.clear()
                         ids.forEach { id ->
                             val count = (visibleImageCounts[id] ?: 0) + if (remove) -1 else 1

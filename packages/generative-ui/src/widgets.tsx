@@ -159,6 +159,7 @@ export function Widget({ type, props, children, change, fire, host }: {type:stri
   if(type==='Image'&&!/^data:image\/(png|jpeg|webp|gif);base64,/.test(props.src??''))return <span>{props.alt}</span>;
   if(type==='Diagram')return <Diagram code={props.code} title={props.title}/>;
   if(type==='Map')return <GeoMap places={props.places} route={props.route}/>;
+  if(type==='Table')return <div className="pi-ui-table-scroll" role="region" aria-label="数据表格，可横向滚动" tabIndex={0} style={{'--pi-table-columns':Math.max(1,props.columns?.length??0)} as React.CSSProperties}><LibraryWidget type={type} props={props}/></div>;
   const adapted: Record<string,any> = {...props, $action:props.action ? {type:'event'}:undefined, $dispatch:()=>fire()};
   for(const slot of ['confirm','cancel'] as const)if(props[slot])adapted[slot]={...props[slot],_action:{type:slot}};
   adapted.$dispatch = (action?:any)=>fire(action?.type==='confirm'?'confirm':action?.type==='cancel'?'cancel':undefined);

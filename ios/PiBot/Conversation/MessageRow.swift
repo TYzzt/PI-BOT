@@ -6,6 +6,7 @@ struct MessageRow: View {
     @Environment(\.openURL) private var openURL
     let message: Message
     let bubbleWidth: CGFloat
+    let viewportHeight: CGFloat
     let onOpenBot: (String) -> Void
     @State private var selectedTask: AgentTaskRef?
     @State private var artifactError: String?
@@ -87,7 +88,7 @@ struct MessageRow: View {
                 }
             }
             if !user, message.ui != nil {
-                A2UIView(message: message, disabled: message.status != "completed", onDisplayed: { ids, remove in
+                A2UIView(message: message, disabled: message.status != "completed", viewportHeight: viewportHeight, onDisplayed: { ids, remove in
                     if ids.isEmpty { visibleImageCounts.removeAll() }
                     for id in ids {
                         let count = (visibleImageCounts[id] ?? 0) + (remove ? -1 : 1)

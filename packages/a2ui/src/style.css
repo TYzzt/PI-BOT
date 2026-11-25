@@ -2,6 +2,9 @@
   color-scheme: light;
   container-type: inline-size;
   min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
   background: var(--panel, #fff);
   color: var(--ink, #1f2024);
   padding: 18px;
@@ -43,9 +46,34 @@
 }
 .pi-ui-content {
   min-width: 0;
+  width: 100%;
+  max-width: 100%;
   padding: 0;
   margin: 0;
   border: 0;
+}
+.pi-ui-content > div { min-width: 0; max-width: 100%; }
+.pi-ui-table-scroll {
+  display: block;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+}
+.pi-a2ui .pi-ui-table-scroll > table {
+  width: 100%;
+  min-width: calc(var(--pi-table-columns, 1) * 10rem);
+  max-width: none;
+  table-layout: fixed;
+}
+.pi-a2ui .pi-ui-table-scroll th,
+.pi-a2ui .pi-ui-table-scroll td {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  vertical-align: top;
 }
 .pi-ui-grid {
   display: grid;
@@ -166,8 +194,6 @@
   text-align: left;
   padding: 12px;
   border-top: 1px solid var(--line, #e5e0d9);
-  min-width: 65px;
-  max-width: 250px;
   overflow-wrap: anywhere;
 }
 .pi-ui-table th {

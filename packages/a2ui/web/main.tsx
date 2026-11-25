@@ -4,10 +4,13 @@ import { UiView } from "../src/renderer.js";
 import { validateUiDocument, type UiDocument } from "../src/index.js";
 import "../src/style.css";
 import "./style.css";
+import { observeUiHeight } from './height.js';
+import { canScrollAt } from './gestures.js';
 declare global {
   interface Window {
     PiBotUiHost?: { postMessage(value: string): void };
     piBotUi: {
+      canScrollAt(x: number, y: number): boolean;
       receive(value: { document: UiDocument; disabled: boolean }): void;
       respond(value: { id: string; result?: unknown; error?: string }): void;
     };
@@ -39,6 +42,7 @@ let receive: (v: { document: UiDocument; disabled: boolean }) => void = (v) => {
   initial = v;
 };
 window.piBotUi = {
+  canScrollAt,
   receive: (v) => receive(v),
   respond: (v) => {
     const p = pending.get(v.id);
@@ -80,12 +84,5 @@ function App() {
   );
 }
 createRoot(document.getElementById("pi-bot-ui-root")!).render(<App />);
-new ResizeObserver(() =>
-  post({
-    type: "height",
-    height: Math.ceil(
-      document.getElementById("pi-bot-ui-root")!.getBoundingClientRect().height,
-    ),
-  }),
-).observe(document.getElementById("pi-bot-ui-root")!);
+observeUiHeight(document.getElementById("pi-bot-ui-root")!, post);
 post({ type: "ready" });

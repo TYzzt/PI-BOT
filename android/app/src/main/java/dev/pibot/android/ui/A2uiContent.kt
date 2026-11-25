@@ -20,6 +20,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import dev.pibot.android.data.API_JSON
 import dev.pibot.android.data.Message
 import dev.pibot.android.data.PiBotRepository
@@ -54,9 +56,14 @@ private class UiBridge(private val post: (String) -> Unit) {
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-fun A2uiContent(message: Message, repository: PiBotRepository, disabled: Boolean, onDisplayed: (Set<String>, Boolean) -> Unit = { _, _ -> }) {
+fun A2uiContent(message: Message, repository: PiBotRepository, disabled: Boolean, viewportHeight: Float, onDisplayed: (Set<String>, Boolean) -> Unit = { _, _ -> }) {
     val scope = rememberCoroutineScope()
-    var height by remember(message.id) { mutableStateOf(180) }
+    var contentHeight by remember(message.id) { mutableStateOf(180f) }
+    var pageWidth by remember(message.id) { mutableStateOf(0f) }
+    var widthDp by remember(message.id) { mutableStateOf(0f) }
+    val density = LocalDensity.current.density
+    val naturalHeight = contentHeight * if (pageWidth > 0 && widthDp > 0) widthDp / pageWidth else 1f
+    val height = uiDisplayHeight(naturalHeight, viewportHeight)
     var ready by remember(message.id) { mutableStateOf(false) }
     val latest by rememberUpdatedState(message)
     val locked by rememberUpdatedState(disabled)
@@ -70,9 +77,10 @@ fun A2uiContent(message: Message, repository: PiBotRepository, disabled: Boolean
         onDispose { web?.let { it.removeJavascriptInterface("PiBotUiHost"); it.stopLoading(); it.destroy() }; web = null }
     }
     AndroidView(
-        modifier = Modifier.fillMaxWidth().height(height.dp),
+        modifier = Modifier.fillMaxWidth().height(height.dp).onSizeChanged { widthDp = it.width / density },
         factory = { context ->
-            WebView(context).apply {
+            UiScrollWebView(context).apply {
+                verticalScrollingEnabled = naturalHeight > height + 1
                 web = this
                 setBackgroundColor(android.graphics.Color.TRANSPARENT)
                 settings.javaScriptEnabled = true
@@ -101,7 +109,10 @@ fun A2uiContent(message: Message, repository: PiBotRepository, disabled: Boolean
                         val packet = runCatching { API_JSON.parseToJsonElement(raw).jsonObject }.getOrNull() ?: return@launch
                         when (packet["type"]?.jsonPrimitive?.contentOrNull) {
                             "ready" -> { ready = true; web?.let(::sendDocument) }
-                            "height" -> packet["height"]?.jsonPrimitive?.intOrNull?.let { height = it.coerceIn(100, 6000) }
+                            "height" -> packet["height"]?.jsonPrimitive?.intOrNull?.takeIf { it >= 0 }?.let {
+                                contentHeight = it.toFloat()
+                                pageWidth = packet["width"]?.jsonPrimitive?.intOrNull?.takeIf { value -> value > 0 }?.toFloat() ?: 0f
+                            }
                             "displayed" -> {
                                 val ids = packet["ids"] as? kotlinx.serialization.json.JsonArray ?: return@launch
                                 displayed(ids.mapNotNull { it.jsonPrimitive.contentOrNull }.filter { id -> latest.attachments.any { it.id == id } }.toSet(), packet["remove"]?.jsonPrimitive?.contentOrNull == "true")
@@ -147,6 +158,10 @@ fun A2uiContent(message: Message, repository: PiBotRepository, disabled: Boolean
                 loadUrl("$UI_ORIGIN/a2ui/index.html")
             }
         },
-        update = { view -> if (ready) sendDocument(view) },
+        update = { view ->
+            view.verticalScrollingEnabled = naturalHeight > height + 1
+            if (view.scrollY > 0 && !view.verticalScrollingEnabled) view.scrollTo(0, 0)
+            if (ready) sendDocument(view)
+        },
     )
 }

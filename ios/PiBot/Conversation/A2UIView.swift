@@ -15,11 +15,12 @@ struct A2UIView: View {
     @Environment(AppStore.self) private var store
     let message: Message
     let disabled: Bool
+    let viewportHeight: CGFloat
     var onDisplayed: (Set<String>, Bool) -> Void = { _, _ in }
     @State private var height: CGFloat = 180
 
     var body: some View {
-        A2UIWebView(message: message, disabled: disabled, store: store, height: $height, onDisplayed: onDisplayed)
+        A2UIWebView(message: message, disabled: disabled, viewportHeight: viewportHeight, store: store, height: $height, onDisplayed: onDisplayed)
             .frame(height: height)
             .frame(maxWidth: .infinity)
     }
@@ -28,6 +29,7 @@ struct A2UIView: View {
 private struct A2UIWebView: UIViewRepresentable {
     let message: Message
     let disabled: Bool
+    let viewportHeight: CGFloat
     let store: AppStore
     @Binding var height: CGFloat
     var onDisplayed: (Set<String>, Bool) -> Void = { _, _ in }
@@ -43,24 +45,29 @@ private struct A2UIWebView: UIViewRepresentable {
         content.addUserScript(WKUserScript(source: bridgeScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         content.add(WeakScriptHandler(context.coordinator), name: "piBotUiHost")
         config.userContentController = content
-        let web = WKWebView(frame: .zero, configuration: config)
+        let web = InlineUiWebView(frame: .zero, configuration: config)
         web.isOpaque = false
         web.backgroundColor = .clear
         web.scrollView.backgroundColor = .clear
-        web.scrollView.isScrollEnabled = false
+        web.scrollView.isScrollEnabled = false // Enabled by measured overflow, not a fixed height cutoff.
         web.scrollView.contentInsetAdjustmentBehavior = .never
         web.navigationDelegate = context.coordinator
         context.coordinator.web = web
+        web.onLayout = { [weak coordinator = context.coordinator] in coordinator?.updateHeight() }
         web.load(URLRequest(url: uiIndex))
         return web
     }
 
     func updateUIView(_ web: WKWebView, context: Context) {
         context.coordinator.parent = self
+        context.coordinator.updateHeight()
         context.coordinator.sendDocumentIfChanged()
     }
 
     static func dismantleUIView(_ web: WKWebView, coordinator: Coordinator) {
+        coordinator.web = nil
+        (web as? InlineUiWebView)?.onLayout = nil
+        (web as? InlineUiWebView)?.scrolling.stop()
         web.configuration.userContentController.removeScriptMessageHandler(forName: "piBotUiHost")
         web.stopLoading()
     }
@@ -71,8 +78,40 @@ private struct A2UIWebView: UIViewRepresentable {
         weak var web: WKWebView?
         private var ready = false
         private var sent: String?
+        private var contentHeight: CGFloat = 180
+        private var pageWidth: CGFloat = 0
+        private var heightScheduled = false
 
         init(_ parent: A2UIWebView) { self.parent = parent }
+
+        func updateHeight() {
+            guard !heightScheduled else { return }
+            heightScheduled = true
+            // Coalesce layout and bridge updates; read the latest width/content after layout.
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.heightScheduled = false
+                self.applyHeight()
+            }
+        }
+
+        private func applyHeight() {
+            guard let web else { return }
+            let scale = pageWidth > 0 && web.bounds.width > 0 ? web.bounds.width / pageWidth : 1
+            let naturalHeight = contentHeight * scale
+            let height = CGFloat(UiViewport.displayHeight(content: Double(naturalHeight), available: Double(parent.viewportHeight)))
+            let scrollEnabled = naturalHeight > height + 1
+            if web.scrollView.isScrollEnabled != scrollEnabled {
+                web.scrollView.isScrollEnabled = scrollEnabled
+            }
+            let maximum = max(0, naturalHeight - height)
+            if web.scrollView.contentOffset.y > maximum {
+                web.scrollView.setContentOffset(CGPoint(x: 0, y: maximum), animated: false)
+            }
+            if abs(parent.height - height) > 0.5 {
+                parent.height = height
+            }
+        }
 
         private var payload: String {
             JSONValue.object(["document": parent.message.ui ?? .null, "disabled": .bool(parent.disabled)]).jsonString()
@@ -98,7 +137,11 @@ private struct A2UIWebView: UIViewRepresentable {
                 sent = nil
                 sendDocumentIfChanged()
             case "height":
-                if let value = packet["height"]?.intValue { parent.height = CGFloat(min(max(value, 100), 6000)) }
+                if let value = packet["height"]?.intValue, value >= 0 {
+                    contentHeight = CGFloat(value)
+                    pageWidth = CGFloat(max(0, packet["width"]?.intValue ?? 0))
+                    updateHeight()
+                }
             case "displayed":
                 if case .array(let items)? = packet["ids"] {
                     let allowed = Set(parent.message.attachments.map(\.id))
