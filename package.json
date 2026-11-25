@@ -21,7 +21,8 @@
     "virtual-phone:build": "tsc -p extras/virtual-phone/tsconfig.json",
     "virtual-phone:test": "node --import tsx --test extras/virtual-phone/tests/*.test.ts",
     "contracts:generate": "node scripts/generate-runtime-contracts.mjs",
-    "eval:agent": "node --import tsx scripts/evals/agent-behavior.ts"
+    "eval:agent": "node --import tsx scripts/evals/agent-behavior.ts",
+    "eval:ui": "node --import tsx scripts/evals/ui-behavior.ts"
   },
   "devDependencies": {
     "typescript": "7.0.2",

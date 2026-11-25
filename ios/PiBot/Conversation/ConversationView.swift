@@ -189,7 +189,7 @@ struct ConversationView: View {
                 Intro(bot: bot)
             }
             ForEach(timeline.messages) { message in
-                MessageRow(message: message, bubbleWidth: bubbleWidth, onOpenBot: onOpenBot)
+                MessageRow(message: message, bubbleWidth: bubbleWidth, viewportHeight: viewport, onOpenBot: onOpenBot)
                     .id(message.id)
                     .background {
                         if message.id == timeline.messages.first?.id {

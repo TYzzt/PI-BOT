@@ -225,7 +225,7 @@ const Table = createComponentImplementation(TableApi, ({ props }) => {
     100,
   ) as Record<string, unknown>[];
   return (
-    <div className="pi-ui-table">
+    <div className="pi-ui-table pi-ui-table-scroll" role="region" aria-label="数据表格，可横向滚动" tabIndex={0} style={{'--pi-table-columns':Math.max(1,props.columns.length)} as React.CSSProperties}>
       <table>
         {props.title && <caption>{props.title}</caption>}
         <thead>
