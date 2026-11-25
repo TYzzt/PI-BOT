@@ -35,8 +35,10 @@ test('wide tables stay inside messages and native pages report uncapped height w
     await page.setViewportSize({width, height: 800});
     for (const layout of ['direct', 'card', 'tabs', 'card-tabs', 'tabs-card', 'legacy'] as TableLayout[]) {
       await page.evaluate(layout => (window as any).setTableLayout(layout), layout);
-      const table = page.locator('.pi-ui-table-scroll'); await table.waitFor();
-      await page.waitForFunction(() => document.querySelectorAll('tbody tr').length === 15);
+      // React can leave the previous fixture visible until the next commit. Scope every
+      // observation to the requested layout instead of accepting its identical 15 rows.
+      const table = page.locator(`.message[data-layout="${layout}"] .pi-ui-table-scroll`); await table.waitFor();
+      await page.waitForFunction(layout => document.querySelector(`.message[data-layout="${layout}"]`)?.querySelectorAll('tbody tr').length === 15, layout);
       const metrics = await table.evaluate(el => {
         const rect = el.getBoundingClientRect(), cells = [...el.querySelectorAll('thead th')].map(cell => cell.getBoundingClientRect());
         return {page: document.documentElement.scrollWidth, viewport: innerWidth, left: rect.left, right: rect.right, client: el.clientWidth, scroll: el.scrollWidth, widths: cells.map(r => r.width), cardOverflow: [...document.querySelectorAll('[data-aui="card"]')].some(card => card.scrollWidth > card.clientWidth + 1)};
@@ -44,7 +46,7 @@ test('wide tables stay inside messages and native pages report uncapped height w
       assert.ok(metrics.page <= metrics.viewport + 1, `${width}/${layout}: page overflows`);
       assert.ok(metrics.left >= 0 && metrics.right <= width + 1, `${width}/${layout}: table viewport escapes`);
       assert.equal(metrics.cardOverflow, false, `${width}/${layout}: card overflows`);
-      assert.ok(metrics.scroll > metrics.client, `${width}/${layout}: missing internal scroll`);
+      assert.ok(metrics.scroll > metrics.client, `${width}/${layout}: missing internal scroll ${JSON.stringify(metrics)}`);
       assert.ok(metrics.widths.every(w => w >= 159), `${width}/${layout}: columns too narrow: ${metrics.widths}`);
       await table.evaluate(el => { el.scrollLeft = el.scrollWidth; });
       assert.ok(await table.evaluate(el => { const last = el.querySelector('thead th:last-child')!.getBoundingClientRect(), frame = el.getBoundingClientRect(); return last.right <= frame.right + 1 && last.left < frame.right; }), 'last column reachable');
