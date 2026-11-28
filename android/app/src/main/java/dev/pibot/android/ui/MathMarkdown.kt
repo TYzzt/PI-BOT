@@ -78,6 +78,7 @@ fun MathMarkdown(source: String, modifier: Modifier = Modifier, color: Color = I
                     "math_smoke" -> if(BuildConfig.DEBUG && smoke) {
                         val result = packet.optJSONObject("result") ?: JSONObject().put("ok",false)
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        result.put("clipboard_text", clipboard.primaryClip?.getItemAt(0)?.text?.toString().orEmpty())
                         result.put("clipboard_ok", clipboard.primaryClip?.getItemAt(0)?.text?.toString() == result.optString("expectedCopy"))
                         context.filesDir.resolve("math-smoke.json").writeText(result.toString())
                     }

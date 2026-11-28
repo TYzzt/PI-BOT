@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { bindMarkdown, hasSelection, renderMarkdown, type MarkdownHost } from "./index.js";
 
 /** One selection surface; a live selection freezes updates until released. */
@@ -7,7 +7,7 @@ export function Markdown({source,className,host}:{source:string;className?:strin
   const [shown,setShown]=useState(source);
   const callbacks=useRef(host);callbacks.current=host;
   useEffect(()=>{if(root.current&&!hasSelection(root.current))setShown(source);},[source]);
-  useEffect(()=>bindMarkdown(root.current!,{
+  useLayoutEffect(()=>bindMarkdown(root.current!,{
     copy:text=>callbacks.current?.copy?callbacks.current.copy(text):navigator.clipboard.writeText(text),
     openLink:href=>callbacks.current?.openLink?callbacks.current.openLink(href):window.open(href,"_blank","noopener,noreferrer"),
     selection:active=>{callbacks.current?.selection?.(active);if(!active)setShown(latest.current);},

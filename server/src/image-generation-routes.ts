@@ -30,6 +30,7 @@ async function perform(c: Context, operation: Operation, body: any) {
     : [operation, { ...body, run_id: undefined, request_id: undefined }, inputs.source && digest(inputs.source.bytes), inputs.mask && digest(inputs.mask.bytes)])).digest("hex");
   const paid = operation === "generate" || operation === "edit";
   const reserved = await db.tx(async tx => {
+    await tx.one("SELECT run_id FROM bot_runs WHERE run_id=$1 FOR UPDATE", [body.run_id]);
     const run = await callerRun(tx, user.user_id, llm!, body.run_id);
     writableImageRun(run);
     await tx.rows("UPDATE bot_runs SET expected_output='image' WHERE run_id=$1", [run.run_id]);
@@ -83,6 +84,8 @@ async function perform(c: Context, operation: Operation, body: any) {
     }
     if (image.bytes.length > MAX_GENERATED_IMAGE_BYTES) fail(413, "处理后的图片超过 10 MiB，请先裁剪");
     return await db.tx(async tx => {
+      // Serialize publication with cancellation: whichever holds the run lock first wins.
+      await tx.one("SELECT run_id FROM bot_runs WHERE run_id=$1 FOR UPDATE", [body.run_id]);
       const run = await callerRun(tx, user.user_id, llm!, body.run_id);
       if (controller.signal.aborted || run.cancel_requested) fail(499, "图片处理已取消，未发布图片");
       writableImageRun(run);

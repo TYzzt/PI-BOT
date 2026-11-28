@@ -96,6 +96,13 @@ test("image API scopes originals, replays local edits, preserves lineage and ver
   const child=await db.tx(tx=>tx.one("SELECT r.* FROM bot_runs r JOIN agent_tasks t ON t.child_run_id=r.run_id WHERE t.task_id=$1",[delegated.json().id]));
   assert.equal(child!.expected_output,"image");assert.deepEqual(child!.image_refs,[source]);
   assert.deepEqual((await db.tx(tx=>resolveImageSource(tx,child!,source))).bytes,bytes);
+  const published=await db.tx(tx=>insertRun(tx,{userId:login.user.id,botId:bot,requestId:randomUUID(),text:"保存后再取消",computer:null,lane:"task"}));
+  const saved=await post("annotate",{...body,run_id:published.run_id,request_id:"before-cancel"});assert.equal(saved.statusCode,200,saved.body);
+  await db.tx(async tx=>{
+    await tx.update("bot_runs",published.run_id,{cancel_requested:true});
+    await finishRun(tx,published.run_id,"completed",null,"已完成");
+    const output=await tx.get("bot_messages",published.assistant_message_id);assert.equal(output.status,"cancelled");assert.match(output.content,/已保存/);assert.doesNotMatch(output.content,/未交付/);
+  });
   const cancelled=await db.tx(tx=>insertRun(tx,{userId:login.user.id,botId:bot,requestId:randomUUID(),text:"取消图片任务",computer:null,lane:"task"}));
   await db.tx(async tx=>{
     await tx.update("bot_runs",cancelled.run_id,{expected_output:"image",cancel_requested:true});

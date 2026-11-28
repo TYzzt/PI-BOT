@@ -11,12 +11,6 @@ window.piBotMathSmoke = async function (payload) {
     const font = document.fonts.check('16px KaTeX_Main');
     const overflow = document.documentElement.scrollWidth > window.innerWidth;
     const expectedCopy = root.querySelector('[data-tex]').dataset.tex;
-    const respond = window.piBotUi.respond;
-    let copyReady = false;
-    window.piBotUi.respond = function (value) { respond(value); copyReady = !value.error; };
-    root.querySelector('.pi-math-copy').click();
-    for (let i = 0; i < 100 && !copyReady; i++) await pause();
-    window.piBotUi.respond = respond;
     const range = document.createRange(); range.selectNodeContents(root);
     const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range);
     await pause();
@@ -31,7 +25,13 @@ window.piBotMathSmoke = async function (payload) {
     for (let i = 0; i < 50 && !root.textContent.includes('更新'); i++) await pause();
     const resumed = root.textContent.includes('更新');
     window.piBotUi.receive(payload);
-    await pause();
+    for (let i = 0; i < 50 && root.querySelectorAll('.katex').length < 6; i++) await pause();
+    const respond = window.piBotUi.respond;
+    let copyReady = false;
+    window.piBotUi.respond = function (value) { respond(value); copyReady = !value.error; };
+    root.querySelector('.pi-math-copy').click();
+    for (let i = 0; i < 100 && !copyReady; i++) await pause();
+    window.piBotUi.respond = respond;
     window.PiBotUiHost.postMessage(JSON.stringify({type:'math_smoke',result:{
       ok: count >= 6 && errors === 0 && font && copyReady && !overflow && frozen && resumed && copied.includes(expectedCopy),
       count, errors, font, copyReady, overflow, frozen, resumed, expectedCopy, copied

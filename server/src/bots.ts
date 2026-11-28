@@ -902,7 +902,7 @@ export async function finishRun(
     }
   }
   if (run.expected_output === "image" && final !== "completed") {
-    content = error ?? "图片任务已取消，未交付图片。";
+    content = error ?? (await hasImageOutput(tx, run) ? "图片任务已停止；已保存的图片附件仍可查看。" : "图片任务已取消，未交付图片。");
     message.reply_segments = (message.reply_segments ?? []).filter((r: ReplySegment) => r.phase !== "answer");
     await tx.rows("UPDATE bot_messages SET reply_segments=$2 WHERE message_id=$1", [run.assistant_message_id,JSON.stringify(message.reply_segments)]);
   }

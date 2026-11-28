@@ -73,6 +73,7 @@ private struct MathMarkdownWeb: UIViewRepresentable {
                 #if DEBUG
                 if ProcessInfo.processInfo.arguments.contains("--math-smoke"), case .object(var result)? = packet["result"],
                    let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+                    result["clipboard_text"] = .string(UIPasteboard.general.string ?? "")
                     result["clipboard_ok"] = .bool(UIPasteboard.general.string == result["expectedCopy"]?.stringValue)
                     try? JSONValue.object(result).jsonString().write(to: directory.appendingPathComponent("math-smoke.json"), atomically: true, encoding: .utf8)
                 }
