@@ -2,7 +2,7 @@
 window.piBotMathSmoke = async function (payload) {
   const pause = () => new Promise(resolve => setTimeout(resolve, 100));
   try {
-    for (let i = 0; i < 150 && !document.querySelector('.katex'); i++) await pause();
+    for (let i = 0; i < 150 && document.querySelectorAll('.katex').length < 6; i++) await pause();
     await document.fonts.ready;
     const root = document.querySelector('.pi-markdown');
     if (!root) throw new Error('Markdown root missing');
@@ -11,8 +11,12 @@ window.piBotMathSmoke = async function (payload) {
     const font = document.fonts.check('16px KaTeX_Main');
     const overflow = document.documentElement.scrollWidth > window.innerWidth;
     const expectedCopy = root.querySelector('[data-tex]').dataset.tex;
+    const respond = window.piBotUi.respond;
+    let copyReady = false;
+    window.piBotUi.respond = function (value) { respond(value); copyReady = !value.error; };
     root.querySelector('.pi-math-copy').click();
-    await pause();
+    for (let i = 0; i < 100 && !copyReady; i++) await pause();
+    window.piBotUi.respond = respond;
     const range = document.createRange(); range.selectNodeContents(root);
     const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range);
     await pause();
@@ -24,13 +28,13 @@ window.piBotMathSmoke = async function (payload) {
     await pause();
     const frozen = root.textContent === before;
     selection.removeAllRanges();
-    await pause(); await pause();
+    for (let i = 0; i < 50 && !root.textContent.includes('更新'); i++) await pause();
     const resumed = root.textContent.includes('更新');
     window.piBotUi.receive(payload);
     await pause();
     window.PiBotUiHost.postMessage(JSON.stringify({type:'math_smoke',result:{
-      ok: count >= 6 && errors === 0 && font && !overflow && frozen && resumed && copied.includes(expectedCopy),
-      count, errors, font, overflow, frozen, resumed, expectedCopy, copied
+      ok: count >= 6 && errors === 0 && font && copyReady && !overflow && frozen && resumed && copied.includes(expectedCopy),
+      count, errors, font, copyReady, overflow, frozen, resumed, expectedCopy, copied
     }}));
   } catch (error) {
     window.PiBotUiHost.postMessage(JSON.stringify({type:'math_smoke',result:{ok:false,error:String(error)}}));
