@@ -402,3 +402,8 @@ version(s), and exceptions or additional permissions here}.”
 > look for such a notice.
 >
 > You may add additional accurate notices of copyright ownership.
+
+
+## 图片标注字体
+
+服务端容器通过 Debian `fonts-noto-cjk` 分发 Noto Sans CJK（来源 https://github.com/notofonts/noto-cjk，SIL Open Font License 1.1）；原始字体和许可证由发行包安装并保留在镜像中（`/usr/share/doc/fonts-noto-cjk/copyright`）。未修改字体。直接部署使用系统字体，不从用户上传的图片或模型输出加载字体。
