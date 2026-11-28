@@ -17,6 +17,11 @@ class MainActivity : ComponentActivity() {
             statusBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT),
         )
+        if (BuildConfig.DEBUG && intent.getBooleanExtra("math_smoke", false)) {
+            val source = org.json.JSONObject(assets.open("a2ui/math-smoke.json").bufferedReader().use { it.readText() }).getString("source")
+            setContent { PiBotTheme { dev.pibot.android.ui.MathMarkdown(source, smoke = true) } }
+            return
+        }
         val repository = (application as PiBotApp).repository
         (application as PiBotApp).push.handleIntent(intent)
         setContent {

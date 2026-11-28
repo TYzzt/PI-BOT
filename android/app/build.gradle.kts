@@ -47,7 +47,7 @@ android {
     }
 
     testOptions {
-        unitTests.all { it.systemProperty("botFaceSpec", botFaceSpec.asFile.absolutePath) }
+        unitTests.all { it.systemProperty("botFaceSpec", botFaceSpec.asFile.absolutePath); it.systemProperty("markdownFixtures", rootProject.file("../packages/markdown/fixtures/routing.json").absolutePath) }
     }
 }
 
@@ -84,6 +84,7 @@ val buildA2ui = tasks.register<Exec>("buildA2ui") {
     inputs.dir(rootProject.projectDir.resolve("../packages/a2ui/src"))
     inputs.dir(rootProject.projectDir.resolve("../packages/a2ui/scripts"))
     inputs.dir(rootProject.projectDir.resolve("../packages/generative-ui/src"))
+    inputs.dir(rootProject.projectDir.resolve("../packages/markdown/src"))
     inputs.file(rootProject.projectDir.resolve("../package-lock.json"))
     inputs.dir(rootProject.projectDir.resolve("../packages/a2ui/web"))
     inputs.file(rootProject.projectDir.resolve("../package-lock.json"))
